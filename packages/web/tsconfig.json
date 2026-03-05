@@ -21,5 +21,6 @@
       "@openchamber/web/*": ["./src/*"]
     }
   },
-  "include": ["src", "../ui/src", "../ui/src/types/**/*"]
+  "include": ["src", "../ui/src", "../ui/src/types/**/*"],
+  "exclude": ["../ui/src/**/*.test.ts"]
 }

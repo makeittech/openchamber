@@ -2274,6 +2274,83 @@ const sanitizeSettingsUpdate = (payload) => {
     }
   }
 
+  // Model mode configuration
+  if (candidate.modelModeConfig && typeof candidate.modelModeConfig === 'object') {
+    const mmc = candidate.modelModeConfig;
+    const sanitizedConfig = {};
+
+    const validModes = ['default', 'smart', 'prioritised'];
+    if (typeof mmc.mode === 'string' && validModes.includes(mmc.mode)) {
+      sanitizedConfig.mode = mmc.mode;
+    }
+
+    if (typeof mmc.defaultModel === 'string') {
+      const trimmed = mmc.defaultModel.trim();
+      if (trimmed.length > 0 && trimmed.length <= 256) {
+        sanitizedConfig.defaultModel = trimmed;
+      }
+    }
+
+    // Validate rules for smart mode
+    if (Array.isArray(mmc.rules)) {
+      const validConditions = ['topic', 'time', 'promptPrefix', 'tokenCount'];
+      const validRules = [];
+      for (const rule of mmc.rules.slice(0, 100)) {
+        if (!rule || typeof rule !== 'object') continue;
+        const condition = rule.condition;
+        const value = typeof rule.value === 'string' ? rule.value.trim() : '';
+        const model = typeof rule.model === 'string' ? rule.model.trim() : '';
+
+        if (
+          validConditions.includes(condition) &&
+          value.length > 0 && value.length <= 4096 &&
+          model.length > 0 && model.length <= 256
+        ) {
+          validRules.push({ condition, value, model });
+        }
+      }
+      if (validRules.length > 0) {
+        sanitizedConfig.rules = validRules;
+      }
+    }
+
+    // Validate priorities for prioritised mode
+    if (Array.isArray(mmc.priorities)) {
+      const validPriorities = [];
+      for (const p of mmc.priorities.slice(0, 50)) {
+        if (!p || typeof p !== 'object') continue;
+        const model = typeof p.model === 'string' ? p.model.trim() : '';
+        if (model.length === 0 || model.length > 256) continue;
+
+        const priority = { model };
+
+        if (typeof p.timeout === 'number' && Number.isFinite(p.timeout)) {
+          const timeout = Math.round(p.timeout);
+          if (timeout >= 1000 && timeout <= 600000) {
+            priority.timeout = timeout;
+          }
+        }
+
+        if (Array.isArray(p.retryOn)) {
+          const validRetryOn = ['error', 'timeout', 'rateLimit'];
+          const retryOn = p.retryOn.filter(r => validRetryOn.includes(r));
+          if (retryOn.length > 0) {
+            priority.retryOn = retryOn;
+          }
+        }
+
+        validPriorities.push(priority);
+      }
+      if (validPriorities.length > 0) {
+        sanitizedConfig.priorities = validPriorities;
+      }
+    }
+
+    if (Object.keys(sanitizedConfig).length > 0) {
+      result.modelModeConfig = sanitizedConfig;
+    }
+  }
+
   return result;
 };
 
