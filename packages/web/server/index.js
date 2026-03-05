@@ -28,6 +28,7 @@ import {
   readTerminalInputWsControlFrame,
 } from './lib/terminal/index.js';
 import webPush from 'web-push';
+import { createJobStore, createCronScheduler } from './lib/cron/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13162,6 +13163,181 @@ async function main(options = {}) {
     console.log(`Force killed ${killedCount} terminal session(s)`);
     res.json({ success: true, killedCount });
   });
+
+  // Cron scheduler setup
+  let cronScheduler = null;
+  const cronJobStore = createJobStore();
+
+  const initCronScheduler = async () => {
+    if (process.env.OPENCHAMBER_SKIP_CRON === '1') {
+      console.log('[Cron] Scheduler disabled via OPENCHAMBER_SKIP_CRON=1');
+      return;
+    }
+
+    try {
+      await cronJobStore.load();
+
+      cronScheduler = createCronScheduler(cronJobStore, {
+        buildOpenCodeUrl,
+        getOpenCodeAuthHeaders,
+        getSessionId: () => {
+          // Return the most recent active session ID
+          // This is a simplified approach - could be enhanced to track specific "main" sessions
+          return null; // For now, isolated mode only
+        },
+        createIsolatedSession: async (job) => {
+          // Create a temporary session for isolated job execution
+          const sessionUrl = buildOpenCodeUrl('/session', '');
+          const authHeaders = getOpenCodeAuthHeaders();
+          
+          const response = await fetch(sessionUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...authHeaders,
+            },
+            body: JSON.stringify({
+              directory: process.cwd(),
+              model: job.payload.model,
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`Failed to create session: ${response.status}`);
+          }
+
+          const session = await response.json();
+          return session;
+        },
+        logRun: (runRecord) => {
+          console.log(`[Cron] Job ${runRecord.jobName} completed: ${runRecord.success ? 'success' : 'failed'}`);
+        },
+      });
+
+      await cronScheduler.start();
+    } catch (error) {
+      console.error('[Cron] Failed to initialize scheduler:', error);
+    }
+  };
+
+  // Cron API routes
+  app.get('/api/cron', async (req, res) => {
+    try {
+      const jobs = cronJobStore.list();
+      res.json(jobs);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get('/api/cron/stats', (req, res) => {
+    try {
+      if (!cronScheduler) {
+        return res.json({ running: false, message: 'Scheduler not initialized' });
+      }
+      const stats = cronScheduler.getStats();
+      res.json(stats);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get('/api/cron/history', (req, res) => {
+    try {
+      if (!cronScheduler) {
+        return res.json([]);
+      }
+      const limit = parseInt(req.query.limit, 10) || 50;
+      const history = cronScheduler.getRunHistory(limit);
+      res.json(history);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get('/api/cron/:jobId', (req, res) => {
+    try {
+      const job = cronJobStore.get(req.params.jobId);
+      if (!job) {
+        return res.status(404).json({ error: 'Job not found' });
+      }
+      res.json(job);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post('/api/cron', express.json(), async (req, res) => {
+    try {
+      const job = req.body;
+      const created = await cronJobStore.add(job);
+      
+      if (cronScheduler && created.enabled !== false) {
+        cronScheduler.scheduleJob(created);
+      }
+      
+      res.status(201).json(created);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.put('/api/cron/:jobId', express.json(), async (req, res) => {
+    try {
+      const jobId = req.params.jobId;
+      const updates = req.body;
+      const updated = await cronJobStore.update(jobId, updates);
+      
+      if (!updated) {
+        return res.status(404).json({ error: 'Job not found' });
+      }
+      
+      if (cronScheduler) {
+        cronScheduler.rescheduleJob(updated);
+      }
+      
+      res.json(updated);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.delete('/api/cron/:jobId', async (req, res) => {
+    try {
+      const jobId = req.params.jobId;
+      const deleted = await cronJobStore.delete(jobId);
+      
+      if (!deleted) {
+        return res.status(404).json({ error: 'Job not found' });
+      }
+      
+      if (cronScheduler) {
+        cronScheduler.unscheduleJob(jobId);
+      }
+      
+      res.json({ success: true, jobId });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post('/api/cron/:jobId/run', async (req, res) => {
+    try {
+      if (!cronScheduler) {
+        return res.status(503).json({ error: 'Scheduler not initialized' });
+      }
+      
+      const jobId = req.params.jobId;
+      await cronScheduler.runJobNow(jobId);
+      
+      res.json({ success: true, jobId, message: 'Job triggered' });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Initialize cron scheduler after OpenCode is ready
+  void initCronScheduler();
 
   setupProxy(app);
   scheduleOpenCodeApiDetection();
