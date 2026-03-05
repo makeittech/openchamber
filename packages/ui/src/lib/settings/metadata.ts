@@ -22,7 +22,8 @@ export type SettingsPageSlug =
   | 'tunnel'
   | 'cron'
   | 'heartbeat'
-  | 'telegram';
+  | 'telegram'
+  | 'superwords';
 
 export type SettingsPageGroup =
   | 'appearance'
@@ -185,6 +186,7 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
   { slug: 'cron', title: 'Cron Jobs', group: 'advanced', kind: 'single', keywords: ['cron', 'schedule', 'scheduler', 'jobs', 'tasks', 'automation'], isAvailable: (ctx) => !ctx.isVSCode },
   { slug: 'heartbeat', title: 'Heartbeat', group: 'advanced', kind: 'single', keywords: ['heartbeat', 'check', 'monitoring', 'periodic', 'automation'], isAvailable: (ctx) => !ctx.isVSCode },
   { slug: 'telegram', title: 'Telegram', group: 'advanced', kind: 'single', keywords: ['telegram', 'bot', 'bridge', 'chat', 'messenger'], isAvailable: (ctx) => !ctx.isVSCode },
+  { slug: 'superwords', title: 'Superwords', group: 'skills', kind: 'single', keywords: ['superwords', 'triggers', 'skills', 'shortcuts', 'automation'], },
 ] as const;
 
 export const LEGACY_SIDEBAR_SECTION_TO_SETTINGS_SLUG: Record<SidebarSection, SettingsPageSlug> = {

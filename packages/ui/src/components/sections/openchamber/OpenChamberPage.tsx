@@ -15,6 +15,7 @@ import { HeartbeatSettings } from './HeartbeatSettings';
 import { TelegramSettings } from './TelegramSettings';
 import { OpenCodeCliSettings } from './OpenCodeCliSettings';
 import { KeyboardShortcutsSettings } from './KeyboardShortcutsSettings';
+import { SuperwordsSettings } from './SuperwordsSettings';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { useDeviceInfo } from '@/lib/device';
 import { isVSCodeRuntime, isWebRuntime } from '@/lib/desktop';
@@ -90,6 +91,8 @@ export const OpenChamberPage: React.FC<OpenChamberPageProps> = ({ section }) => 
                 return <HeartbeatSectionContent />;
             case 'telegram':
                 return <TelegramSectionContent />;
+            case 'superwords':
+                return <SuperwordsSectionContent />;
             default:
                 return null;
         }
@@ -213,4 +216,8 @@ const TelegramSectionContent: React.FC = () => {
 
 const ModelModeSectionContent: React.FC = () => {
     return <ModelModeSettings />;
+};
+
+const SuperwordsSectionContent: React.FC = () => {
+    return <SuperwordsSettings />;
 };

@@ -662,6 +662,38 @@ export async function saveProjectActionsState(
   });
 }
 
+export async function getSuperwordsConfig(project: ProjectRef): Promise<SuperwordsConfig> {
+  const config = await readOpenChamberConfig(project);
+  const superwords = config?.superwords;
+  
+  if (!superwords || typeof superwords !== 'object') {
+    return {};
+  }
+  
+  const sanitized: SuperwordsConfig = {};
+  for (const [trigger, skillId] of Object.entries(superwords)) {
+    if (typeof trigger === 'string' && typeof skillId === 'string' && trigger.trim() && skillId.trim()) {
+      sanitized[trigger.trim()] = skillId.trim();
+    }
+  }
+  
+  return sanitized;
+}
+
+export async function saveSuperwordsConfig(
+  project: ProjectRef,
+  superwords: SuperwordsConfig
+): Promise<boolean> {
+  const sanitized: SuperwordsConfig = {};
+  for (const [trigger, skillId] of Object.entries(superwords)) {
+    if (typeof trigger === 'string' && typeof skillId === 'string' && trigger.trim() && skillId.trim()) {
+      sanitized[trigger.trim()] = skillId.trim();
+    }
+  }
+  
+  return updateOpenChamberConfig(project, { superwords: sanitized });
+}
+
 /**
  * Substitute variables in a command string.
  * Supported variables:

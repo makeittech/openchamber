@@ -31,6 +31,7 @@ import {
   RiServerLine,
   RiSlashCommands2,
   RiTelegramLine,
+  RiFlashlightLine,
 } from '@remixicon/react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
@@ -99,6 +100,7 @@ const pageOrder: SettingsPageSlug[] = [
   'usage',
   'skills.installed',
   'skills.catalog',
+  'superwords',
   'voice',
   'tunnel',
   'cron',
@@ -163,6 +165,8 @@ function getSettingsNavIcon(slug: SettingsPageSlug): React.ComponentType<{ class
       return RiGlobalLine;
     case 'telegram':
       return RiTelegramLine;
+    case 'superwords':
+      return RiFlashlightLine;
     case 'home':
       return null;
     default:
@@ -385,6 +389,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     cron: 'cron',
     heartbeat: 'heartbeat',
     telegram: 'telegram',
+    superwords: 'superwords',
   }), []);
 
   const renderUnavailable = React.useCallback(() => {
@@ -460,7 +465,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
       case 'tunnel':
       case 'cron':
       case 'heartbeat':
-      case 'telegram': {
+      case 'telegram':
+      case 'superwords': {
         const section = openChamberSectionBySlug[slug] ?? 'visual';
         return <OpenChamberPage section={section} />;
       }

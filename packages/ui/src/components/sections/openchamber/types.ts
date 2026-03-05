@@ -11,4 +11,5 @@ export type OpenChamberSection =
   | 'tunnel'
   | 'cron'
   | 'heartbeat'
-  | 'telegram';
+  | 'telegram'
+  | 'superwords';
