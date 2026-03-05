@@ -17,6 +17,7 @@ import {
   checkCloudflaredAvailable,
 } from './lib/cloudflare-tunnel.js';
 import { prepareNotificationLastMessage } from './lib/notifications/index.js';
+import { parseSuperwords, injectSuperwordSkill } from './lib/skills/superwords.js';
 import {
   TERMINAL_INPUT_WS_MAX_PAYLOAD_BYTES,
   TERMINAL_INPUT_WS_PATH,
@@ -6549,9 +6550,31 @@ function setupProxy(app) {
         ...(authHeaders.Authorization ? { Authorization: authHeaders.Authorization } : {}),
       };
 
-      const bodyBuffer = Buffer.isBuffer(req.body)
+      let bodyBuffer = Buffer.isBuffer(req.body)
         ? req.body
         : Buffer.from(typeof req.body === 'string' ? req.body : '');
+
+      // Process superwords if JSON content
+      if (headers['content-type']?.includes('application/json')) {
+        try {
+          const bodyStr = bodyBuffer.toString('utf8');
+          const body = JSON.parse(bodyStr);
+          
+          // Check if message has content field and superwords config
+          if (body && typeof body.content === 'string' && body.superwords && typeof body.superwords === 'object') {
+            const parsed = parseSuperwords(body.content, body.superwords);
+            
+            if (parsed) {
+              // Inject skill context and update message
+              const modifiedBody = injectSuperwordSkill(body, parsed.skillId, parsed.remainingMessage);
+              bodyBuffer = Buffer.from(JSON.stringify(modifiedBody), 'utf8');
+            }
+          }
+        } catch (parseError) {
+          // If parsing fails, use original body
+          console.warn('[Superwords] Failed to parse message body:', parseError.message);
+        }
+      }
 
       const upstreamResponse = await fetch(targetUrl, {
         method: 'POST',

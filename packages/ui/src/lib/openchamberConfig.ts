@@ -57,6 +57,10 @@ function getRuntimeFilesAPI(): FilesAPI | null {
   return null;
 }
 
+export interface SuperwordsConfig {
+  [trigger: string]: string;
+}
+
 export interface OpenChamberConfig {
   'setup-worktree'?: string[];
   projectNotes?: string;
@@ -66,6 +70,7 @@ export interface OpenChamberConfig {
   cron?: CronConfig;
   heartbeat?: HeartbeatConfig;
   telegram?: TelegramConfig;
+  superwords?: SuperwordsConfig;
 }
 
 export type OpenChamberProjectActionPlatform = 'macos' | 'linux' | 'windows';
