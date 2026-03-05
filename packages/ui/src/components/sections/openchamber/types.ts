@@ -8,4 +8,5 @@ export type OpenChamberSection =
   | 'notifications'
   | 'voice'
   | 'tunnel'
-  | 'cron';
+  | 'cron'
+  | 'heartbeat';

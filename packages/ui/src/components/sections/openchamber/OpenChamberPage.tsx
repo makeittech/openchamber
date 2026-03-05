@@ -10,6 +10,7 @@ import { GitHubSettings } from './GitHubSettings';
 import { VoiceSettings } from './VoiceSettings';
 import { TunnelSettings } from './TunnelSettings';
 import { CronSettings } from './CronSettings';
+import { HeartbeatSettings } from './HeartbeatSettings';
 import { OpenCodeCliSettings } from './OpenCodeCliSettings';
 import { KeyboardShortcutsSettings } from './KeyboardShortcutsSettings';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
@@ -81,6 +82,8 @@ export const OpenChamberPage: React.FC<OpenChamberPageProps> = ({ section }) => 
                 return <TunnelSectionContent />;
             case 'cron':
                 return <CronSectionContent />;
+            case 'heartbeat':
+                return <HeartbeatSectionContent />;
             default:
                 return null;
         }
@@ -186,4 +189,11 @@ const CronSectionContent: React.FC = () => {
         return null;
     }
     return <CronSettings />;
+};
+
+const HeartbeatSectionContent: React.FC = () => {
+    if (isVSCodeRuntime()) {
+        return null;
+    }
+    return <HeartbeatSettings />;
 };

@@ -52,7 +52,6 @@ import { GitPage } from '@/components/sections/git-identities/GitPage';
 import type { OpenChamberSection } from '@/components/sections/openchamber/types';
 import { OpenChamberPage } from '@/components/sections/openchamber/OpenChamberPage';
 import { AboutSettings } from '@/components/sections/openchamber/AboutSettings';
-import { CronSettings } from '@/components/sections/openchamber/CronSettings';
 import { McpIcon } from '@/components/icons/McpIcon';
 import { useDeviceInfo } from '@/lib/device';
 import { isDesktopShell, isVSCodeRuntime, isWebRuntime } from '@/lib/desktop';
@@ -100,6 +99,7 @@ const pageOrder: SettingsPageSlug[] = [
   'voice',
   'tunnel',
   'cron',
+  'heartbeat',
 ];
 
 function buildRuntimeContext(isDesktop: boolean): SettingsRuntimeContext {
@@ -374,6 +374,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     voice: 'voice',
     tunnel: 'tunnel',
     cron: 'cron',
+    heartbeat: 'heartbeat',
   }), []);
 
   const renderUnavailable = React.useCallback(() => {
@@ -446,7 +447,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
       case 'notifications':
       case 'voice':
       case 'tunnel':
-      case 'cron': {
+      case 'cron':
+      case 'heartbeat': {
         const section = openChamberSectionBySlug[slug] ?? 'visual';
         return <OpenChamberPage section={section} />;
       }

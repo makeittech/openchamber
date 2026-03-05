@@ -13235,14 +13235,11 @@ async function main(options = {}) {
         buildOpenCodeUrl,
         getOpenCodeAuthHeaders,
         getSessionId: () => {
-          // Return the most recent active session ID
-          // Similar to cron scheduler - for now, this would need session tracking
           return null;
         },
-        getConfig: () => {
-          // Return heartbeat config from settings
-          // This would need to be integrated with the settings system
-          return null;
+        getConfig: async () => {
+          const settings = await readSettingsFromDisk();
+          return settings.heartbeat || null;
         },
         logHeartbeat: (record) => {
           const status = record.heartbeatOk ? 'OK' : (record.success ? 'response received' : 'failed');
@@ -13367,6 +13364,87 @@ async function main(options = {}) {
       await cronScheduler.runJobNow(jobId);
       
       res.json({ success: true, jobId, message: 'Job triggered' });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Heartbeat API routes
+  app.get('/api/heartbeat', async (req, res) => {
+    try {
+      const settings = await readSettingsFromDisk();
+      const heartbeatConfig = settings.heartbeat || {
+        enabled: false,
+        every: '30m',
+        target: 'none',
+      };
+      res.json(heartbeatConfig);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.patch('/api/heartbeat', express.json(), async (req, res) => {
+    try {
+      const updates = req.body;
+      
+      const currentSettings = await readSettingsFromDisk();
+      const currentHeartbeat = currentSettings.heartbeat || {
+        enabled: false,
+        every: '30m',
+        target: 'none',
+      };
+      
+      const updatedHeartbeat = {
+        ...currentHeartbeat,
+        ...updates,
+      };
+      
+      await persistSettings({ heartbeat: updatedHeartbeat });
+      
+      if (heartbeatRunner) {
+        heartbeatRunner.scheduleNextHeartbeat();
+      }
+      
+      res.json(updatedHeartbeat);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.get('/api/heartbeat/stats', (req, res) => {
+    try {
+      if (!heartbeatRunner) {
+        return res.json({ running: false, message: 'Heartbeat runner not initialized' });
+      }
+      const stats = heartbeatRunner.getStats();
+      res.json(stats);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get('/api/heartbeat/history', (req, res) => {
+    try {
+      if (!heartbeatRunner) {
+        return res.json([]);
+      }
+      const limit = parseInt(req.query.limit, 10) || 50;
+      const history = heartbeatRunner.getHeartbeatHistory(limit);
+      res.json(history);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post('/api/heartbeat/run', async (req, res) => {
+    try {
+      if (!heartbeatRunner) {
+        return res.status(503).json({ error: 'Heartbeat runner not initialized' });
+      }
+      
+      const result = await heartbeatRunner.runHeartbeatNow();
+      res.json(result);
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
