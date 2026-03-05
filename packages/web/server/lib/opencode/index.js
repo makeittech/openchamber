@@ -64,3 +64,9 @@ export {
   updateMcpConfig,
   deleteMcpConfig,
 } from './mcp.js';
+
+export {
+  getDefaultSoulPath,
+  getSoulPath,
+  loadSoulMd,
+} from './soul.js';

@@ -8581,6 +8581,9 @@ async function main(options = {}) {
     createMcpConfig,
     updateMcpConfig,
     deleteMcpConfig,
+    getDefaultSoulPath,
+    getSoulPath,
+    loadSoulMd,
   } = await import('./lib/opencode/index.js');
 
   app.get('/api/config/agents/:name', async (req, res) => {
@@ -8621,6 +8624,35 @@ async function main(options = {}) {
     } catch (error) {
       console.error('Failed to get agent config:', error);
       res.status(500).json({ error: 'Failed to get agent configuration' });
+    }
+  });
+
+  app.get('/api/config/soul', async (req, res) => {
+    try {
+      const { directory, error } = await resolveProjectDirectory(req);
+      if (!directory) {
+        return res.status(400).json({ error });
+      }
+
+      const soulData = loadSoulMd(directory);
+      if (!soulData) {
+        return res.json({ 
+          exists: false, 
+          content: null, 
+          path: null,
+          configuredPath: getSoulPath(null)
+        });
+      }
+
+      res.json({
+        exists: true,
+        content: soulData.content,
+        path: soulData.path,
+        configuredPath: getSoulPath(null)
+      });
+    } catch (error) {
+      console.error('Failed to load soul.md:', error);
+      res.status(500).json({ error: 'Failed to load soul.md' });
     }
   });
 

@@ -43,6 +43,11 @@ This module provides OpenCode server integration utilities for the web server ru
   - `ensureSessionToken(req, res)`: Returns or creates session token.
   - `dispose()`: Cleans up timers and state.
 
+## Public exports (soul.js)
+- `getDefaultSoulPath()`: Returns default soul.md path ('soul.md').
+- `getSoulPath(config)`: Returns configured soul path from `agents.defaults.soulPath` or default.
+- `loadSoulMd(workingDirectory, config)`: Loads soul.md content from workspace. Returns `{ content, path }` or null if not found.
+
 ## Storage and configuration
 - Provider auth: `~/.local/share/opencode/auth.json`.
 - User config: `~/.config/opencode/opencode.json`.
