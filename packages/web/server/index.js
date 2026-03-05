@@ -13270,7 +13270,24 @@ async function main(options = {}) {
     }
 
     try {
+      // Read telegram settings from disk
+      const settings = await readSettingsFromDisk();
+      const telegramConfig = settings.telegram || {};
+      
+      if (!telegramConfig.enabled) {
+        console.log('[Telegram] Bridge disabled in settings');
+        return;
+      }
+      
+      // Parse allowed user IDs
+      const allowedUserIds = telegramConfig.allowedUserIds
+        ? telegramConfig.allowedUserIds.split(',').map(id => id.trim()).filter(Boolean)
+        : [];
+      
       telegramBridge = createTelegramBridge({
+        token: telegramConfig.botToken || process.env.TELEGRAM_BOT_TOKEN,
+        allowedUserIds,
+        adminUserId: telegramConfig.adminUserId || process.env.ADMIN_USER_ID,
         opencodeConfig: {
           baseUrl: buildOpenCodeUrl('', '').replace(/\/$/, ''),
           port: activePort
@@ -13480,6 +13497,77 @@ async function main(options = {}) {
       res.json(result);
     } catch (error) {
       res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Telegram API routes
+  app.get('/api/telegram', async (req, res) => {
+    try {
+      const settings = await readSettingsFromDisk();
+      const telegramConfig = settings.telegram || {
+        enabled: false,
+        botToken: '',
+        allowedUserIds: '',
+        adminUserId: '',
+      };
+      
+      // Never send the full bot token to the client
+      const maskedConfig = {
+        ...telegramConfig,
+        botToken: telegramConfig.botToken ? `${telegramConfig.botToken.substring(0, 8)}${'•'.repeat(20)}` : '',
+      };
+      
+      res.json(maskedConfig);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.patch('/api/telegram', express.json(), async (req, res) => {
+    try {
+      const updates = req.body;
+      
+      const currentSettings = await readSettingsFromDisk();
+      const currentTelegram = currentSettings.telegram || {
+        enabled: false,
+        botToken: '',
+        allowedUserIds: '',
+        adminUserId: '',
+      };
+      
+      // If the bot token looks masked, keep the old one
+      let botToken = updates.botToken;
+      if (botToken && botToken.includes('•')) {
+        botToken = currentTelegram.botToken;
+      }
+      
+      const updatedTelegram = {
+        ...currentTelegram,
+        ...updates,
+        botToken,
+      };
+      
+      await persistSettings({ telegram: updatedTelegram });
+      
+      // Reinitialize telegram bridge if enabled
+      if (updatedTelegram.enabled && telegramBridge) {
+        await telegramBridge.stop();
+        telegramBridge = null;
+        void initTelegramBridge();
+      } else if (!updatedTelegram.enabled && telegramBridge) {
+        await telegramBridge.stop();
+        telegramBridge = null;
+      }
+      
+      // Return masked token
+      const maskedConfig = {
+        ...updatedTelegram,
+        botToken: updatedTelegram.botToken ? `${updatedTelegram.botToken.substring(0, 8)}${'•'.repeat(20)}` : '',
+      };
+      
+      res.json(maskedConfig);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
     }
   });
 

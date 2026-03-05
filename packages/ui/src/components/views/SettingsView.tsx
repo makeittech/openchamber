@@ -29,6 +29,7 @@ import {
   RiRestartLine,
   RiServerLine,
   RiSlashCommands2,
+  RiTelegramLine,
 } from '@remixicon/react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
@@ -100,6 +101,7 @@ const pageOrder: SettingsPageSlug[] = [
   'tunnel',
   'cron',
   'heartbeat',
+  'telegram',
 ];
 
 function buildRuntimeContext(isDesktop: boolean): SettingsRuntimeContext {
@@ -155,6 +157,8 @@ function getSettingsNavIcon(slug: SettingsPageSlug): React.ComponentType<{ class
       return RiMicLine;
     case 'tunnel':
       return RiGlobalLine;
+    case 'telegram':
+      return RiTelegramLine;
     case 'home':
       return null;
     default:
@@ -375,6 +379,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     tunnel: 'tunnel',
     cron: 'cron',
     heartbeat: 'heartbeat',
+    telegram: 'telegram',
   }), []);
 
   const renderUnavailable = React.useCallback(() => {

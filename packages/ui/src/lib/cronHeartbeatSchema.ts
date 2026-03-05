@@ -120,9 +120,17 @@ export interface HeartbeatVisibilityConfig {
   useIndicator?: boolean;
 }
 
+export interface TelegramConfig {
+  enabled?: boolean;
+  botToken?: string;
+  allowedUserIds?: string;
+  adminUserId?: string;
+}
+
 export interface CronHeartbeatFullConfig {
   cron?: CronConfig;
   heartbeat?: HeartbeatConfig;
+  telegram?: TelegramConfig;
 }
 
 export const DEFAULT_CRON_CONFIG: CronConfig = {

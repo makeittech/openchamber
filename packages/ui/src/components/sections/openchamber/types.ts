@@ -9,4 +9,5 @@ export type OpenChamberSection =
   | 'voice'
   | 'tunnel'
   | 'cron'
-  | 'heartbeat';
+  | 'heartbeat'
+  | 'telegram';

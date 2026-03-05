@@ -7,8 +7,8 @@
 import type { FilesAPI, RuntimeAPIs } from './api/types';
 import { getDesktopHomeDirectory } from './desktop';
 import { isVSCodeRuntime } from './desktop';
-import type { CronConfig, HeartbeatConfig, CronHeartbeatFullConfig } from './cronHeartbeatSchema';
-export type { CronConfig, HeartbeatConfig, CronHeartbeatFullConfig } from './cronHeartbeatSchema';
+import type { CronConfig, HeartbeatConfig, TelegramConfig, CronHeartbeatFullConfig } from './cronHeartbeatSchema';
+export type { CronConfig, HeartbeatConfig, TelegramConfig, CronHeartbeatFullConfig } from './cronHeartbeatSchema';
 
 type ProjectRef = { id: string; path: string };
 
@@ -65,6 +65,7 @@ export interface OpenChamberConfig {
   projectActionsPrimaryId?: string;
   cron?: CronConfig;
   heartbeat?: HeartbeatConfig;
+  telegram?: TelegramConfig;
 }
 
 export type OpenChamberProjectActionPlatform = 'macos' | 'linux' | 'windows';

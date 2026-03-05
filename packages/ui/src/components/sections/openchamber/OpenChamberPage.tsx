@@ -11,6 +11,7 @@ import { VoiceSettings } from './VoiceSettings';
 import { TunnelSettings } from './TunnelSettings';
 import { CronSettings } from './CronSettings';
 import { HeartbeatSettings } from './HeartbeatSettings';
+import { TelegramSettings } from './TelegramSettings';
 import { OpenCodeCliSettings } from './OpenCodeCliSettings';
 import { KeyboardShortcutsSettings } from './KeyboardShortcutsSettings';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
@@ -84,6 +85,8 @@ export const OpenChamberPage: React.FC<OpenChamberPageProps> = ({ section }) => 
                 return <CronSectionContent />;
             case 'heartbeat':
                 return <HeartbeatSectionContent />;
+            case 'telegram':
+                return <TelegramSectionContent />;
             default:
                 return null;
         }
@@ -196,4 +199,11 @@ const HeartbeatSectionContent: React.FC = () => {
         return null;
     }
     return <HeartbeatSettings />;
+};
+
+const TelegramSectionContent: React.FC = () => {
+    if (isVSCodeRuntime()) {
+        return null;
+    }
+    return <TelegramSettings />;
 };
