@@ -29,6 +29,7 @@ import {
 } from './lib/terminal/index.js';
 import webPush from 'web-push';
 import { createJobStore, createCronScheduler } from './lib/cron/index.js';
+import { createHeartbeatRunner } from './lib/heartbeat/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13220,6 +13221,41 @@ async function main(options = {}) {
     }
   };
 
+  // Heartbeat runner setup
+  let heartbeatRunner = null;
+
+  const initHeartbeatRunner = async () => {
+    if (process.env.OPENCHAMBER_SKIP_HEARTBEAT === '1') {
+      console.log('[Heartbeat] Runner disabled via OPENCHAMBER_SKIP_HEARTBEAT=1');
+      return;
+    }
+
+    try {
+      heartbeatRunner = createHeartbeatRunner({
+        buildOpenCodeUrl,
+        getOpenCodeAuthHeaders,
+        getSessionId: () => {
+          // Return the most recent active session ID
+          // Similar to cron scheduler - for now, this would need session tracking
+          return null;
+        },
+        getConfig: () => {
+          // Return heartbeat config from settings
+          // This would need to be integrated with the settings system
+          return null;
+        },
+        logHeartbeat: (record) => {
+          const status = record.heartbeatOk ? 'OK' : (record.success ? 'response received' : 'failed');
+          console.log(`[Heartbeat] Heartbeat ${status}`);
+        },
+      });
+
+      await heartbeatRunner.start();
+    } catch (error) {
+      console.error('[Heartbeat] Failed to initialize runner:', error);
+    }
+  };
+
   // Cron API routes
   app.get('/api/cron', async (req, res) => {
     try {
@@ -13338,6 +13374,9 @@ async function main(options = {}) {
 
   // Initialize cron scheduler after OpenCode is ready
   void initCronScheduler();
+  
+  // Initialize heartbeat runner after OpenCode is ready
+  void initHeartbeatRunner();
 
   setupProxy(app);
   scheduleOpenCodeApiDetection();
