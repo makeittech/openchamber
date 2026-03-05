@@ -9,6 +9,33 @@ export type {
   ProviderResult
 } from './quota';
 
+export type {
+  CronScheduleKind,
+  CronSessionTarget,
+  CronPayloadKind,
+  CronWakeMode,
+  CronDeliveryMode,
+  CronChannel,
+  CronScheduleAt,
+  CronScheduleEvery,
+  CronScheduleCron,
+  CronSchedule,
+  CronPayloadSystemEvent,
+  CronPayloadAgentTurn,
+  CronPayload,
+  CronDelivery,
+  CronJob,
+  CronRetryConfig,
+  CronRunLogConfig,
+  CronConfig,
+  HeartbeatTarget,
+  HeartbeatDirectPolicy,
+  HeartbeatActiveHours,
+  HeartbeatConfig,
+  HeartbeatVisibilityConfig,
+  CronHeartbeatFullConfig,
+} from '../lib/cronHeartbeatSchema';
+
 export interface ChatState {
   sessions: Session[];
   currentSessionId: string | null;
