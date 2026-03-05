@@ -8292,6 +8292,32 @@ async function main(options = {}) {
     }
   });
 
+  app.get('/api/model-mode', async (_req, res) => {
+    try {
+      const settings = await readSettingsFromDiskMigrated();
+      const config = settings?.modelModeConfig || { mode: 'default', defaultModel: '' };
+      res.json(config);
+    } catch (error) {
+      console.error('Failed to load model mode config:', error);
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to load model mode config' });
+    }
+  });
+
+  app.patch('/api/model-mode', express.json(), async (req, res) => {
+    try {
+      const settings = await readSettingsFromDiskMigrated();
+      const updated = {
+        ...settings,
+        modelModeConfig: req.body
+      };
+      await persistSettings(updated);
+      res.json(updated.modelModeConfig);
+    } catch (error) {
+      console.error('Failed to save model mode config:', error);
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to save model mode config' });
+    }
+  });
+
   app.get('/api/projects/:projectId/icon', async (req, res) => {
     const projectId = typeof req.params.projectId === 'string' ? req.params.projectId.trim() : '';
     if (!projectId) {

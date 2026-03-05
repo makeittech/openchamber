@@ -24,6 +24,7 @@ import {
   RiMicLine,
   RiNotification3Line,
   RiPaletteLine,
+  RiPencilAiLine,
   RiListUnordered,
   RiRobot2Line,
   RiRestartLine,
@@ -86,6 +87,7 @@ const pageOrder: SettingsPageSlug[] = [
   'chat',
   'notifications',
   'sessions',
+  'modelMode',
   'shortcuts',
   'git',
   'projects',
@@ -133,6 +135,8 @@ function getSettingsNavIcon(slug: SettingsPageSlug): React.ComponentType<{ class
       return RiCommandLine;
     case 'sessions':
       return RiChatHistoryLine;
+    case 'modelMode':
+      return RiPencilAiLine;
 
     case 'providers':
       return RiCloudLine;
@@ -374,6 +378,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     chat: 'chat',
     shortcuts: 'shortcuts',
     sessions: 'sessions',
+    modelMode: 'modelMode',
     notifications: 'notifications',
     voice: 'voice',
     tunnel: 'tunnel',
@@ -449,11 +454,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
       case 'chat':
       case 'shortcuts':
       case 'sessions':
+      case 'modelMode':
       case 'notifications':
       case 'voice':
       case 'tunnel':
       case 'cron':
-      case 'heartbeat': {
+      case 'heartbeat':
+      case 'telegram': {
         const section = openChamberSectionBySlug[slug] ?? 'visual';
         return <OpenChamberPage section={section} />;
       }

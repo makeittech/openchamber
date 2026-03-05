@@ -16,6 +16,7 @@ export type SettingsPageSlug =
   | 'chat'
   | 'shortcuts'
   | 'sessions'
+  | 'modelMode'
   | 'notifications'
   | 'voice'
   | 'tunnel'
@@ -169,6 +170,13 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
     group: 'general',
     kind: 'single',
     keywords: ['defaults', 'default agent', 'default model', 'retention', 'memory', 'limits', 'zen'],
+  },
+  {
+    slug: 'modelMode',
+    title: 'Model Mode',
+    group: 'general',
+    kind: 'single',
+    keywords: ['model', 'mode', 'smart', 'prioritised', 'failover', 'rules', 'selection'],
   },
 
   { slug: 'notifications', title: 'Notifications', group: 'general', kind: 'single', keywords: ['alerts', 'native', 'summary', 'summarization'], },

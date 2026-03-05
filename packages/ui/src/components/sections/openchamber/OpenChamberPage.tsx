@@ -4,6 +4,7 @@ import { AboutSettings } from './AboutSettings';
 import { SessionRetentionSettings } from './SessionRetentionSettings';
 import { MemoryLimitsSettings } from './MemoryLimitsSettings';
 import { DefaultsSettings } from './DefaultsSettings';
+import { ModelModeSettings } from './ModelModeSettings';
 import { GitSettings } from './GitSettings';
 import { NotificationSettings } from './NotificationSettings';
 import { GitHubSettings } from './GitHubSettings';
@@ -71,6 +72,8 @@ export const OpenChamberPage: React.FC<OpenChamberPageProps> = ({ section }) => 
                 return <SessionsSectionContent />;
             case 'shortcuts':
                 return <ShortcutsSectionContent />;
+            case 'modelMode':
+                return <ModelModeSectionContent />;
             case 'git':
                 return <GitSectionContent />;
             case 'github':
@@ -206,4 +209,8 @@ const TelegramSectionContent: React.FC = () => {
         return null;
     }
     return <TelegramSettings />;
+};
+
+const ModelModeSectionContent: React.FC = () => {
+    return <ModelModeSettings />;
 };
