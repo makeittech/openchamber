@@ -30,6 +30,7 @@ import {
 import webPush from 'web-push';
 import { createJobStore, createCronScheduler } from './lib/cron/index.js';
 import { createHeartbeatRunner } from './lib/heartbeat/index.js';
+import { createTelegramBridge } from './lib/telegram/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -6682,6 +6683,12 @@ async function gracefulShutdown(options = {}) {
     tunnelAuthController.clearActiveTunnel();
   }
 
+  if (telegramBridge) {
+    console.log('Stopping Telegram bridge...');
+    await telegramBridge.stop();
+    telegramBridge = null;
+  }
+
   console.log('Graceful shutdown complete');
   if (exitProcess) {
     process.exit(0);
@@ -13253,6 +13260,32 @@ async function main(options = {}) {
     }
   };
 
+  // Telegram bridge setup
+  let telegramBridge = null;
+
+  const initTelegramBridge = async () => {
+    if (process.env.OPENCHAMBER_SKIP_TELEGRAM === '1') {
+      console.log('[Telegram] Bridge disabled via OPENCHAMBER_SKIP_TELEGRAM=1');
+      return;
+    }
+
+    try {
+      telegramBridge = createTelegramBridge({
+        opencodeConfig: {
+          baseUrl: buildOpenCodeUrl('', '').replace(/\/$/, ''),
+          port: activePort
+        },
+        logger: console
+      });
+
+      if (telegramBridge) {
+        await telegramBridge.start();
+      }
+    } catch (error) {
+      console.error('[Telegram] Failed to initialize bridge:', error);
+    }
+  };
+
   // Cron API routes
   app.get('/api/cron', async (req, res) => {
     try {
@@ -13455,6 +13488,9 @@ async function main(options = {}) {
   
   // Initialize heartbeat runner after OpenCode is ready
   void initHeartbeatRunner();
+
+  // Initialize Telegram bridge after OpenCode is ready
+  void initTelegramBridge();
 
   setupProxy(app);
   scheduleOpenCodeApiDetection();
