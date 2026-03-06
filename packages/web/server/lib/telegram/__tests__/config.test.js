@@ -7,6 +7,35 @@ describe('Telegram Config', () => {
   let tempDir;
   let settingsPath;
 
+  async function readSettings(path) {
+    const raw = await fs.readFile(path, 'utf8');
+    return JSON.parse(raw);
+  }
+
+  function isMaskedToken(token) {
+    return typeof token === 'string' && token.includes('•');
+  }
+
+  async function updateSettings(path, updates) {
+    const current = await readSettings(path);
+    const incomingToken = updates.telegram?.botToken;
+    const currentToken = current.telegram?.botToken;
+    
+    const tokenToStore = (incomingToken && isMaskedToken(incomingToken) && currentToken)
+      ? currentToken
+      : incomingToken;
+
+    const updated = {
+      ...current,
+      telegram: {
+        ...current.telegram,
+        ...updates.telegram,
+        ...(tokenToStore !== undefined && { botToken: tokenToStore }),
+      },
+    };
+    await fs.writeFile(path, JSON.stringify(updated, null, 2));
+  }
+
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'telegram-config-test-'));
     settingsPath = path.join(tempDir, 'settings.json');
@@ -165,6 +194,31 @@ describe('Telegram Config', () => {
       expect(verify.telegram.enabled).toBe(true);
       expect(verify.telegram.botToken).toBe('1234567890:ABCdefGHIjklMNOpqrsTUVwxyz');
       expect(verify.telegram.allowedUserIds).toBe('123456789');
+    });
+
+    test('should preserve bot token when patch receives masked token', async () => {
+      const current = {
+        telegram: {
+          enabled: true,
+          botToken: '1234567890:ABCdefGHIjklMNOpqrsTUVwxyz',
+          allowedUserIds: '123456789',
+          adminUserId: '123456789',
+        },
+      };
+
+      await fs.writeFile(settingsPath, JSON.stringify(current, null, 2));
+
+      const masked = {
+        telegram: {
+          ...current.telegram,
+          botToken: '12345678••••••••••••••••••••',
+        },
+      };
+
+      await updateSettings(settingsPath, masked);
+      const verify = await readSettings(settingsPath);
+
+      expect(verify.telegram.botToken).toBe(current.telegram.botToken);
     });
   });
 
