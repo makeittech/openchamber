@@ -13669,10 +13669,12 @@ async function main(options = {}) {
         adminUserId: '',
       };
       
-      // Never send the full bot token to the client
+      // Only mask token if it's not already masked (avoid double-masking)
       const maskedConfig = {
         ...telegramConfig,
-        botToken: telegramConfig.botToken ? `${telegramConfig.botToken.substring(0, 8)}${'•'.repeat(20)}` : '',
+        botToken: telegramConfig.botToken && !telegramConfig.botToken.includes('•')
+          ? `${telegramConfig.botToken.substring(0, 8)}${'•'.repeat(20)}`
+          : telegramConfig.botToken || '',
       };
       
       res.json(maskedConfig);
@@ -13717,10 +13719,12 @@ async function main(options = {}) {
         telegramBridge = null;
       }
       
-      // Return masked token
+      // Return masked token (only mask if not already masked)
       const maskedConfig = {
         ...updatedTelegram,
-        botToken: updatedTelegram.botToken ? `${updatedTelegram.botToken.substring(0, 8)}${'•'.repeat(20)}` : '',
+        botToken: updatedTelegram.botToken && !updatedTelegram.botToken.includes('•')
+          ? `${updatedTelegram.botToken.substring(0, 8)}${'•'.repeat(20)}`
+          : updatedTelegram.botToken || '',
       };
       
       res.json(maskedConfig);
