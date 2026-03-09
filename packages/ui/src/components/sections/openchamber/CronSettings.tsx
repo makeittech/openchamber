@@ -94,6 +94,30 @@ function presetToCronExpression(preset: string): string {
   return presetMap[preset] || '0 0 * * * *';
 }
 
+function cronExpressionToPreset(expr: string): string | null {
+  const cronToPresetMap: Record<string, string> = {
+    '0 0 * * * *': 'hourly-1',
+    '0 0 */2 * * *': 'hourly-2',
+    '0 0 */6 * * *': 'hourly-6',
+    '0 0 */12 * * *': 'hourly-12',
+    '0 0 9 * * *': 'daily-9',
+    '0 0 12 * * *': 'daily-12',
+    '0 0 17 * * *': 'daily-17',
+    '0 0 21 * * *': 'daily-21',
+    '0 0 9 * * 1': 'weekly-mon',
+    '0 0 9 * * 2': 'weekly-tue',
+    '0 0 9 * * 3': 'weekly-wed',
+    '0 0 9 * * 4': 'weekly-thu',
+    '0 0 9 * * 5': 'weekly-fri',
+    '0 0 9 * * 1-5': 'weekly-weekdays',
+    '0 0 9 * * 0,6': 'weekly-weekends',
+    '0 0 9 1 * *': 'monthly-1',
+    '0 0 9 15 * *': 'monthly-15',
+    '0 0 9 L * *': 'monthly-last',
+  };
+  return cronToPresetMap[expr] || null;
+}
+
 export function CronSettings() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [loading, setLoading] = useState(true);
@@ -245,21 +269,30 @@ export function CronSettings() {
 
   const editJob = (job: CronJob) => {
     let scheduleMode: 'preset' | 'custom' | 'cron' = 'cron';
-    const presetSchedule = 'hourly-1';
+    let presetSchedule = 'hourly-1';
     let customDate = '';
     let customTime = '09:00';
     let cronExpression = '';
-    
-    if (job.schedule.kind === 'cron' && job.schedule.expr) {
-      cronExpression = job.schedule.expr;
-      scheduleMode = 'cron';
-    } else if (job.schedule.kind === 'at' && job.schedule.at) {
-      const [date, time] = job.schedule.at.split('T');
-      customDate = date || '';
-      customTime = time?.substring(0, 5) || '09:00';
+
+    if (job.schedule.kind === 'at' && job.schedule.at) {
       scheduleMode = 'custom';
+      const date = new Date(job.schedule.at);
+      customDate = date.toISOString().split('T')[0];
+      customTime = date.toTimeString().slice(0, 5);
+    } else if (job.schedule.kind === 'cron' && job.schedule.expr) {
+      const preset = cronExpressionToPreset(job.schedule.expr);
+      if (preset) {
+        scheduleMode = 'preset';
+        presetSchedule = preset;
+      } else {
+        scheduleMode = 'cron';
+        cronExpression = job.schedule.expr;
+      }
+    } else if (job.schedule.kind === 'every') {
+      scheduleMode = 'cron';
+      cronExpression = `every ${job.schedule.everyMs}ms`;
     }
-    
+
     setFormData({
       name: job.name,
       description: job.description || '',
