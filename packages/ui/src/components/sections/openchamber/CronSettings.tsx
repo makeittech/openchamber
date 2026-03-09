@@ -161,6 +161,22 @@ export function CronSettings() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    if (formData.scheduleMode === 'custom') {
+      if (!formData.customDate) {
+        setError('Please select a date');
+        return;
+      }
+      if (!formData.customTime) {
+        setError('Please select a time');
+        return;
+      }
+    } else if (formData.scheduleMode === 'cron') {
+      if (!formData.cronExpression.trim()) {
+        setError('Please enter a cron expression');
+        return;
+      }
+    }
+
     let schedule: CronJob['schedule'];
 
     if (formData.scheduleMode === 'preset') {
@@ -171,6 +187,10 @@ export function CronSettings() {
       };
     } else if (formData.scheduleMode === 'custom') {
       const dateTime = new Date(`${formData.customDate}T${formData.customTime}`);
+      if (dateTime <= new Date()) {
+        setError('Please select a future date and time');
+        return;
+      }
       schedule = {
         kind: 'at',
         at: dateTime.toISOString(),
@@ -209,6 +229,7 @@ export function CronSettings() {
 
       await fetchJobs();
       resetForm();
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save job');
     }
@@ -325,18 +346,23 @@ export function CronSettings() {
             <RiTimeLine className="w-5 h-5" />
             <h2 className="typography-ui-header font-semibold text-foreground">Cron Jobs</h2>
           </div>
-          <Select value={globalTimezone} onValueChange={setGlobalTimezone}>
-            <SelectTrigger size="sm" className="h-7" aria-label="Select timezone for cron jobs">
-              <SelectValue placeholder="Select timezone" />
-            </SelectTrigger>
-            <SelectContent>
-              {COMMON_TIMEZONES.map((tz) => (
-                <SelectItem key={tz} value={tz}>
-                  {tz}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="flex flex-col gap-0.5">
+            <Select value={globalTimezone} onValueChange={setGlobalTimezone}>
+              <SelectTrigger size="sm" className="h-7" aria-label="Select timezone for cron jobs">
+                <SelectValue placeholder="Select timezone" />
+              </SelectTrigger>
+              <SelectContent>
+                {COMMON_TIMEZONES.map((tz) => (
+                  <SelectItem key={tz} value={tz}>
+                    {tz}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <span className="typography-meta text-muted-foreground text-xs">
+              Applied to new/edited jobs
+            </span>
+          </div>
         </div>
         <div className="flex gap-2">
           <Button
@@ -481,10 +507,13 @@ export function CronSettings() {
               <Input
                 value={formData.cronExpression}
                 onChange={(e) => setFormData({ ...formData, cronExpression: e.target.value })}
-                placeholder="0 * * * * *"
+                placeholder="0 0 9 * * 1-5"
                 required
                 className="h-7"
               />
+              <p className="typography-meta text-muted-foreground text-xs mt-1">
+                Format: seconds minutes hours day month weekday. Example: "0 0 9 * * 1-5" = 9 AM on weekdays
+              </p>
             </div>
           )}
 
