@@ -9,6 +9,8 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  SelectLabel,
+  SelectSeparator,
 } from '@/components/ui/select';
 import {
   RiTimeLine,
@@ -79,8 +81,11 @@ export function CronSettings() {
   const [formData, setFormData] = useState({
     name: '',
     description: '',
-    scheduleKind: 'cron' as 'at' | 'every' | 'cron',
-    scheduleValue: '',
+    scheduleMode: 'preset' as 'preset' | 'custom' | 'cron',
+    presetSchedule: 'hourly-1',
+    customDate: '',
+    customTime: '09:00',
+    cronExpression: '',
     sessionTarget: 'isolated' as 'main' | 'isolated',
     payloadKind: 'agentTurn' as 'systemEvent' | 'agentTurn',
     payloadText: '',
@@ -108,16 +113,21 @@ export function CronSettings() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
+    let schedule: CronJob['schedule'];
+    if (formData.scheduleMode === 'cron') {
+      schedule = { kind: 'cron', expr: formData.cronExpression };
+    } else if (formData.scheduleMode === 'custom') {
+      const dateTime = `${formData.customDate}T${formData.customTime}`;
+      schedule = { kind: 'at', at: dateTime };
+    } else {
+      schedule = { kind: 'cron', expr: '0 * * * *' };
+    }
+    
     const job: Partial<CronJob> = {
       name: formData.name,
       description: formData.description,
       sessionTarget: formData.sessionTarget,
-      schedule: {
-        kind: formData.scheduleKind,
-        ...(formData.scheduleKind === 'at' && { at: formData.scheduleValue }),
-        ...(formData.scheduleKind === 'every' && { everyMs: parseInt(formData.scheduleValue, 10) }),
-        ...(formData.scheduleKind === 'cron' && { expr: formData.scheduleValue }),
-      },
+      schedule,
       payload: {
         kind: formData.payloadKind,
         ...(formData.payloadKind === 'systemEvent' && { text: formData.payloadText }),
@@ -184,8 +194,11 @@ export function CronSettings() {
     setFormData({
       name: '',
       description: '',
-      scheduleKind: 'cron',
-      scheduleValue: '',
+      scheduleMode: 'preset',
+      presetSchedule: 'hourly-1',
+      customDate: '',
+      customTime: '09:00',
+      cronExpression: '',
       sessionTarget: 'isolated',
       payloadKind: 'agentTurn',
       payloadText: '',
@@ -195,11 +208,30 @@ export function CronSettings() {
   };
 
   const editJob = (job: CronJob) => {
+    let scheduleMode: 'preset' | 'custom' | 'cron' = 'cron';
+    const presetSchedule = 'hourly-1';
+    let customDate = '';
+    let customTime = '09:00';
+    let cronExpression = '';
+    
+    if (job.schedule.kind === 'cron' && job.schedule.expr) {
+      cronExpression = job.schedule.expr;
+      scheduleMode = 'cron';
+    } else if (job.schedule.kind === 'at' && job.schedule.at) {
+      const [date, time] = job.schedule.at.split('T');
+      customDate = date || '';
+      customTime = time?.substring(0, 5) || '09:00';
+      scheduleMode = 'custom';
+    }
+    
     setFormData({
       name: job.name,
       description: job.description || '',
-      scheduleKind: job.schedule.kind,
-      scheduleValue: job.schedule.at || String(job.schedule.everyMs || '') || job.schedule.expr || '',
+      scheduleMode,
+      presetSchedule,
+      customDate,
+      customTime,
+      cronExpression,
       sessionTarget: job.sessionTarget,
       payloadKind: job.payload.kind,
       payloadText: job.payload.text || job.payload.message || '',
@@ -288,40 +320,104 @@ export function CronSettings() {
           </div>
 
           <div>
-            <label className="typography-ui-label text-foreground block mb-1">Schedule Type</label>
+            <label className="typography-ui-label text-foreground block mb-1">Schedule Mode</label>
             <div className="flex gap-2">
-              {(['cron', 'every', 'at'] as const).map((kind) => (
+              {(['preset', 'custom', 'cron'] as const).map((mode) => (
                 <button
-                  key={kind}
+                  key={mode}
                   type="button"
-                  onClick={() => setFormData({ ...formData, scheduleKind: kind })}
+                  onClick={() => setFormData({ ...formData, scheduleMode: mode })}
                   className={cn(
                     'px-3 py-1 rounded text-sm',
-                    formData.scheduleKind === kind
+                    formData.scheduleMode === mode
                       ? 'bg-primary text-primary-foreground'
                       : 'bg-muted hover:bg-muted/80'
                   )}
                 >
-                  {kind === 'cron' ? 'Cron' : kind === 'every' ? 'Interval' : 'One-time'}
+                  {mode === 'preset' ? 'Presets' : mode === 'custom' ? 'Custom Date/Time' : 'Cron Expression'}
                 </button>
               ))}
             </div>
           </div>
 
-          <div>
-            <label className="typography-ui-label text-foreground block mb-1">
-              {formData.scheduleKind === 'cron' && 'Cron Expression'}
-              {formData.scheduleKind === 'every' && 'Interval (milliseconds)'}
-              {formData.scheduleKind === 'at' && 'Run At (ISO date string)'}
-            </label>
-            <Input
-              value={formData.scheduleValue}
-              onChange={(e) => setFormData({ ...formData, scheduleValue: e.target.value })}
-              placeholder={formData.scheduleKind === 'cron' ? '0 * * * *' : formData.scheduleKind === 'every' ? '3600000' : '2024-01-01T00:00:00Z'}
-              required
-              className="h-7"
-            />
-          </div>
+          {formData.scheduleMode === 'preset' && (
+            <div>
+              <label className="typography-ui-label text-foreground block mb-1">Preset Schedule</label>
+              <Select
+                value={formData.presetSchedule}
+                onValueChange={(value) => setFormData({ ...formData, presetSchedule: value })}
+              >
+                <SelectTrigger size="sm" className="h-7 w-full">
+                  <SelectValue placeholder="Select a preset schedule" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectLabel>Hourly</SelectLabel>
+                  <SelectItem value="hourly-1">Every hour</SelectItem>
+                  <SelectItem value="hourly-2">Every 2 hours</SelectItem>
+                  <SelectItem value="hourly-6">Every 6 hours</SelectItem>
+                  <SelectItem value="hourly-12">Every 12 hours</SelectItem>
+                  <SelectSeparator />
+                  <SelectLabel>Daily</SelectLabel>
+                  <SelectItem value="daily-9">Daily at 9:00 AM</SelectItem>
+                  <SelectItem value="daily-12">Daily at 12:00 PM</SelectItem>
+                  <SelectItem value="daily-17">Daily at 5:00 PM</SelectItem>
+                  <SelectItem value="daily-21">Daily at 9:00 PM</SelectItem>
+                  <SelectSeparator />
+                  <SelectLabel>Weekly</SelectLabel>
+                  <SelectItem value="weekly-mon">Every Monday</SelectItem>
+                  <SelectItem value="weekly-tue">Every Tuesday</SelectItem>
+                  <SelectItem value="weekly-wed">Every Wednesday</SelectItem>
+                  <SelectItem value="weekly-thu">Every Thursday</SelectItem>
+                  <SelectItem value="weekly-fri">Every Friday</SelectItem>
+                  <SelectItem value="weekly-weekdays">Weekdays (Mon-Fri)</SelectItem>
+                  <SelectItem value="weekly-weekends">Weekends (Sat-Sun)</SelectItem>
+                  <SelectSeparator />
+                  <SelectLabel>Monthly</SelectLabel>
+                  <SelectItem value="monthly-1">1st of every month</SelectItem>
+                  <SelectItem value="monthly-15">15th of every month</SelectItem>
+                  <SelectItem value="monthly-last">Last day of month</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          {formData.scheduleMode === 'custom' && (
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <label className="typography-ui-label text-foreground block mb-1">Date</label>
+                <Input
+                  type="date"
+                  value={formData.customDate}
+                  onChange={(e) => setFormData({ ...formData, customDate: e.target.value })}
+                  required
+                  className="h-7"
+                />
+              </div>
+              <div className="flex-1">
+                <label className="typography-ui-label text-foreground block mb-1">Time</label>
+                <Input
+                  type="time"
+                  value={formData.customTime}
+                  onChange={(e) => setFormData({ ...formData, customTime: e.target.value })}
+                  required
+                  className="h-7"
+                />
+              </div>
+            </div>
+          )}
+
+          {formData.scheduleMode === 'cron' && (
+            <div>
+              <label className="typography-ui-label text-foreground block mb-1">Cron Expression</label>
+              <Input
+                value={formData.cronExpression}
+                onChange={(e) => setFormData({ ...formData, cronExpression: e.target.value })}
+                placeholder="0 * * * * *"
+                required
+                className="h-7"
+              />
+            </div>
+          )}
 
           <div>
             <label className="typography-ui-label text-foreground block mb-1">Session Target</label>
