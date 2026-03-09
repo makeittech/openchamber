@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Cron Jobs: global timezone selector that applies to all new and edited jobs
+- Cron Jobs: preset schedule dropdown with common options (hourly, daily, weekly, monthly)
+- Cron Jobs: native date/time pickers for custom scheduling
+- Cron Jobs: schedule mode selector with three options: Presets, Custom Date/Time, and Cron Expression
+- Cron Jobs: form validation for schedule inputs with user-friendly error messages
+- Cron Jobs: helper text for cron expressions and timezone selector
+- Cron Jobs: improved job editing that properly loads and displays the original schedule mode
+
 ## [1.8.5] - 2026-03-04
 
 - Desktop: startup now opens the app shell much earlier while background services continue loading, so the app feels ready faster after launch.
