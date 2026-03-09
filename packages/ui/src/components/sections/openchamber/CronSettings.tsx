@@ -70,6 +70,30 @@ const COMMON_TIMEZONES = [
   'Pacific/Auckland',
 ];
 
+function presetToCronExpression(preset: string): string {
+  const presetMap: Record<string, string> = {
+    'hourly-1': '0 0 * * * *',
+    'hourly-2': '0 0 */2 * * *',
+    'hourly-6': '0 0 */6 * * *',
+    'hourly-12': '0 0 */12 * * *',
+    'daily-9': '0 0 9 * * *',
+    'daily-12': '0 0 12 * * *',
+    'daily-17': '0 0 17 * * *',
+    'daily-21': '0 0 21 * * *',
+    'weekly-mon': '0 0 9 * * 1',
+    'weekly-tue': '0 0 9 * * 2',
+    'weekly-wed': '0 0 9 * * 3',
+    'weekly-thu': '0 0 9 * * 4',
+    'weekly-fri': '0 0 9 * * 5',
+    'weekly-weekdays': '0 0 9 * * 1-5',
+    'weekly-weekends': '0 0 9 * * 0,6',
+    'monthly-1': '0 0 9 1 * *',
+    'monthly-15': '0 0 9 15 * *',
+    'monthly-last': '0 0 9 L * *',
+  };
+  return presetMap[preset] || '0 0 * * * *';
+}
+
 export function CronSettings() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [loading, setLoading] = useState(true);
