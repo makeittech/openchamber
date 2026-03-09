@@ -150,7 +150,6 @@ export function CronSettings() {
       schedule = {
         kind: 'at',
         at: dateTime.toISOString(),
-        tz: globalTimezone,
       };
     } else {
       schedule = {
