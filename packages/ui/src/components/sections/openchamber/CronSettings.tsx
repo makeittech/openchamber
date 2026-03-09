@@ -136,17 +136,30 @@ export function CronSettings() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     let schedule: CronJob['schedule'];
-    if (formData.scheduleMode === 'cron') {
-      schedule = { kind: 'cron', expr: formData.cronExpression };
+
+    if (formData.scheduleMode === 'preset') {
+      schedule = {
+        kind: 'cron',
+        expr: presetToCronExpression(formData.presetSchedule),
+        tz: globalTimezone,
+      };
     } else if (formData.scheduleMode === 'custom') {
-      const dateTime = `${formData.customDate}T${formData.customTime}`;
-      schedule = { kind: 'at', at: dateTime };
+      const dateTime = new Date(`${formData.customDate}T${formData.customTime}`);
+      schedule = {
+        kind: 'at',
+        at: dateTime.toISOString(),
+        tz: globalTimezone,
+      };
     } else {
-      schedule = { kind: 'cron', expr: '0 * * * *' };
+      schedule = {
+        kind: 'cron',
+        expr: formData.cronExpression,
+        tz: globalTimezone,
+      };
     }
-    
+
     const job: Partial<CronJob> = {
       name: formData.name,
       description: formData.description,
@@ -162,7 +175,7 @@ export function CronSettings() {
     try {
       const url = editingJob ? `/api/cron/${editingJob.jobId}` : '/api/cron';
       const method = editingJob ? 'PUT' : 'POST';
-      
+
       const response = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
@@ -170,7 +183,7 @@ export function CronSettings() {
       });
 
       if (!response.ok) throw new Error('Failed to save job');
-      
+
       await fetchJobs();
       resetForm();
     } catch (err) {
