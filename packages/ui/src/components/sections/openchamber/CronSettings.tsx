@@ -4,6 +4,13 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
   RiTimeLine,
   RiAddLine,
   RiDeleteBinLine,
@@ -40,6 +47,34 @@ export function CronSettings() {
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [editingJob, setEditingJob] = useState<CronJob | null>(null);
+  const [globalTimezone, setGlobalTimezone] = useState('UTC');
+
+  const COMMON_TIMEZONES = [
+    'UTC',
+    'America/New_York',
+    'America/Los_Angeles',
+    'America/Chicago',
+    'America/Denver',
+    'America/Phoenix',
+    'America/Toronto',
+    'America/Vancouver',
+    'America/Mexico_City',
+    'America/Sao_Paulo',
+    'Europe/London',
+    'Europe/Paris',
+    'Europe/Berlin',
+    'Europe/Moscow',
+    'Asia/Tokyo',
+    'Asia/Shanghai',
+    'Asia/Hong_Kong',
+    'Asia/Singapore',
+    'Asia/Seoul',
+    'Asia/Dubai',
+    'Asia/Kolkata',
+    'Australia/Sydney',
+    'Australia/Melbourne',
+    'Pacific/Auckland',
+  ];
 
   const [formData, setFormData] = useState({
     name: '',
@@ -184,9 +219,23 @@ export function CronSettings() {
   return (
     <div className="space-y-6 p-6">
       <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <RiTimeLine className="w-5 h-5" />
-          <h2 className="typography-ui-header font-semibold text-foreground">Cron Jobs</h2>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <RiTimeLine className="w-5 h-5" />
+            <h2 className="typography-ui-header font-semibold text-foreground">Cron Jobs</h2>
+          </div>
+          <Select value={globalTimezone} onValueChange={setGlobalTimezone}>
+            <SelectTrigger size="sm" className="h-7">
+              <SelectValue placeholder="Select timezone" />
+            </SelectTrigger>
+            <SelectContent>
+              {COMMON_TIMEZONES.map((tz) => (
+                <SelectItem key={tz} value={tz}>
+                  {tz}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <div className="flex gap-2">
           <Button
