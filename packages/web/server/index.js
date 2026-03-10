@@ -13442,13 +13442,20 @@ async function main(options = {}) {
         ? telegramConfig.allowedUserIds.split(',').map(id => id.trim()).filter(Boolean)
         : [];
       
+      // Use openCodePort when already set (e.g. after bootstrap); otherwise fallback to env or default 4096
+      // so Telegram bridge works even when initTelegramBridge runs before bootstrapOpenCodeAtStartup.
+      const effectiveOpenCodePort = openCodePort ?? ENV_EFFECTIVE_PORT ?? 4096;
+      const effectiveOpenCodeBaseUrl = (openCodePort != null && openCodeBaseUrl) ? openCodeBaseUrl
+        : (ENV_CONFIGURED_OPENCODE_HOST?.origin ?? `http://127.0.0.1:${effectiveOpenCodePort}`);
+      const opencodeBaseUrlClean = effectiveOpenCodeBaseUrl.replace(/\/$/, '');
+
       telegramBridge = createTelegramBridge({
         token: telegramConfig.botToken || process.env.TELEGRAM_BOT_TOKEN,
         allowedUserIds,
         adminUserId: telegramConfig.adminUserId || process.env.ADMIN_USER_ID,
         opencodeConfig: {
-          baseUrl: buildOpenCodeUrl('', '').replace(/\/$/, ''),
-          port: activePort
+          baseUrl: openCodePort != null ? buildOpenCodeUrl('', '').replace(/\/$/, '') : opencodeBaseUrlClean,
+          port: effectiveOpenCodePort
         },
         logger: console
       });

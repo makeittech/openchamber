@@ -55,6 +55,7 @@
     "icons:sprite": "node scripts/generate-file-type-sprite.mjs",
     "version:bump": "node scripts/bump-version.mjs",
     "release:prepare": "bun run build && bun run type-check && bun run lint",
+    "qa": "./scripts/qa-per-change.sh",
     "release:test": "./scripts/test-release-build.sh",
     "release:test:intel": "./scripts/test-release-build.sh x86_64",
     "release:test:arm": "./scripts/test-release-build.sh aarch64"

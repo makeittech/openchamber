@@ -45,12 +45,12 @@ export function formatMessage(text) {
 export function formatHelpMessage() {
   return `🤖 *OpenChamber Telegram Bot*
 
-Use OpenCode AI from Telegram!
+Just send me a message and I'll help you right away!
 
 *Commands:*
 /start - Show this help
-/opencode [title] - Start OpenCode session
-/prompt <text> - Send prompt to OpenCode
+/opencode [title] - Start a named session
+/models - Switch AI model for session
 /endsession - End current session
 /undo - Undo last change
 /redo - Redo change
@@ -58,9 +58,21 @@ Use OpenCode AI from Telegram!
 /sessions - List sessions
 
 *Tips:*
+• Send any message to start — I'll ask how you want to work
+• Pick a project, resume a session, or just chat freely
 • Each user has their own isolated session
 • Sessions persist until you end them or they timeout
 • Send any file to upload it (saved to /tmp/telegram-uploads/)`;
+}
+
+export function formatWelcomeMessage() {
+  return `👋 *Welcome!*
+
+How would you like to work?
+
+📁 *Open a project* — work within a specific project directory
+💬 *Resume a session* — continue a previous conversation
+🆓 *Chat freely* — just talk, no project context`;
 }
 
 export function formatSessionInfo(session) {
@@ -85,7 +97,12 @@ export function formatProjectsList(projects) {
 
   const lines = ['📁 *Projects*\n'];
   projects.slice(0, 20).forEach((project, index) => {
-    lines.push(`${index + 1}. ${project.name || project.path || 'Unnamed'}`);
+    const name = project.label || project.name || project.path || project.worktree || 'Unnamed';
+    const path = project.path || project.worktree || '';
+    lines.push(`${index + 1}. *${name}*`);
+    if (path && path !== name) {
+      lines.push(`   \`${path}\``);
+    }
   });
 
   if (projects.length > 20) {
@@ -130,4 +147,56 @@ Original: ${originalName}
 Saved to: \`${filePath}\`
 
 You can reference this file in your prompts.`;
+}
+
+export function formatProvidersList(providers) {
+  if (!providers || providers.length === 0) {
+    return 'No providers configured';
+  }
+
+  const lines = ['🤖 *Select a Provider*\n'];
+  providers.forEach((provider, index) => {
+    const modelCount = provider.models?.length || 0;
+    lines.push(`${index + 1}. ${provider.name} (${modelCount} models)`);
+  });
+
+  return lines.join('\n');
+}
+
+export function formatModelsList(provider) {
+  if (!provider || !provider.models || provider.models.length === 0) {
+    return `No models available for ${provider?.name || 'this provider'}`;
+  }
+
+  const lines = [`🤖 *${provider.name} Models*\n`];
+  provider.models.forEach((model, index) => {
+    lines.push(`${index + 1}. ${model.name || model.id}`);
+  });
+
+  return lines.join('\n');
+}
+
+export function formatModelSelected(providerId, modelId) {
+  return `✅ *Model Changed*
+
+Provider: ${providerId}
+Model: ${modelId}
+
+This model will be used for future prompts in this session.`;
+}
+
+export function formatSessionResumed(session) {
+  return `🔄 *Session Resumed*
+Title: ${session.title || 'Untitled'}
+ID: \`${session.id}\``;
+}
+
+export function formatProjectSessionCreated(projectName) {
+  return `📁 *Project Session Started*
+Project: ${projectName}`;
+}
+
+export function formatFreeSessionCreated() {
+  return `🆓 *Free Chat Started*
+No project context — just chatting!`;
 }

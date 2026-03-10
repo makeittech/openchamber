@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   formatMessage,
   formatHelpMessage,
+  formatWelcomeMessage,
   formatSessionInfo,
   formatProjectsList,
   formatSessionsList,
@@ -39,8 +40,17 @@ describe('message-formatter', () => {
       const help = formatHelpMessage();
       expect(help).toContain('/start');
       expect(help).toContain('/opencode');
-      expect(help).toContain('/prompt');
       expect(help).toContain('/endsession');
+    });
+  });
+
+  describe('formatWelcomeMessage', () => {
+    it('should return welcome message with options', () => {
+      const welcome = formatWelcomeMessage();
+      expect(welcome).toContain('Welcome');
+      expect(welcome).toContain('Open a project');
+      expect(welcome).toContain('Resume a session');
+      expect(welcome).toContain('Chat freely');
     });
   });
 
@@ -76,6 +86,15 @@ describe('message-formatter', () => {
       const result = formatProjectsList(projects);
       expect(result).toContain('Project 1');
       expect(result).toContain('Project 2');
+    });
+
+    it('should prefer project label over name/path', () => {
+      const projects = [
+        { label: 'My Friendly Project', name: 'fallback-name', path: '/tmp/fallback-path' }
+      ];
+      const result = formatProjectsList(projects);
+      expect(result).toContain('My Friendly Project');
+      expect(result).not.toContain('fallback-name');
     });
 
     it('should limit to 20 projects', () => {

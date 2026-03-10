@@ -5,11 +5,12 @@ Optional Telegram bot integration for OpenChamber, allowing users to interact wi
 ## Features
 
 - 🤖 Full OpenCode AI access via Telegram
-- 💬 Per-user isolated sessions
-- 📁 File upload support
+- 💬 Send messages right away — no setup commands needed
+- 📁 Pick a project, resume a session, or chat freely
 - 🔄 Session management (undo/redo)
 - 🔒 User authorization via allowed user IDs
 - 🧹 Automatic cleanup of inactive sessions
+- 📎 File upload support
 
 ## Setup
 
@@ -47,41 +48,61 @@ OPENCHAMBER_SKIP_TELEGRAM=1
 
 | Command | Description |
 |---------|-------------|
-| `/start` | Show help message |
-| `/opencode [title]` | Start OpenCode session |
-| `/prompt <text>` | Send prompt to OpenCode |
+| `/start` | Show welcome / help message |
+| `/opencode [title]` | Start a named session |
 | `/endsession` | End current session |
 | `/undo` | Undo last change |
 | `/redo` | Redo change |
 | `/projects` | List projects |
 | `/sessions` | List sessions |
+| `/models` | Switch AI model |
 
 ## Usage
 
-### Starting a Session
+### Quick Start — Just Send a Message
 
 ```
-You: /opencode My Project
+You: Create a function to calculate factorial
 
-Bot: ✅ Session Active
-ID: abc123...
-Title: My Project
-Age: 0m 0s
-```
+Bot: 👋 Welcome!
+     How would you like to work?
+     [📁 Open a project] [💬 Resume a session] [🆓 Chat freely]
 
-### Sending Prompts
+You: (taps "Chat freely")
 
-```
-You: /prompt Create a function to calculate factorial
+Bot: 🆓 Free Chat Started
+     No project context — just chatting!
 
 Bot: ⏳ Thinking...
 
 Bot: Here's a factorial function in JavaScript:
+     function factorial(n) {
+       if (n <= 1) return 1;
+       return n * factorial(n - 1);
+     }
+```
 
-function factorial(n) {
-  if (n <= 1) return 1;
-  return n * factorial(n - 1);
-}
+### Working with a Project
+
+```
+You: Fix the login bug
+
+Bot: 👋 Welcome!
+     [📁 Open a project] [💬 Resume a session] [🆓 Chat freely]
+
+You: (taps "Open a project")
+
+Bot: 📁 Projects
+     [📁 my-webapp] [📁 api-server] [🆓 Chat freely instead]
+
+You: (taps "my-webapp")
+
+Bot: 📁 Project Session Started
+     Project: my-webapp
+
+Bot: ⏳ Thinking...
+
+Bot: I found the login bug...
 ```
 
 ### File Uploads

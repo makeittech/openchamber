@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -23,11 +23,13 @@ export function TelegramSettings() {
     allowedUserIds: '',
     adminUserId: '',
   });
+  const realBotTokenRef = useRef('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [showToken, setShowToken] = useState(false);
+  const [isEditingToken, setIsEditingToken] = useState(false);
 
   const fetchConfig = async () => {
     try {
@@ -41,6 +43,12 @@ export function TelegramSettings() {
         allowedUserIds: data.allowedUserIds || '',
         adminUserId: data.adminUserId || '',
       });
+      const savedToken = sessionStorage.getItem('telegram_bot_token');
+      if (savedToken) {
+        realBotTokenRef.current = savedToken;
+      } else if (data.botToken && !data.botToken.includes('•')) {
+        realBotTokenRef.current = data.botToken;
+      }
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load config');
@@ -62,7 +70,10 @@ export function TelegramSettings() {
       const response = await fetch('/api/telegram', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
+        body: JSON.stringify({
+          ...config,
+          botToken: realBotTokenRef.current,
+        }),
       });
 
       if (!response.ok) {
@@ -70,6 +81,7 @@ export function TelegramSettings() {
         throw new Error(data.error || 'Failed to save config');
       }
 
+      sessionStorage.setItem('telegram_bot_token', realBotTokenRef.current);
       setSuccess('Telegram settings saved');
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
@@ -81,6 +93,7 @@ export function TelegramSettings() {
 
   const maskToken = (token: string): string => {
     if (!token || token.length < 10) return token;
+    if (token.includes('•')) return token;
     return `${token.substring(0, 8)}${'•'.repeat(20)}`;
   };
 
@@ -162,19 +175,14 @@ export function TelegramSettings() {
           </label>
           <div className="relative">
             <Input
-              type={showToken ? 'text' : 'password'}
-              value={showToken ? config.botToken : maskToken(config.botToken)}
+              type={showToken || isEditingToken ? 'text' : 'password'}
+              value={showToken || isEditingToken ? realBotTokenRef.current : maskToken(realBotTokenRef.current)}
               onChange={(e) => {
-                if (showToken) {
-                  setConfig({ ...config, botToken: e.target.value });
-                }
+                realBotTokenRef.current = e.target.value;
+                setIsEditingToken(true);
               }}
-              onFocus={() => {
-                if (!showToken && config.botToken) {
-                  setShowToken(true);
-                }
-              }}
-              onBlur={() => setShowToken(false)}
+              onFocus={() => setIsEditingToken(true)}
+              onBlur={() => setIsEditingToken(false)}
               placeholder="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
               className="h-7 pr-20"
             />
@@ -184,9 +192,10 @@ export function TelegramSettings() {
                 e.preventDefault();
                 setShowToken(!showToken);
               }}
+              onMouseUp={() => setShowToken(false)}
               className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground hover:text-foreground"
             >
-              {showToken ? 'Hide' : 'Show'}
+              {showToken || isEditingToken ? 'Hide' : 'Show'}
             </button>
           </div>
           <p className="typography-micro text-muted-foreground mt-1">
