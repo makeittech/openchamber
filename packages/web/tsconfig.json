@@ -22,5 +22,5 @@
     }
   },
   "include": ["src", "../ui/src", "../ui/src/types/**/*"],
-  "exclude": ["../ui/src/**/*.test.ts"]
+  "exclude": ["../ui/src/**/*.test.ts", "../ui/src/**/*.test.tsx"]
 }

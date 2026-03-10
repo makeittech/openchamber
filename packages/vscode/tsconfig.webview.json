@@ -20,5 +20,6 @@
       "@openchamber/ui/*": ["../ui/src/*"]
     }
   },
-  "include": ["webview/**/*", "../ui/src/**/*"]
+  "include": ["webview/**/*", "../ui/src/**/*"],
+  "exclude": ["../ui/src/**/*.test.ts", "../ui/src/**/*.test.tsx"]
 }

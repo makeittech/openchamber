@@ -1,10 +1,10 @@
 import { describe, test, expect } from 'bun:test';
-import React from 'react';
+import { type SuperwordsConfig, getSuperwordsConfig, saveSuperwordsConfig } from '@/lib/openchamberConfig';
+import * as fs from 'fs';
+import * as path from 'path';
 
 describe('SuperwordsSettings', () => {
   test('component file exists', () => {
-    const fs = require('fs');
-    const path = require('path');
     const componentPath = path.join(__dirname, 'SuperwordsSettings.tsx');
     expect(fs.existsSync(componentPath)).toBe(true);
   });
@@ -15,8 +15,6 @@ describe('SuperwordsSettings', () => {
   });
 
   test('component has required structure', () => {
-    const fs = require('fs');
-    const path = require('path');
     const componentPath = path.join(__dirname, 'SuperwordsSettings.tsx');
     const content = fs.readFileSync(componentPath, 'utf8');
     
@@ -41,15 +39,13 @@ describe('SuperwordsSettings', () => {
     expect(validateTrigger('@')).toBe(true);
   });
 
-  test('superwords config is stored in project config', async () => {
-    const module = await import('@/lib/openchamberConfig');
-    expect(typeof module.getSuperwordsConfig).toBe('function');
-    expect(typeof module.saveSuperwordsConfig).toBe('function');
+  test('superwords config is stored in project config', () => {
+    expect(typeof getSuperwordsConfig).toBe('function');
+    expect(typeof saveSuperwordsConfig).toBe('function');
   });
 
-  test('superwords config schema is correct', async () => {
-    const module = await import('@/lib/openchamberConfig');
-    const config: module.SuperwordsConfig = {
+  test('superwords config schema is correct', () => {
+    const config: SuperwordsConfig = {
       '/plan': 'brainstorming',
       '@debug': 'systematic-debugging',
     };
@@ -59,9 +55,8 @@ describe('SuperwordsSettings', () => {
     expect(Object.keys(config).length).toBe(2);
   });
 
-  test('empty superwords config is valid', async () => {
-    const module = await import('@/lib/openchamberConfig');
-    const config: module.SuperwordsConfig = {};
+  test('empty superwords config is valid', () => {
+    const config: SuperwordsConfig = {};
     
     expect(Object.keys(config).length).toBe(0);
   });
@@ -81,9 +76,8 @@ describe('SuperwordsSettings', () => {
     expect(normalizeSkillId('systematic-debugging')).toBe('systematic-debugging');
   });
 
-  test('component handles multiple superwords', async () => {
-    const module = await import('@/lib/openchamberConfig');
-    const config: module.SuperwordsConfig = {
+  test('component handles multiple superwords', () => {
+    const config: SuperwordsConfig = {
       '/plan': 'brainstorming',
       '@debug': 'systematic-debugging',
       '/test': 'test-driven-development',
@@ -97,20 +91,19 @@ describe('SuperwordsSettings', () => {
     expect(config['/review']).toBe('requesting-code-review');
   });
 
-  test('superword deletion removes correct entry', async () => {
-    const module = await import('@/lib/openchamberConfig');
-    const config: module.SuperwordsConfig = {
+  test('superword deletion removes correct entry', () => {
+    const config: SuperwordsConfig = {
       '/plan': 'brainstorming',
       '@debug': 'systematic-debugging',
       '/test': 'test-driven-development',
     };
     
     const triggerToDelete = '@debug';
-    const updated: module.SuperwordsConfig = {};
+    const updated: SuperwordsConfig = {};
     
     for (const [key, value] of Object.entries(config)) {
       if (key !== triggerToDelete) {
-        updated[key] = value;
+        updated[key] = value as string;
       }
     }
     
@@ -120,9 +113,8 @@ describe('SuperwordsSettings', () => {
     expect(Object.keys(updated).length).toBe(2);
   });
 
-  test('superword edit updates correct entry', async () => {
-    const module = await import('@/lib/openchamberConfig');
-    const config: module.SuperwordsConfig = {
+  test('superword edit updates correct entry', () => {
+    const config: SuperwordsConfig = {
       '/plan': 'brainstorming',
       '@debug': 'systematic-debugging',
     };
@@ -131,11 +123,11 @@ describe('SuperwordsSettings', () => {
     const newTrigger = '/planning';
     const newSkillId = 'brainstorming-v2';
     
-    const updated: module.SuperwordsConfig = {};
+    const updated: SuperwordsConfig = {};
     
     for (const [key, value] of Object.entries(config)) {
       if (key !== oldTrigger) {
-        updated[key] = value;
+        updated[key] = value as string;
       }
     }
     

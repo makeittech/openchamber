@@ -7,7 +7,7 @@
 import type { FilesAPI, RuntimeAPIs } from './api/types';
 import { getDesktopHomeDirectory } from './desktop';
 import { isVSCodeRuntime } from './desktop';
-import type { CronConfig, HeartbeatConfig, TelegramConfig, CronHeartbeatFullConfig } from './cronHeartbeatSchema';
+import type { CronConfig, HeartbeatConfig, TelegramConfig } from './cronHeartbeatSchema';
 export type { CronConfig, HeartbeatConfig, TelegramConfig, CronHeartbeatFullConfig } from './cronHeartbeatSchema';
 
 type ProjectRef = { id: string; path: string };
