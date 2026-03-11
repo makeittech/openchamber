@@ -64,8 +64,8 @@ export interface DiscoveredSkill {
   scope: SkillScope;
   source: SkillSource;
   description?: string;
-  /** Domain folder parsed from file path, e.g. "automation-ai", "lark-ecosystem" */
   group?: string;
+  enabled: boolean;
 }
 
 /** Parse the domain group folder from a skill file path.
@@ -89,6 +89,7 @@ interface RawSkillResponse {
   path: string;
   scope?: SkillScope;
   source?: SkillSource;
+  enabled?: boolean;
   sources?: {
     md?: {
       description?: string;
@@ -145,6 +146,9 @@ interface SkillsStore {
   readSupportingFile: (skillName: string, filePath: string) => Promise<string | null>;
   writeSupportingFile: (skillName: string, filePath: string, content: string) => Promise<boolean>;
   deleteSupportingFile: (skillName: string, filePath: string) => Promise<boolean>;
+  
+  // Skill enabled state
+  toggleSkillEnabled: (skillName: string, enabled: boolean) => Promise<boolean>;
 }
 
 declare global {
@@ -203,6 +207,7 @@ export const useSkillsStore = create<SkillsStore>()(
                 source: s.source ?? 'opencode',
                 description: s.sources?.md?.description || '',
                 group: parseSkillGroup(s.path),
+                enabled: s.enabled !== false,
               }));
               
               set({ skills, isLoading: false });
@@ -438,6 +443,36 @@ export const useSkillsStore = create<SkillsStore>()(
             );
             
             return response.ok;
+          } catch {
+            return false;
+          }
+        },
+
+        toggleSkillEnabled: async (skillName: string, enabled: boolean) => {
+          try {
+            const currentDirectory = getCurrentDirectory();
+            const queryParams = currentDirectory ? `?directory=${encodeURIComponent(currentDirectory)}` : '';
+            
+            const response = await fetch(
+              `/api/config/skills/${encodeURIComponent(skillName)}/enabled${queryParams}`,
+              {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled })
+              }
+            );
+            
+            if (!response.ok) {
+              return false;
+            }
+            
+            set(state => ({
+              skills: state.skills.map(s => 
+                s.name === skillName ? { ...s, enabled } : s
+              )
+            }));
+            
+            return true;
           } catch {
             return false;
           }

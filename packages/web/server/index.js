@@ -9119,10 +9119,51 @@ async function main(options = {}) {
         };
       });
 
-      res.json({ skills: enrichedSkills });
+      const { readConfigLayers } = await import('./lib/opencode/shared.js');
+      const layers = readConfigLayers(directory);
+      const projectSkillsConfig = layers.projectConfig?.skills || {};
+
+      const skillsWithEnabled = enrichedSkills.map(skill => ({
+        ...skill,
+        enabled: projectSkillsConfig[skill.name]?.enabled !== false
+      }));
+
+      res.json({ skills: skillsWithEnabled });
     } catch (error) {
       console.error('Failed to list skills:', error);
       res.status(500).json({ error: 'Failed to list skills' });
+    }
+  });
+
+  app.patch('/api/config/skills/:name/enabled', async (req, res) => {
+    try {
+      const { directory, error } = await resolveProjectDirectory(req);
+      if (!directory) {
+        return res.status(400).json({ error });
+      }
+
+      const { name } = req.params;
+      const { enabled } = req.body;
+
+      if (typeof enabled !== 'boolean') {
+        return res.status(400).json({ error: 'enabled must be a boolean' });
+      }
+
+      const { readConfigLayers, writeConfig, getProjectConfigPath } = await import('./lib/opencode/shared.js');
+      const layers = readConfigLayers(directory);
+      const projectConfig = layers.projectConfig || {};
+
+      const skillsConfig = projectConfig.skills || {};
+      skillsConfig[name] = { ...skillsConfig[name], enabled };
+      projectConfig.skills = skillsConfig;
+
+      const projectPath = layers.paths.projectPath || getProjectConfigPath(directory);
+      writeConfig(projectConfig, projectPath);
+
+      res.json({ ok: true, skill: name, enabled });
+    } catch (error) {
+      console.error('Failed to toggle skill enabled state:', error);
+      res.status(500).json({ error: 'Failed to update skill enabled state' });
     }
   });
 
