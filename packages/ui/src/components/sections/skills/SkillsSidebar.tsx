@@ -3,6 +3,7 @@ import { ButtonSmall } from '@/components/ui/button-small';
 import { ButtonLarge } from '@/components/ui/button-large';
 import { Input } from '@/components/ui/input';
 import { toast } from '@/components/ui';
+import { Checkbox } from '@/components/ui/checkbox';
 import { isMobileDeviceViaCSS } from '@/lib/device';
 import {
   Dialog,
@@ -44,6 +45,7 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
     createSkill,
     deleteSkill,
     getSkillDetail,
+    toggleSkillEnabled,
   } = useSkillsStore();
 
   // Skills are loaded by the Settings shell when this page is active.
@@ -175,9 +177,15 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
     setRenameDialogSkill(null);
   };
 
-  // Separate project and user skills
-  const projectSkills = skills.filter((s) => s.scope === 'project');
-  const userSkills = skills.filter((s) => s.scope === 'user');
+  // Separate enabled and disabled skills
+  const enabledSkills = skills.filter(s => s.enabled !== false);
+  const disabledSkills = skills.filter(s => s.enabled === false);
+
+  // Filter by scope for each group
+  const enabledProjectSkills = enabledSkills.filter((s) => s.scope === 'project');
+  const enabledUserSkills = enabledSkills.filter((s) => s.scope === 'user');
+  const disabledProjectSkills = disabledSkills.filter((s) => s.scope === 'project');
+  const disabledUserSkills = disabledSkills.filter((s) => s.scope === 'user');
 
   // Helper: group a list of skills by their domain folder
   function groupSkillsByFolder(list: DiscoveredSkill[]) {
@@ -197,8 +205,10 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
     return { sortedGroups, ungrouped };
   }
 
-  const groupedProjectSkills = useMemo(() => groupSkillsByFolder(projectSkills), [projectSkills]);
-  const groupedUserSkills = useMemo(() => groupSkillsByFolder(userSkills), [userSkills]);
+  const groupedEnabledProjectSkills = useMemo(() => groupSkillsByFolder(enabledProjectSkills), [enabledProjectSkills]);
+  const groupedEnabledUserSkills = useMemo(() => groupSkillsByFolder(enabledUserSkills), [enabledUserSkills]);
+  const groupedDisabledProjectSkills = useMemo(() => groupSkillsByFolder(disabledProjectSkills), [disabledProjectSkills]);
+  const groupedDisabledUserSkills = useMemo(() => groupSkillsByFolder(disabledUserSkills), [disabledUserSkills]);
 
   return (
     <div className={cn('flex h-full flex-col', bgClass)}>
@@ -226,12 +236,12 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
           </div>
         ) : (
           <>
-            {projectSkills.length > 0 && (
+            {enabledProjectSkills.length > 0 && (
               <>
                 <div className="px-2 pb-1.5 pt-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   Project Skills
                 </div>
-                {groupedProjectSkills.sortedGroups.map(({ name: groupName, skills: groupSkills }) => (
+                {groupedEnabledProjectSkills.sortedGroups.map(({ name: groupName, skills: groupSkills }) => (
                   <SidebarGroup
                     key={groupName}
                     label={groupName}
@@ -253,11 +263,12 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
                         onDuplicate={() => handleDuplicateSkill(skill)}
                         isMenuOpen={openMenuSkill === skill.name}
                         onMenuOpenChange={(open) => setOpenMenuSkill(open ? skill.name : null)}
+                        onToggleEnabled={(enabled) => toggleSkillEnabled(skill.name, enabled)}
                       />
                     ))}
                   </SidebarGroup>
                 ))}
-                {groupedProjectSkills.ungrouped.map((skill) => (
+                {groupedEnabledProjectSkills.ungrouped.map((skill) => (
                   <SkillListItem
                     key={skill.name}
                     skill={skill}
@@ -272,17 +283,18 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
                     onDuplicate={() => handleDuplicateSkill(skill)}
                     isMenuOpen={openMenuSkill === skill.name}
                     onMenuOpenChange={(open) => setOpenMenuSkill(open ? skill.name : null)}
+                    onToggleEnabled={(enabled) => toggleSkillEnabled(skill.name, enabled)}
                   />
                 ))}
               </>
             )}
 
-            {userSkills.length > 0 && (
+            {enabledUserSkills.length > 0 && (
               <>
                 <div className="px-2 pb-1.5 pt-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   User Skills
                 </div>
-                {groupedUserSkills.sortedGroups.map(({ name: groupName, skills: groupSkills }) => (
+                {groupedEnabledUserSkills.sortedGroups.map(({ name: groupName, skills: groupSkills }) => (
                   <SidebarGroup
                     key={groupName}
                     label={groupName}
@@ -304,11 +316,12 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
                         onDuplicate={() => handleDuplicateSkill(skill)}
                         isMenuOpen={openMenuSkill === skill.name}
                         onMenuOpenChange={(open) => setOpenMenuSkill(open ? skill.name : null)}
+                        onToggleEnabled={(enabled) => toggleSkillEnabled(skill.name, enabled)}
                       />
                     ))}
                   </SidebarGroup>
                 ))}
-                {groupedUserSkills.ungrouped.map((skill) => (
+                {groupedEnabledUserSkills.ungrouped.map((skill) => (
                   <SkillListItem
                     key={skill.name}
                     skill={skill}
@@ -323,6 +336,103 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
                     onDuplicate={() => handleDuplicateSkill(skill)}
                     isMenuOpen={openMenuSkill === skill.name}
                     onMenuOpenChange={(open) => setOpenMenuSkill(open ? skill.name : null)}
+                    onToggleEnabled={(enabled) => toggleSkillEnabled(skill.name, enabled)}
+                  />
+                ))}
+              </>
+            )}
+
+            {(disabledProjectSkills.length > 0 || disabledUserSkills.length > 0) && (
+              <>
+                <div className="px-2 pb-1.5 pt-4 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Disabled ({disabledSkills.length})
+                </div>
+                
+                {groupedDisabledProjectSkills.sortedGroups.map(({ name: groupName, skills: groupSkills }) => (
+                  <SidebarGroup
+                    key={groupName}
+                    label={groupName}
+                    count={groupSkills.length}
+                    storageKey="disabled-project-skills"
+                  >
+                    {groupSkills.map((skill) => (
+                      <SkillListItem
+                        key={skill.name}
+                        skill={skill}
+                        isSelected={selectedSkillName === skill.name}
+                        onSelect={() => {
+                          setSelectedSkill(skill.name);
+                          onItemSelect?.();
+                        }}
+                        onRename={() => handleOpenRenameDialog(skill)}
+                        onDelete={() => handleDeleteSkill(skill)}
+                        onDuplicate={() => handleDuplicateSkill(skill)}
+                        isMenuOpen={openMenuSkill === skill.name}
+                        onMenuOpenChange={(open) => setOpenMenuSkill(open ? skill.name : null)}
+                        onToggleEnabled={(enabled) => toggleSkillEnabled(skill.name, enabled)}
+                      />
+                    ))}
+                  </SidebarGroup>
+                ))}
+                {groupedDisabledProjectSkills.ungrouped.map((skill) => (
+                  <SkillListItem
+                    key={skill.name}
+                    skill={skill}
+                    isSelected={selectedSkillName === skill.name}
+                    onSelect={() => {
+                      setSelectedSkill(skill.name);
+                      onItemSelect?.();
+                    }}
+                    onRename={() => handleOpenRenameDialog(skill)}
+                    onDelete={() => handleDeleteSkill(skill)}
+                    onDuplicate={() => handleDuplicateSkill(skill)}
+                    isMenuOpen={openMenuSkill === skill.name}
+                    onMenuOpenChange={(open) => setOpenMenuSkill(open ? skill.name : null)}
+                    onToggleEnabled={(enabled) => toggleSkillEnabled(skill.name, enabled)}
+                  />
+                ))}
+                
+                {groupedDisabledUserSkills.sortedGroups.map(({ name: groupName, skills: groupSkills }) => (
+                  <SidebarGroup
+                    key={groupName}
+                    label={groupName}
+                    count={groupSkills.length}
+                    storageKey="disabled-user-skills"
+                  >
+                    {groupSkills.map((skill) => (
+                      <SkillListItem
+                        key={skill.name}
+                        skill={skill}
+                        isSelected={selectedSkillName === skill.name}
+                        onSelect={() => {
+                          setSelectedSkill(skill.name);
+                          onItemSelect?.();
+                        }}
+                        onRename={() => handleOpenRenameDialog(skill)}
+                        onDelete={() => handleDeleteSkill(skill)}
+                        onDuplicate={() => handleDuplicateSkill(skill)}
+                        isMenuOpen={openMenuSkill === skill.name}
+                        onMenuOpenChange={(open) => setOpenMenuSkill(open ? skill.name : null)}
+                        onToggleEnabled={(enabled) => toggleSkillEnabled(skill.name, enabled)}
+                      />
+                    ))}
+                  </SidebarGroup>
+                ))}
+                {groupedDisabledUserSkills.ungrouped.map((skill) => (
+                  <SkillListItem
+                    key={skill.name}
+                    skill={skill}
+                    isSelected={selectedSkillName === skill.name}
+                    onSelect={() => {
+                      setSelectedSkill(skill.name);
+                      onItemSelect?.();
+                    }}
+                    onRename={() => handleOpenRenameDialog(skill)}
+                    onDelete={() => handleDeleteSkill(skill)}
+                    onDuplicate={() => handleDuplicateSkill(skill)}
+                    isMenuOpen={openMenuSkill === skill.name}
+                    onMenuOpenChange={(open) => setOpenMenuSkill(open ? skill.name : null)}
+                    onToggleEnabled={(enabled) => toggleSkillEnabled(skill.name, enabled)}
                   />
                 ))}
               </>
@@ -409,6 +519,7 @@ interface SkillListItemProps {
   onDuplicate: () => void;
   isMenuOpen: boolean;
   onMenuOpenChange: (open: boolean) => void;
+  onToggleEnabled: (enabled: boolean) => void;
 }
 
 const SkillListItem: React.FC<SkillListItemProps> = ({
@@ -420,13 +531,17 @@ const SkillListItem: React.FC<SkillListItemProps> = ({
   onDuplicate,
   isMenuOpen,
   onMenuOpenChange,
+  onToggleEnabled,
 }) => {
   const isMobile = isMobileDeviceViaCSS();
+  const isDisabled = skill.enabled === false;
+  
   return (
     <div
       className={cn(
         'group relative flex items-center rounded-md px-1.5 py-1 transition-all duration-200 select-none',
-        isSelected ? 'bg-interactive-selection' : 'hover:bg-interactive-hover'
+        isSelected ? 'bg-interactive-selection' : 'hover:bg-interactive-hover',
+        isDisabled && 'opacity-60'
       )}
       onContextMenu={!isMobile ? (e) => {
         e.preventDefault();
@@ -434,6 +549,13 @@ const SkillListItem: React.FC<SkillListItemProps> = ({
       } : undefined}
     >
       <div className="flex min-w-0 flex-1 items-center">
+        <Checkbox
+          checked={skill.enabled !== false}
+          onChange={(checked) => {
+            onToggleEnabled(checked);
+          }}
+          className="mr-2 flex-shrink-0"
+        />
         <button
           onClick={onSelect}
           className="flex min-w-0 flex-1 flex-col gap-0 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
