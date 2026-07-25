@@ -42,9 +42,21 @@ const StatusDot: React.FC<{ tone: StatusTone }> = ({ tone }) => {
   return <span className={cn('inline-block h-2 w-2 rounded-full flex-shrink-0', classes[tone])} />;
 };
 
-const ENGINE_LABEL_KEYS: Record<HarnessId, 'settings.engines.sidebar.engine.opencode' | 'settings.engines.sidebar.engine.claudeCode'> = {
+const ENGINE_LABEL_KEYS: Record<
+  HarnessId,
+  | 'settings.engines.sidebar.engine.opencode'
+  | 'settings.engines.sidebar.engine.claudeCode'
+  | 'settings.engines.sidebar.engine.cursor'
+> = {
   opencode: 'settings.engines.sidebar.engine.opencode',
   'claude-code': 'settings.engines.sidebar.engine.claudeCode',
+  cursor: 'settings.engines.sidebar.engine.cursor',
+};
+
+const ENGINE_ICON_NAMES: Record<HarnessId, 'code-box' | 'terminal-box' | 'cursor'> = {
+  opencode: 'code-box',
+  'claude-code': 'terminal-box',
+  cursor: 'cursor',
 };
 
 const STATUS_LABEL_KEYS: Record<
@@ -128,7 +140,7 @@ export const EnginesSidebar: React.FC<EnginesSidebarProps> = ({ onItemSelect }) 
                 className="flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
               >
                 <Icon
-                  name={id === 'claude-code' ? 'terminal-box' : 'code-box'}
+                  name={ENGINE_ICON_NAMES[id]}
                   className="h-4 w-4 flex-shrink-0 text-muted-foreground"
                 />
                 <span className="typography-ui-label font-normal truncate flex-1 min-w-0 text-foreground">

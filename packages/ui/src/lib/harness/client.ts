@@ -223,6 +223,88 @@ export async function harnessAbort(params: HarnessAbortParams): Promise<HarnessA
   };
 }
 
+export type CursorLoginStartResult = {
+  loginId: string;
+  loginUrl: string;
+};
+
+export type CursorLoginPollResult = {
+  status: 'pending' | 'complete' | 'error';
+  detail?: string;
+};
+
+/** Start Cursor OAuth login. Never logs or returns secrets. */
+export async function startCursorLogin(): Promise<CursorLoginStartResult> {
+  let response: Response;
+  try {
+    response = await runtimeFetch('/api/harness/cursor/login/start', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({}),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Cursor login start failed';
+    throw new HarnessClientError(message, 'HARNESS_NETWORK', 0);
+  }
+
+  if (!response.ok) {
+    const { message, code, status } = await readErrorPayload(response);
+    throw new HarnessClientError(message, code, response.status, status);
+  }
+
+  const payload = await response.json().catch(() => null);
+  if (!isRecord(payload)) {
+    throw new HarnessClientError('Invalid Cursor login start response', 'HARNESS_INVALID_RESPONSE', response.status);
+  }
+  const loginId = typeof payload.loginId === 'string' ? payload.loginId.trim() : '';
+  const loginUrl = typeof payload.loginUrl === 'string' ? payload.loginUrl.trim() : '';
+  if (!loginId || !loginUrl) {
+    throw new HarnessClientError('Invalid Cursor login start response', 'HARNESS_INVALID_RESPONSE', response.status);
+  }
+  return { loginId, loginUrl };
+}
+
+/** Poll Cursor OAuth login once. Never logs tokens. */
+export async function pollCursorLogin(loginId: string): Promise<CursorLoginPollResult> {
+  const id = typeof loginId === 'string' ? loginId.trim() : '';
+  if (!id) {
+    throw new HarnessClientError('loginId is required', 'LOGIN_INVALID', 400);
+  }
+
+  let response: Response;
+  try {
+    response = await runtimeFetch('/api/harness/cursor/login/poll', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ loginId: id }),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Cursor login poll failed';
+    throw new HarnessClientError(message, 'HARNESS_NETWORK', 0);
+  }
+
+  if (!response.ok) {
+    const { message, code, status } = await readErrorPayload(response);
+    throw new HarnessClientError(message, code, response.status, status);
+  }
+
+  const payload = await response.json().catch(() => null);
+  if (!isRecord(payload)) {
+    throw new HarnessClientError('Invalid Cursor login poll response', 'HARNESS_INVALID_RESPONSE', response.status);
+  }
+  const status = payload.status === 'pending' || payload.status === 'complete' || payload.status === 'error'
+    ? payload.status
+    : 'error';
+  const detail = typeof payload.detail === 'string' ? payload.detail : undefined;
+  return { status, ...(detail ? { detail } : {}) };
+}
+
 export async function harnessPermissionReply(
   params: HarnessPermissionReplyParams,
 ): Promise<HarnessPermissionReplyResult> {

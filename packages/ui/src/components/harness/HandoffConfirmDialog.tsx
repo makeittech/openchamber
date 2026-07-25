@@ -16,6 +16,8 @@ export type HandoffConfirmDialogProps = {
   onOpenChange: (open: boolean) => void;
   onContinue: (dontShowAgain: boolean) => void | Promise<void>;
   onCancel: () => void;
+  /** Destination engine for handoff copy. Defaults to Claude Code. */
+  targetHarnessId?: 'claude-code' | 'cursor';
 };
 
 export function HandoffConfirmDialog({
@@ -23,10 +25,17 @@ export function HandoffConfirmDialog({
   onOpenChange,
   onContinue,
   onCancel,
+  targetHarnessId = 'claude-code',
 }: HandoffConfirmDialogProps): React.ReactNode {
   const { t } = useI18n();
   const [dontShowAgain, setDontShowAgain] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+  const titleKey = targetHarnessId === 'cursor'
+    ? 'chat.handoff.cursorBillingDialog.title'
+    : 'chat.handoff.billingDialog.title';
+  const bodyKey = targetHarnessId === 'cursor'
+    ? 'chat.handoff.cursorBillingDialog.body'
+    : 'chat.handoff.billingDialog.body';
 
   React.useEffect(() => {
     if (!open) {
@@ -69,9 +78,9 @@ export function HandoffConfirmDialog({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-md" showCloseButton={false}>
         <DialogHeader>
-          <DialogTitle>{t('chat.handoff.billingDialog.title')}</DialogTitle>
+          <DialogTitle>{t(titleKey)}</DialogTitle>
           <DialogDescription>
-            {t('chat.handoff.billingDialog.body')}
+            {t(bodyKey)}
           </DialogDescription>
         </DialogHeader>
 

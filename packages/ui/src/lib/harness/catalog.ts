@@ -20,7 +20,11 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const parseAuthMode = (value: unknown): HarnessAuthMode | null => {
-  if (value === 'subscription-cli' || value === 'opencode-providers') {
+  if (
+    value === 'subscription-cli'
+    || value === 'opencode-providers'
+    || value === 'subscription-oauth'
+  ) {
     return value;
   }
   return null;

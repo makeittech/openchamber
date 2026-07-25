@@ -3,7 +3,7 @@
  * UI copy uses "Engine"; code identifiers use harnessId.
  */
 
-export type HarnessId = 'opencode' | 'claude-code';
+export type HarnessId = 'opencode' | 'claude-code' | 'cursor';
 
 export type ClaudePermissionMode =
   | 'default'
@@ -24,6 +24,11 @@ export type ExecutionTarget =
       harnessId: 'claude-code';
       modelRef: string;
       permissionMode?: ClaudePermissionMode;
+    }
+  | {
+      harnessId: 'cursor';
+      modelRef: string;
+      variant?: string;
     };
 
 export type CapabilityLevel = 'full' | 'partial' | 'none';
@@ -52,7 +57,7 @@ export type HarnessRuntimeStatus =
   | 'unsupported-host'
   | 'error';
 
-export type HarnessAuthMode = 'subscription-cli' | 'opencode-providers';
+export type HarnessAuthMode = 'subscription-cli' | 'opencode-providers' | 'subscription-oauth';
 
 export type HarnessDescriptor = {
   id: HarnessId;
@@ -92,7 +97,7 @@ export type EngineCatalog = {
   sections: EngineCatalogSection[];
 };
 
-export const HARNESS_IDS: readonly HarnessId[] = ['opencode', 'claude-code'] as const;
+export const HARNESS_IDS: readonly HarnessId[] = ['opencode', 'claude-code', 'cursor'] as const;
 
 export const HARNESS_CAPABILITIES: readonly HarnessCapability[] = [
   'prompt',
@@ -113,7 +118,7 @@ export const HARNESS_CAPABILITIES: readonly HarnessCapability[] = [
 ] as const;
 
 export const isHarnessId = (value: unknown): value is HarnessId =>
-  value === 'opencode' || value === 'claude-code';
+  value === 'opencode' || value === 'claude-code' || value === 'cursor';
 
 export const isHarnessRuntimeStatus = (value: unknown): value is HarnessRuntimeStatus =>
   value === 'ready'
@@ -153,6 +158,11 @@ export const isExecutionTarget = (value: unknown): value is ExecutionTarget => {
     return typeof candidate.modelRef === 'string'
       && candidate.modelRef.length > 0
       && (candidate.permissionMode === undefined || isClaudePermissionMode(candidate.permissionMode));
+  }
+  if (candidate.harnessId === 'cursor') {
+    return typeof candidate.modelRef === 'string'
+      && candidate.modelRef.length > 0
+      && (candidate.variant === undefined || typeof candidate.variant === 'string');
   }
   return false;
 };

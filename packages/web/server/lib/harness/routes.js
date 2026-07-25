@@ -10,6 +10,7 @@ import {
   initSessionBindings,
 } from './session-bindings.js';
 import { createHarnessRouter } from './router.js';
+import { pollLogin as pollCursorLogin, startLogin as startCursorLogin } from './translators/cursor/login.js';
 
 /**
  * @param {import('express').Express} app
@@ -68,6 +69,27 @@ export function registerHarnessRoutes(app, deps = {}) {
       return res.status(404).json({ error: 'Session binding not found', code: 'BINDING_NOT_FOUND' });
     }
     res.json({ binding });
+  });
+
+  // Cursor OAuth login (PKCE). Never returns verifier/tokens.
+  app.post('/api/harness/cursor/login/start', json, async (_req, res) => {
+    try {
+      const result = await startCursorLogin();
+      res.json(result);
+    } catch (error) {
+      sendError(res, error);
+    }
+  });
+
+  app.post('/api/harness/cursor/login/poll', json, async (req, res) => {
+    try {
+      const loginId = typeof req.body?.loginId === 'string' ? req.body.loginId : '';
+      const result = await pollCursorLogin(loginId);
+      // Never include tokens/verifiers — login.js already sanitizes.
+      res.json(result);
+    } catch (error) {
+      sendError(res, error);
+    }
   });
 
   app.get('/api/harness/:id', async (req, res) => {

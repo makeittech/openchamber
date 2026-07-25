@@ -91,6 +91,12 @@ const CLAUDE_SLASH_UNSUPPORTED =
   "Slash commands are not available on Claude Code. Switch to OpenCode or send a normal message."
 const CLAUDE_NOT_READY_MESSAGE =
   "Claude Code is not ready. Open Settings → Engines to install, log in, or re-detect."
+const CURSOR_SHELL_UNSUPPORTED =
+  "Shell mode is not available on Cursor. Switch to OpenCode or send a normal message."
+const CURSOR_SLASH_UNSUPPORTED =
+  "Slash commands are not available on Cursor. Switch to OpenCode or send a normal message."
+const CURSOR_NOT_READY_MESSAGE =
+  "Cursor is not ready. Open Settings → Engines to log in or re-detect."
 
 // ---------------------------------------------------------------------------
 // Send routing — shell mode, slash commands, or normal prompt
@@ -128,12 +134,17 @@ export function routeMessage(params: {
     persistSessionExecutionTarget(params.sessionId, target)
   }
 
-  if (target.harnessId === "claude-code") {
+  if (target.harnessId === "claude-code" || target.harnessId === "cursor") {
+    const isCursor = target.harnessId === "cursor"
     if (params.inputMode === "shell") {
-      return Promise.reject(new HarnessClientError(CLAUDE_SHELL_UNSUPPORTED, "CLAUDE_SHELL_UNSUPPORTED", 400))
+      return Promise.reject(new HarnessClientError(
+        isCursor ? CURSOR_SHELL_UNSUPPORTED : CLAUDE_SHELL_UNSUPPORTED,
+        isCursor ? "CURSOR_SHELL_UNSUPPORTED" : "CLAUDE_SHELL_UNSUPPORTED",
+        400,
+      ))
     }
 
-    // Reject slash/shell on Claude rather than silently falling back to OpenCode.
+    // Reject slash/shell on non-OpenCode engines rather than silently falling back to OpenCode.
     if (params.content.startsWith("/")) {
       const [head] = params.content.split(" ")
       const cmdName = head.slice(1)
@@ -144,21 +155,34 @@ export function routeMessage(params: {
         || storeCommands.find((c) => c.name === cmdName)
         || useSkillsStore.getState().skills.some((s) => s.name === cmdName)
       if (isCommand) {
-        return Promise.reject(new HarnessClientError(CLAUDE_SLASH_UNSUPPORTED, "CLAUDE_SLASH_UNSUPPORTED", 400))
+        return Promise.reject(new HarnessClientError(
+          isCursor ? CURSOR_SLASH_UNSUPPORTED : CLAUDE_SLASH_UNSUPPORTED,
+          isCursor ? "CURSOR_SLASH_UNSUPPORTED" : "CLAUDE_SLASH_UNSUPPORTED",
+          400,
+        ))
       }
     }
 
-    const claudeCatalog = useHarnessStore.getState().getCatalog("claude-code")
-    if (!claudeCatalog || claudeCatalog.status !== "ready") {
-      return Promise.reject(new HarnessClientError(CLAUDE_NOT_READY_MESSAGE, "CLAUDE_NOT_READY", 503, claudeCatalog?.status))
+    const harnessCatalog = useHarnessStore.getState().getCatalog(target.harnessId)
+    if (!harnessCatalog || harnessCatalog.status !== "ready") {
+      return Promise.reject(new HarnessClientError(
+        isCursor ? CURSOR_NOT_READY_MESSAGE : CLAUDE_NOT_READY_MESSAGE,
+        isCursor ? "CURSOR_NOT_READY" : "CLAUDE_NOT_READY",
+        503,
+        harnessCatalog?.status,
+      ))
     }
 
     const directory = requestDirectory?.trim()
     if (!directory) {
-      return Promise.reject(new HarnessClientError("directory is required for Claude Code", "PROMPT_INVALID", 400))
+      return Promise.reject(new HarnessClientError(
+        isCursor ? "directory is required for Cursor" : "directory is required for Claude Code",
+        "PROMPT_INVALID",
+        400,
+      ))
     }
 
-    const providerID = "claude-code"
+    const providerID = target.harnessId
     const modelID = target.modelRef
     const seedParts = (params.additionalParts ?? [])
       .filter((part) => part.synthetic && typeof part.text === "string" && part.text.trim().length > 0)
@@ -1249,10 +1273,10 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       persistSessionExecutionTarget(handoff.sessionId, pendingHandoff)
 
       const createdDirectory = normalizePath(handoff.directory ?? currentSessionDirectory)
-      const handoffProviderID = pendingHandoff.harnessId === "claude-code"
-        ? "claude-code"
+      const handoffProviderID = pendingHandoff.harnessId === "claude-code" || pendingHandoff.harnessId === "cursor"
+        ? pendingHandoff.harnessId
         : pendingHandoff.providerId
-      const handoffModelID = pendingHandoff.harnessId === "claude-code"
+      const handoffModelID = pendingHandoff.harnessId === "claude-code" || pendingHandoff.harnessId === "cursor"
         ? pendingHandoff.modelRef
         : pendingHandoff.modelId
 

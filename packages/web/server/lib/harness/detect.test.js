@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   detectClaudeCode,
+  detectCursor,
   detectHarness,
   detectOpenCode,
   interpretClaudeAuthStatus,
@@ -73,6 +74,68 @@ describe('harness detect', () => {
 
   it('returns null for unknown harness ids', async () => {
     expect(await detectHarness('nope')).toBeNull();
+  });
+});
+
+describe('detectCursor', () => {
+  it('reports needs-login when credentials are absent (with fallback catalog)', async () => {
+    const result = await detectCursor({
+      hasCredentials: () => false,
+      resolveAccessToken: async () => null,
+    });
+    expect(result.status).toBe('needs-login');
+    expect(result.sections[0]?.models?.length).toBeGreaterThan(0);
+    expect(JSON.stringify(result)).not.toMatch(/accessToken|refreshToken|Bearer /i);
+  });
+
+  it('never returns ready with empty sections', async () => {
+    const result = await detectCursor({
+      hasCredentials: () => true,
+      resolveAccessToken: async () => 'token',
+      fetchModels: async () => [],
+    });
+    // Empty discovery falls back to FALLBACK_MODELS → ready with catalog,
+    // unless fallback somehow empty. Force empty via patched path:
+    expect(result.status === 'ready' ? result.sections[0]?.models?.length > 0 : true).toBe(true);
+    if (result.status === 'ready') {
+      expect(result.sections.length).toBeGreaterThan(0);
+      expect(result.sections[0].models.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('returns ready with sanitized model catalog and no secrets', async () => {
+    const result = await detectCursor({
+      hasCredentials: () => true,
+      resolveAccessToken: async () => 'secret-access-token',
+      fetchModels: async () => ([
+        { id: 'composer-1.5', name: 'Composer 1.5', reasoning: true },
+      ]),
+    });
+    expect(result.status).toBe('ready');
+    expect(result.sections[0].models[0].id).toBe('composer-1.5');
+    expect(JSON.stringify(result)).not.toContain('secret-access-token');
+    expect(result).not.toHaveProperty('accessToken');
+    expect(result).not.toHaveProperty('refreshToken');
+  });
+
+  it('reports needs-login when access token cannot be resolved', async () => {
+    const result = await detectCursor({
+      hasCredentials: () => true,
+      resolveAccessToken: async () => null,
+    });
+    expect(result.status).toBe('needs-login');
+    expect(result.sections[0]?.models?.length).toBeGreaterThan(0);
+  });
+
+  it('reports error without ready+empty masquerade on throw', async () => {
+    const result = await detectCursor({
+      hasCredentials: () => {
+        throw new Error('boom');
+      },
+    });
+    expect(result.status).toBe('error');
+    expect(result.sections).toEqual([]);
+    expect(result.status).not.toBe('ready');
   });
 });
 

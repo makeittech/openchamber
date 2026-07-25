@@ -9,10 +9,10 @@ import {
 } from './registry.js';
 
 describe('harness registry', () => {
-  it('lists opencode and claude-code', () => {
-    expect([...HARNESS_IDS]).toEqual(['opencode', 'claude-code']);
+  it('lists opencode, claude-code, and cursor', () => {
+    expect([...HARNESS_IDS]).toEqual(['opencode', 'claude-code', 'cursor']);
     const ids = listHarnessDescriptors().map((d) => d.id);
-    expect(ids).toEqual(['opencode', 'claude-code']);
+    expect(ids).toEqual(['opencode', 'claude-code', 'cursor']);
   });
 
   it('exposes Claude Code subscription auth and capability matrix', () => {
@@ -25,6 +25,17 @@ describe('harness registry', () => {
     expect(claude.capabilities.goal).toBe('none');
     expect(claude.capabilities['openchamber-tool']).toBe('none');
     expect(CLAUDE_CODE_MODELS.length).toBeGreaterThan(0);
+  });
+
+  it('exposes Cursor subscription-oauth auth without a CLI binary', () => {
+    const cursor = getHarnessDescriptor('cursor');
+    expect(cursor).not.toBeNull();
+    expect(cursor.displayName).toBe('Cursor');
+    expect(cursor.auth.mode).toBe('subscription-oauth');
+    expect(cursor.install.binaryNames).toEqual([]);
+    expect(cursor.capabilities.prompt).toBe('full');
+    expect(cursor.capabilities['streaming-tools']).toBe('none');
+    expect(isKnownHarnessId('cursor')).toBe(true);
   });
 
   it('exposes OpenCode provider auth mode', () => {

@@ -844,7 +844,13 @@ export const ModelPickerList: React.FC<ModelPickerListProps> = ({
                         <Icon name={engine.selected ? 'checkbox-circle' : 'checkbox-blank'} className="size-4" />
                       </span>
                       <Icon
-                        name={engine.id === 'claude-code' ? 'sparkling' : 'terminal-box'}
+                        name={
+                          engine.id === 'claude-code'
+                            ? 'sparkling'
+                            : engine.id === 'cursor'
+                              ? 'cursor'
+                              : 'terminal-box'
+                        }
                         className="size-3.5 flex-shrink-0 text-muted-foreground"
                       />
                       <span className="font-medium truncate flex-1 min-w-0">{engine.name}</span>

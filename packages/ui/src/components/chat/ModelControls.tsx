@@ -48,6 +48,7 @@ import { applySessionExecutionTargetSelection } from '@/lib/harness/session-hand
 import {
     CLAUDE_FAVORITE_PROVIDER_ID,
     CLAUDE_PERMISSION_MODE_OPTIONS,
+    CURSOR_FAVORITE_PROVIDER_ID,
     isExposedClaudePermissionMode,
     type ClaudePermissionModeOption,
 } from '@/lib/harness/favorite-targets';
@@ -55,6 +56,7 @@ import type { ExecutionTarget, HarnessId, HarnessRuntimeStatus } from '@/types/h
 import { useShallow } from 'zustand/react/shallow';
 
 const CLAUDE_PICKER_PROVIDER_ID = CLAUDE_FAVORITE_PROVIDER_ID;
+const CURSOR_PICKER_PROVIDER_ID = CURSOR_FAVORITE_PROVIDER_ID;
 
 const CLAUDE_PERMISSION_MODE_LABEL_KEYS: Record<
     ClaudePermissionModeOption,
@@ -399,9 +401,12 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         refreshHarnessCatalog: s.refresh,
     })));
     const claudeCatalog = harnessCatalogsById['claude-code'];
+    const cursorCatalog = harnessCatalogsById.cursor;
     const [enginesClaudeCodeEnabled, setEnginesClaudeCodeEnabled] = React.useState(true);
+    const [enginesCursorEnabled, setEnginesCursorEnabled] = React.useState(true);
     const [pickerHarnessId, setPickerHarnessId] = React.useState<HarnessId>('opencode');
     const [claudeModelRef, setClaudeModelRef] = React.useState('sonnet');
+    const [cursorModelRef, setCursorModelRef] = React.useState('composer-1.5');
     const [claudePermissionMode, setClaudePermissionMode] = React.useState<ClaudePermissionModeOption>('default');
 
     const contextHydrated = useContextStore((state) => state.hasHydrated);
@@ -519,8 +524,12 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                     enginesClaudeCodeEnabled: typeof data.enginesClaudeCodeEnabled === 'boolean'
                         ? data.enginesClaudeCodeEnabled
                         : undefined,
+                    enginesCursorEnabled: typeof data.enginesCursorEnabled === 'boolean'
+                        ? data.enginesCursorEnabled
+                        : undefined,
                 });
                 setEnginesClaudeCodeEnabled(resolved.enginesClaudeCodeEnabled);
+                setEnginesCursorEnabled(resolved.enginesCursorEnabled);
             } catch {
                 // keep default
             }
@@ -542,6 +551,11 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             setClaudePermissionMode(
                 isExposedClaudePermissionMode(sticky.permissionMode) ? sticky.permissionMode : 'default',
             );
+            return;
+        }
+        if (sticky?.harnessId === 'cursor') {
+            setPickerHarnessId('cursor');
+            setCursorModelRef(sticky.modelRef || 'composer-1.5');
             return;
         }
         if (sticky?.harnessId === 'opencode') {
@@ -582,11 +596,25 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         return first || claudeModelRef || 'sonnet';
     }, [claudeCatalog, claudeModelRef, getLastUsedTarget]);
 
+    const resolveDefaultCursorModelRef = React.useCallback(() => {
+        const fromLast = getLastUsedTarget();
+        if (fromLast?.harnessId === 'cursor' && fromLast.modelRef) {
+            return fromLast.modelRef;
+        }
+        const first = cursorCatalog?.sections.flatMap((section) => section.models)[0]?.id;
+        return first || cursorModelRef || 'composer-1.5';
+    }, [cursorCatalog, cursorModelRef, getLastUsedTarget]);
+
     const buildClaudeTarget = React.useCallback((modelRef: string, permissionMode?: ClaudePermissionModeOption): ExecutionTarget => ({
         harnessId: 'claude-code',
         modelRef,
         permissionMode: permissionMode ?? claudePermissionMode,
     }), [claudePermissionMode]);
+
+    const buildCursorTarget = React.useCallback((modelRef: string): ExecutionTarget => ({
+        harnessId: 'cursor',
+        modelRef,
+    }), []);
 
     const handleSelectEngine = React.useCallback((engineId: string) => {
         if (engineId === 'claude-code') {
@@ -595,6 +623,14 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             setPickerHarnessId('claude-code');
             setClaudeModelRef(modelRef);
             persistTarget(buildClaudeTarget(modelRef));
+            return;
+        }
+        if (engineId === 'cursor') {
+            if (!enginesCursorEnabled) return;
+            const modelRef = resolveDefaultCursorModelRef();
+            setPickerHarnessId('cursor');
+            setCursorModelRef(modelRef);
+            persistTarget(buildCursorTarget(modelRef));
             return;
         }
         setPickerHarnessId('opencode');
@@ -606,9 +642,12 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         }
     }, [
         enginesClaudeCodeEnabled,
+        enginesCursorEnabled,
         resolveDefaultClaudeModelRef,
+        resolveDefaultCursorModelRef,
         persistTarget,
         buildClaudeTarget,
+        buildCursorTarget,
         currentProviderId,
         currentModelId,
     ]);
@@ -1450,6 +1489,23 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                 return;
             }
 
+            if (providerId === CURSOR_PICKER_PROVIDER_ID || pickerHarnessId === 'cursor') {
+                setPickerHarnessId('cursor');
+                setCursorModelRef(modelId);
+                const target = buildCursorTarget(modelId);
+                persistTarget(target);
+                addRecentTarget(target);
+                setAgentMenuOpen(false);
+                if (isCompact) {
+                    closeMobilePanel();
+                }
+                requestAnimationFrame(() => {
+                    const textarea = document.querySelector<HTMLTextAreaElement>('textarea[data-chat-input="true"]');
+                    textarea?.focus();
+                });
+                return;
+            }
+
             const effectiveAgentName = options?.agentName ?? resolveLiveAgentName() ?? undefined;
             const result = options?.applyVariant
                 ? applyModelSelectionWithVariant(providerId, modelId, options.variant, effectiveAgentName)
@@ -1502,9 +1558,18 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         return match?.name || modelRef;
     }, [claudeCatalog]);
 
+    const getCursorModelDisplayName = React.useCallback((modelRef: string) => {
+        const models = cursorCatalog?.sections.flatMap((section) => section.models) ?? [];
+        const match = models.find((model) => model.id === modelRef);
+        return match?.name || modelRef;
+    }, [cursorCatalog]);
+
     const getCurrentModelDisplayName = () => {
         if (pickerHarnessId === 'claude-code') {
             return t('chat.engines.chip.claude', { model: getClaudeModelDisplayName(claudeModelRef) });
+        }
+        if (pickerHarnessId === 'cursor') {
+            return t('chat.engines.chip.cursor', { model: getCursorModelDisplayName(cursorModelRef) });
         }
         if (!currentModelId) return t('chat.modelControls.selectModel');
         const currentModel = models.find((m: ProviderModel) => m.id === currentModelId);
@@ -1788,7 +1853,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
 
         const normalizedQuery = mobileModelQuery.trim();
         const filteredFavorites = favoriteModelsList.filter(({ model, providerID, target }) => {
-            if (pickerHarnessId === 'claude-code' ? target.harnessId !== 'claude-code' : target.harnessId !== 'opencode') {
+            if (target.harnessId !== pickerHarnessId) {
                 return false;
             }
             const provider = providers.find((entry) => entry.id === providerID);
@@ -1800,7 +1865,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         });
 
         const filteredRecents = recentModelsList.filter(({ model, providerID, target }) => {
-            if (pickerHarnessId === 'claude-code' ? target.harnessId !== 'claude-code' : target.harnessId !== 'opencode') {
+            if (target.harnessId !== pickerHarnessId) {
                 return false;
             }
             const provider = providers.find((entry) => entry.id === providerID);
@@ -1847,6 +1912,11 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                 setExpandedMobileModelKey(null);
                 return;
             }
+            if (providerId === CURSOR_PICKER_PROVIDER_ID || pickerHarnessId === 'cursor') {
+                handleProviderAndModelChange(CURSOR_PICKER_PROVIDER_ID, modelId);
+                setExpandedMobileModelKey(null);
+                return;
+            }
             const result = applyModelSelectionWithVariant(providerId, modelId, variant);
             if (result !== 'applied') {
                 if (result === 'provider-missing') {
@@ -1886,13 +1956,17 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         }) => {
             const rowKey = buildModelRefKey(providerId, modelId);
             const isClaudeRow = providerId === CLAUDE_PICKER_PROVIDER_ID;
+            const isCursorRow = providerId === CURSOR_PICKER_PROVIDER_ID;
+            const isHarnessRow = isClaudeRow || isCursorRow;
             const isSelected = isClaudeRow
                 ? pickerHarnessId === 'claude-code' && modelId === claudeModelRef
-                : pickerHarnessId === 'opencode' && providerId === currentProviderId && modelId === currentModelId;
-            const metadata = isClaudeRow
+                : isCursorRow
+                    ? pickerHarnessId === 'cursor' && modelId === cursorModelRef
+                    : pickerHarnessId === 'opencode' && providerId === currentProviderId && modelId === currentModelId;
+            const metadata = isHarnessRow
                 ? undefined
                 : mergeModelMetadataWithLiveModel(providerId, model, getModelMetadata(providerId, modelId));
-            const variantOptions = isClaudeRow ? [] : getModelVariantOptions(providerId, modelId);
+            const variantOptions = isHarnessRow ? [] : getModelVariantOptions(providerId, modelId);
             const hasVariants = variantOptions.length > 0;
             const resolvedVariant = resolveModelVariantSelection(providerId, modelId);
             const variantLabel = hasVariants ? formatEffortLabel(resolvedVariant) : null;
@@ -2051,9 +2125,17 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                 return matchesModelSearch(model.name, normalizedQuery) || matchesModelSearch(model.id, normalizedQuery);
             });
 
+        const cursorMobileModels = (cursorCatalog?.sections.flatMap((section) => section.models) ?? [])
+            .filter((model) => {
+                if (normalizedQuery.length === 0) return true;
+                return matchesModelSearch(model.name, normalizedQuery) || matchesModelSearch(model.id, normalizedQuery);
+            });
+
         const hasResults = pickerHarnessId === 'claude-code'
             ? claudeMobileModels.length > 0 || filteredFavorites.length > 0 || filteredRecents.length > 0
-            : filteredFavorites.length > 0 || filteredRecents.length > 0 || filteredProviders.length > 0;
+            : pickerHarnessId === 'cursor'
+                ? cursorMobileModels.length > 0 || filteredFavorites.length > 0 || filteredRecents.length > 0
+                : filteredFavorites.length > 0 || filteredRecents.length > 0 || filteredProviders.length > 0;
 
         return (
             <MobileOverlayPanel
@@ -2116,6 +2198,22 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                 ) : null}
                             </Button>
                         ) : null}
+                        {enginesCursorEnabled ? (
+                            <Button
+                                type="button"
+                                variant="chip"
+                                size="xs"
+                                aria-pressed={pickerHarnessId === 'cursor'}
+                                onClick={() => handleSelectEngine('cursor')}
+                            >
+                                {t('chat.engines.cursor')}
+                                {cursorCatalog ? (
+                                    <span className="typography-micro text-muted-foreground ml-1">
+                                        {t(ENGINE_STATUS_LABEL_KEYS[cursorCatalog.status])}
+                                    </span>
+                                ) : null}
+                            </Button>
+                        ) : null}
                     </div>
 
                     {!hasResults && (
@@ -2136,7 +2234,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                     model,
                                     providerId: providerID,
                                     modelId: modelID,
-                                    showProviderLogo: providerID !== CLAUDE_PICKER_PROVIDER_ID,
+                                    showProviderLogo: providerID !== CLAUDE_PICKER_PROVIDER_ID && providerID !== CURSOR_PICKER_PROVIDER_ID,
                                 }))}
                             </div>
                         </div>
@@ -2154,7 +2252,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                     model,
                                     providerId: providerID,
                                     modelId: modelID,
-                                    showProviderLogo: providerID !== CLAUDE_PICKER_PROVIDER_ID,
+                                    showProviderLogo: providerID !== CLAUDE_PICKER_PROVIDER_ID && providerID !== CURSOR_PICKER_PROVIDER_ID,
                                 }))}
                             </div>
                         </div>
@@ -2170,6 +2268,23 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                 {claudeMobileModels.map((model) => renderMobileModelRow({
                                     model: { id: model.id, name: model.name },
                                     providerId: CLAUDE_PICKER_PROVIDER_ID,
+                                    modelId: model.id,
+                                    showProviderLogo: false,
+                                }))}
+                            </div>
+                        </div>
+                    )}
+
+                    {pickerHarnessId === 'cursor' && cursorMobileModels.length > 0 && (
+                        <div className="rounded-xl border border-border/40 bg-[var(--surface-elevated)] overflow-hidden">
+                            <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                                <Icon name="cursor" className="size-3 inline-block mr-1.5" />
+                                {t('chat.engines.cursor')}
+                            </div>
+                            <div className="flex flex-col border-t border-border/30">
+                                {cursorMobileModels.map((model) => renderMobileModelRow({
+                                    model: { id: model.id, name: model.name },
+                                    providerId: CURSOR_PICKER_PROVIDER_ID,
                                     modelId: model.id,
                                     showProviderLogo: false,
                                 }))}
@@ -2591,6 +2706,14 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                     : t('settings.engines.sidebar.status.loading'),
                 selected: pickerHarnessId === 'claude-code',
             } satisfies ModelPickerEngineOption] : []),
+            ...(enginesCursorEnabled ? [{
+                id: 'cursor',
+                name: t('chat.engines.cursor'),
+                statusLabel: cursorCatalog
+                    ? t(ENGINE_STATUS_LABEL_KEYS[cursorCatalog.status])
+                    : t('settings.engines.sidebar.status.loading'),
+                selected: pickerHarnessId === 'cursor',
+            } satisfies ModelPickerEngineOption] : []),
         ];
 
         const claudePickerProviders: ModelPickerProvider[] = [{
@@ -2601,24 +2724,32 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             ),
         }];
 
+        const cursorPickerProviders: ModelPickerProvider[] = [{
+            id: CURSOR_PICKER_PROVIDER_ID,
+            name: t('chat.engines.cursor'),
+            models: (cursorCatalog?.sections ?? []).flatMap((section) =>
+                section.models.map((model) => ({ id: model.id, name: model.name })),
+            ),
+        }];
+
         const pickerProviders = pickerHarnessId === 'claude-code'
             ? claudePickerProviders
-            : providers as ModelPickerProvider[];
+            : pickerHarnessId === 'cursor'
+                ? cursorPickerProviders
+                : providers as ModelPickerProvider[];
 
         const pickerFavoriteModels = favoriteModelsList.filter(({ target }) => (
-            pickerHarnessId === 'claude-code'
-                ? target.harnessId === 'claude-code'
-                : target.harnessId === 'opencode'
+            target.harnessId === pickerHarnessId
         ));
         const pickerRecentModels = recentModelsList.filter(({ target }) => (
-            pickerHarnessId === 'claude-code'
-                ? target.harnessId === 'claude-code'
-                : target.harnessId === 'opencode'
+            target.harnessId === pickerHarnessId
         ));
 
         const pickerSelectedModel = pickerHarnessId === 'claude-code'
             ? { providerID: CLAUDE_PICKER_PROVIDER_ID, modelID: claudeModelRef }
-            : (currentProviderId && currentModelId ? { providerID: currentProviderId, modelID: currentModelId } : null);
+            : pickerHarnessId === 'cursor'
+                ? { providerID: CURSOR_PICKER_PROVIDER_ID, modelID: cursorModelRef }
+                : (currentProviderId && currentModelId ? { providerID: currentProviderId, modelID: currentModelId } : null);
 
         const pickerActionsFooter = (
             <>
@@ -2692,6 +2823,8 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                         </>
                                     ) : pickerHarnessId === 'claude-code' ? (
                                         <Icon name="sparkling" className={cn(controlIconSize, 'text-muted-foreground flex-shrink-0')} />
+                                    ) : pickerHarnessId === 'cursor' ? (
+                                        <Icon name="cursor" className={cn(controlIconSize, 'text-muted-foreground flex-shrink-0')} />
                                     ) : currentProviderId ? (
                                         <>
                                             <ProviderLogo
@@ -2706,7 +2839,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                     {isReady && (
                                         <span
                                             ref={modelLabelRef}
-                                            key={`${pickerHarnessId}-${pickerHarnessId === 'claude-code' ? claudeModelRef : `${currentProviderId}-${currentModelId}`}`}
+                                            key={`${pickerHarnessId}-${pickerHarnessId === 'claude-code' ? claudeModelRef : pickerHarnessId === 'cursor' ? cursorModelRef : `${currentProviderId}-${currentModelId}`}`}
                                             className={cn(
                                                 'model-controls__model-label overflow-hidden',
                                                 controlTextSize,
@@ -2805,6 +2938,8 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                             <>
                                 {pickerHarnessId === 'claude-code' ? (
                                     <Icon name="sparkling" className={cn(controlIconSize, 'text-muted-foreground flex-shrink-0')} />
+                                ) : pickerHarnessId === 'cursor' ? (
+                                    <Icon name="cursor" className={cn(controlIconSize, 'text-muted-foreground flex-shrink-0')} />
                                 ) : currentProviderId ? (
                                     <ProviderLogo
                                         providerId={currentProviderId}
@@ -3095,7 +3230,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     };
 
     const renderVariantSelector = () => {
-        if (!isReady || !hasVariants || pickerHarnessId === 'claude-code') {
+        if (!isReady || !hasVariants || pickerHarnessId === 'claude-code' || pickerHarnessId === 'cursor') {
             return null;
         }
 

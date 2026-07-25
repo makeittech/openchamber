@@ -207,4 +207,86 @@ describe('routeMessage Claude harness branch', () => {
     expect(caught?.code).toBe('CLAUDE_NOT_READY');
     expect(harnessPromptCalls).toHaveLength(0);
   });
+
+  test('routes Cursor targets through harnessPrompt and skips OpenCode sendMessage', async () => {
+    useSelectionStore.getState().saveSessionTarget('session-cursor', {
+      harnessId: 'cursor',
+      modelRef: 'composer-1.5',
+    });
+    useHarnessStore.setState({
+      catalogsById: {
+        cursor: {
+          engine: {
+            id: 'cursor',
+            displayName: 'Cursor',
+            shortName: 'Cursor',
+            auth: { mode: 'subscription-oauth' },
+            capabilities: {},
+            install: { binaryNames: [], docsUrl: 'https://cursor.com/docs' },
+          },
+          status: 'ready',
+          sections: [{ id: 'models', name: 'Models', kind: 'models', models: [{ id: 'composer-1.5', name: 'Composer 1.5' }] }],
+        },
+      },
+      loadState: 'ready',
+      error: null,
+    });
+
+    await routeMessage({
+      sessionId: 'session-cursor',
+      directory: '/claude/project',
+      content: 'hello cursor',
+      providerID: 'anthropic',
+      modelID: 'claude-sonnet',
+    });
+
+    expect(harnessPromptCalls).toHaveLength(1);
+    expect(harnessPromptCalls[0].sessionId).toBe('session-cursor');
+    expect(harnessPromptCalls[0].target).toEqual({ harnessId: 'cursor', modelRef: 'composer-1.5' });
+    expect(harnessPromptCalls[0].text).toBe('hello cursor');
+    expect(sendMessageCalls).toHaveLength(0);
+  });
+
+  test('rejects shell mode on Cursor instead of OpenCode fallback', async () => {
+    useSelectionStore.getState().saveSessionTarget('session-cursor', {
+      harnessId: 'cursor',
+      modelRef: 'composer-1.5',
+    });
+    useHarnessStore.setState({
+      catalogsById: {
+        cursor: {
+          engine: {
+            id: 'cursor',
+            displayName: 'Cursor',
+            shortName: 'Cursor',
+            auth: { mode: 'subscription-oauth' },
+            capabilities: {},
+            install: { binaryNames: [], docsUrl: 'https://cursor.com/docs' },
+          },
+          status: 'ready',
+          sections: [],
+        },
+      },
+      loadState: 'ready',
+      error: null,
+    });
+
+    let caught = null;
+    try {
+      await routeMessage({
+        sessionId: 'session-cursor',
+        directory: '/claude/project',
+        content: 'ls',
+        providerID: 'anthropic',
+        modelID: 'claude-sonnet',
+        inputMode: 'shell',
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught?.code).toBe('CURSOR_SHELL_UNSUPPORTED');
+    expect(harnessPromptCalls).toHaveLength(0);
+    expect(sendMessageCalls).toHaveLength(0);
+  });
 });

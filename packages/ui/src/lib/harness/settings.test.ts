@@ -12,10 +12,22 @@ describe('sanitizeEnginesSettings', () => {
       enginesDefaultHarnessId: 'claude-code',
       enginesClaudeCodeWarnOnOpenCodeHandoff: false,
       enginesClaudeCodeEnabled: true,
+      enginesCursorWarnOnOpenCodeHandoff: false,
+      enginesCursorEnabled: true,
     })).toEqual({
       enginesDefaultHarnessId: 'claude-code',
       enginesClaudeCodeWarnOnOpenCodeHandoff: false,
       enginesClaudeCodeEnabled: true,
+      enginesCursorWarnOnOpenCodeHandoff: false,
+      enginesCursorEnabled: true,
+    });
+  });
+
+  test('accepts cursor as default harness id', () => {
+    expect(sanitizeEnginesSettings({
+      enginesDefaultHarnessId: 'cursor',
+    })).toEqual({
+      enginesDefaultHarnessId: 'cursor',
     });
   });
 
@@ -31,6 +43,8 @@ describe('sanitizeEnginesSettings', () => {
     expect(sanitizeEnginesSettings({
       enginesClaudeCodeWarnOnOpenCodeHandoff: 'yes',
       enginesClaudeCodeEnabled: 1,
+      enginesCursorWarnOnOpenCodeHandoff: 'yes',
+      enginesCursorEnabled: 1,
     })).toEqual({});
   });
 
@@ -49,10 +63,13 @@ describe('withEnginesSettingsDefaults', () => {
     expect(withEnginesSettingsDefaults({
       enginesDefaultHarnessId: 'claude-code',
       enginesClaudeCodeWarnOnOpenCodeHandoff: false,
+      enginesCursorEnabled: false,
     })).toEqual({
       enginesDefaultHarnessId: 'claude-code',
       enginesClaudeCodeWarnOnOpenCodeHandoff: false,
       enginesClaudeCodeEnabled: true,
+      enginesCursorWarnOnOpenCodeHandoff: true,
+      enginesCursorEnabled: false,
     });
   });
 });

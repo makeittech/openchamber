@@ -3,12 +3,13 @@
  * User-facing copy uses "Engine"; internal IDs use harnessId.
  */
 
-/** @typedef {'opencode' | 'claude-code'} HarnessId */
+/** @typedef {'opencode' | 'claude-code' | 'cursor'} HarnessId */
 /** @typedef {'full' | 'partial' | 'none'} CapabilityLevel */
 /** @typedef {'ready' | 'needs-login' | 'missing-cli' | 'unsupported-host' | 'error'} HarnessRuntimeStatus */
+/** @typedef {'opencode-providers' | 'subscription-cli' | 'subscription-oauth'} HarnessAuthMode */
 
 /** @type {readonly HarnessId[]} */
-export const HARNESS_IDS = Object.freeze(['opencode', 'claude-code']);
+export const HARNESS_IDS = Object.freeze(['opencode', 'claude-code', 'cursor']);
 
 /** @type {readonly string[]} */
 export const HARNESS_CAPABILITIES = Object.freeze([
@@ -65,11 +66,36 @@ const CLAUDE_CODE_CAPABILITIES = Object.freeze({
   'openchamber-tool': 'none',
 });
 
+const CURSOR_CAPABILITIES = Object.freeze({
+  prompt: 'full',
+  abort: 'full',
+  resume: 'partial',
+  'streaming-text': 'full',
+  'streaming-tools': 'none',
+  permissions: 'none',
+  images: 'none',
+  'file-attachments': 'none',
+  shell: 'none',
+  'slash-commands': 'none',
+  mcp: 'none',
+  subagents: 'none',
+  multirun: 'none',
+  goal: 'none',
+  'openchamber-tool': 'none',
+});
+
 /** Static Claude Code model catalog for v1 (no provider nesting). */
 export const CLAUDE_CODE_MODELS = Object.freeze([
   { id: 'sonnet', name: 'Sonnet', supportsImages: true, supportsDocuments: true },
   { id: 'opus', name: 'Opus', supportsImages: true, supportsDocuments: true },
   { id: 'haiku', name: 'Haiku', supportsImages: true, supportsDocuments: true },
+]);
+
+/** Static Cursor fallback catalog ids (full list lives in translators/cursor/models.js). */
+export const CURSOR_FALLBACK_MODEL_IDS = Object.freeze([
+  'composer-1.5',
+  'claude-4.6-sonnet-medium',
+  'gpt-5.2',
 ]);
 
 const DESCRIPTORS = Object.freeze({
@@ -93,6 +119,17 @@ const DESCRIPTORS = Object.freeze({
     install: Object.freeze({
       binaryNames: Object.freeze(['claude']),
       docsUrl: 'https://docs.anthropic.com/en/docs/claude-code',
+    }),
+  }),
+  cursor: Object.freeze({
+    id: 'cursor',
+    displayName: 'Cursor',
+    shortName: 'Cursor',
+    auth: Object.freeze({ mode: 'subscription-oauth' }),
+    capabilities: CURSOR_CAPABILITIES,
+    install: Object.freeze({
+      binaryNames: Object.freeze([]),
+      docsUrl: 'https://cursor.com/docs',
     }),
   }),
 });

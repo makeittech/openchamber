@@ -31,7 +31,7 @@ export function shouldShowHandoffBillingNotice(args: {
   warnOnOpenCodeHandoff: boolean | undefined;
 }): boolean {
   if (args.sourceHarnessId !== 'opencode') return false;
-  if (args.targetHarnessId !== 'claude-code') return false;
+  if (args.targetHarnessId !== 'claude-code' && args.targetHarnessId !== 'cursor') return false;
   return args.warnOnOpenCodeHandoff !== false;
 }
 

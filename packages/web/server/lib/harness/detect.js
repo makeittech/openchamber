@@ -15,6 +15,11 @@ import {
 import { probeClaudeAgentSdk } from './translators/claude-code/query.js';
 import { buildClaudeCodeChildEnv } from './translators/claude-code/auth-env.js';
 import { hasClaudeCliOAuthCredentials } from '../quota/providers/claude-cli-auth.js';
+import {
+  hasCursorCredentials,
+  resolveCursorAccessToken,
+} from './translators/cursor/credentials.js';
+import { FALLBACK_MODELS, getCursorModels } from './translators/cursor/models.js';
 
 /**
  * @param {string} binaryName
@@ -308,6 +313,108 @@ export function detectOpenCode(options = {}) {
 }
 
 /**
+ * Sanitize Cursor models for detect responses (ids/names only; no tokens).
+ * @param {Array<{ id: string, name: string, reasoning?: boolean }>} models
+ */
+function toCursorModelCatalog(models) {
+  return models.map((model) => ({
+    id: model.id,
+    name: model.name,
+    supportsImages: false,
+    supportsDocuments: false,
+    reasoning: Boolean(model.reasoning),
+  }));
+}
+
+/**
+ * Detect Cursor engine readiness via OAuth credentials (no CLI binary).
+ *
+ * @param {object} [options]
+ * @param {() => boolean} [options.hasCredentials]
+ * @param {() => Promise<string | null>} [options.resolveAccessToken]
+ * @param {(token: string) => Promise<object[]>} [options.fetchModels]
+ * @returns {Promise<object>}
+ */
+export async function detectCursor(options = {}) {
+  const descriptor = getHarnessDescriptor('cursor');
+  const hasCredentials = options.hasCredentials || hasCursorCredentials;
+  const resolveAccessToken = options.resolveAccessToken || resolveCursorAccessToken;
+  const fetchModels = options.fetchModels || ((token) => getCursorModels(token));
+
+  try {
+    if (!hasCredentials()) {
+      return {
+        engine: descriptor,
+        status: 'needs-login',
+        statusDetail: 'Cursor OAuth login was not detected. Sign in via the Cursor engine login flow, then re-detect.',
+        sections: [{
+          id: 'models',
+          name: 'Models',
+          kind: 'models',
+          models: toCursorModelCatalog(FALLBACK_MODELS),
+        }],
+      };
+    }
+
+    const accessToken = await resolveAccessToken();
+    if (!accessToken) {
+      return {
+        engine: descriptor,
+        status: 'needs-login',
+        statusDetail: 'Cursor credentials are missing or expired. Sign in again, then re-detect.',
+        sections: [{
+          id: 'models',
+          name: 'Models',
+          kind: 'models',
+          models: toCursorModelCatalog(FALLBACK_MODELS),
+        }],
+      };
+    }
+
+    let models = FALLBACK_MODELS;
+    try {
+      const discovered = await fetchModels(accessToken);
+      if (Array.isArray(discovered) && discovered.length > 0) {
+        models = discovered;
+      }
+    } catch {
+      models = FALLBACK_MODELS;
+    }
+
+    const catalog = toCursorModelCatalog(models);
+    if (catalog.length === 0) {
+      // Invariant: never ready + empty catalog.
+      return {
+        engine: descriptor,
+        status: 'error',
+        statusDetail: 'Cursor model catalog was empty',
+        sections: [],
+      };
+    }
+
+    // Never include tokens or credential material in detect responses.
+    return {
+      engine: descriptor,
+      status: 'ready',
+      statusDetail: undefined,
+      sections: [{
+        id: 'models',
+        name: 'Models',
+        kind: 'models',
+        models: catalog,
+      }],
+    };
+  } catch (error) {
+    return {
+      engine: descriptor,
+      status: 'error',
+      statusDetail: error instanceof Error ? error.message : 'Cursor detect failed',
+      sections: [],
+    };
+  }
+}
+
+/**
  * @param {string} harnessId
  * @param {object} [options]
  * @returns {Promise<object | null>}
@@ -316,6 +423,7 @@ export async function detectHarness(harnessId, options = {}) {
   if (!isKnownHarnessId(harnessId)) return null;
   if (harnessId === 'opencode') return detectOpenCode(options);
   if (harnessId === 'claude-code') return detectClaudeCode(options);
+  if (harnessId === 'cursor') return detectCursor(options);
   return null;
 }
 

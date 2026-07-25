@@ -44,6 +44,23 @@ export const STATIC_HARNESS_CAPABILITIES: Record<HarnessId, Record<HarnessCapabi
     goal: 'none',
     'openchamber-tool': 'none',
   },
+  cursor: {
+    prompt: 'full',
+    abort: 'full',
+    resume: 'partial',
+    'streaming-text': 'full',
+    'streaming-tools': 'none',
+    permissions: 'none',
+    images: 'none',
+    'file-attachments': 'none',
+    shell: 'none',
+    'slash-commands': 'none',
+    mcp: 'none',
+    subagents: 'none',
+    multirun: 'none',
+    goal: 'none',
+    'openchamber-tool': 'none',
+  },
 };
 
 export function resolveSessionHarnessId(sessionId?: string | null): HarnessId {

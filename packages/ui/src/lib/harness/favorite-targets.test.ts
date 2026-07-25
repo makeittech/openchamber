@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   CLAUDE_FAVORITE_PROVIDER_ID,
+  CURSOR_FAVORITE_PROVIDER_ID,
   executionTargetFromFavoriteRef,
   executionTargetIdentityKey,
   favoriteRefFromExecutionTarget,
@@ -41,6 +42,24 @@ describe('favorite-targets sanitize', () => {
     expect(result).toEqual([{ harnessId: 'claude-code', modelRef: 'haiku' }]);
   });
 
+  test('accepts Cursor ExecutionTarget entries and strips variant', () => {
+    const result = sanitizeFavoriteTargets([
+      { harnessId: 'cursor', modelRef: 'composer-1.5', variant: 'high' },
+      { harnessId: 'cursor', modelRef: 'gpt-5.2' },
+    ], 64);
+    expect(result).toEqual([
+      { harnessId: 'cursor', modelRef: 'composer-1.5' },
+      { harnessId: 'cursor', modelRef: 'gpt-5.2' },
+    ]);
+  });
+
+  test('treats providerID cursor sentinel as Cursor target', () => {
+    const result = sanitizeFavoriteTargets([
+      { providerID: CURSOR_FAVORITE_PROVIDER_ID, modelID: 'composer-1.5' },
+    ], 64);
+    expect(result).toEqual([{ harnessId: 'cursor', modelRef: 'composer-1.5' }]);
+  });
+
   test('dedupes by identity and drops malformed entries', () => {
     const result = sanitizeFavoriteTargets([
       { providerID: 'anthropic', modelID: 'sonnet' },
@@ -64,15 +83,18 @@ describe('favorite-targets sanitize', () => {
     const targets = [
       { harnessId: 'opencode' as const, providerId: 'anthropic', modelId: 'sonnet' },
       { harnessId: 'claude-code' as const, modelRef: 'opus' },
+      { harnessId: 'cursor' as const, modelRef: 'composer-1.5' },
     ];
     const legacy = favoriteTargetsToLegacyRefs(targets);
     expect(legacy).toEqual([
       { providerID: 'anthropic', modelID: 'sonnet' },
       { providerID: CLAUDE_FAVORITE_PROVIDER_ID, modelID: 'opus' },
+      { providerID: CURSOR_FAVORITE_PROVIDER_ID, modelID: 'composer-1.5' },
     ]);
     expect(legacyRefsToFavoriteTargets(legacy)).toEqual([
       { harnessId: 'opencode', providerId: 'anthropic', modelId: 'sonnet' },
       { harnessId: 'claude-code', modelRef: 'opus' },
+      { harnessId: 'cursor', modelRef: 'composer-1.5' },
     ]);
   });
 
@@ -91,5 +113,12 @@ describe('favorite-targets sanitize', () => {
     const b = { harnessId: 'claude-code' as const, modelRef: 'sonnet' };
     expect(executionTargetIdentityKey(normalizeFavoriteTarget(a))).toBe(executionTargetIdentityKey(b));
     expect(executionTargetFromFavoriteRef(favoriteRefFromExecutionTarget(a))).toEqual(b);
+  });
+
+  test('identity helpers ignore cursor variant', () => {
+    const a = { harnessId: 'cursor' as const, modelRef: 'gpt-5.2', variant: 'high' };
+    const b = { harnessId: 'cursor' as const, modelRef: 'gpt-5.2' };
+    expect(executionTargetIdentityKey(normalizeFavoriteTarget(a))).toBe('cursor:gpt-5.2');
+    expect(executionTargetIdentityKey(normalizeFavoriteTarget(a))).toBe(executionTargetIdentityKey(b));
   });
 });

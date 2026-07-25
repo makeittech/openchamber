@@ -403,13 +403,22 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   const sessionTitle = resolvedSession.title || t('sessions.sidebar.session.untitled');
   const sessionExecutionTarget = useSelectionStore((state) => state.sessionTargets.get(session.id) ?? null);
   const isClaudeCodeSession = sessionExecutionTarget?.harnessId === 'claude-code';
-  const claudeEngineGlyph = isClaudeCodeSession ? (
+  const isCursorSession = sessionExecutionTarget?.harnessId === 'cursor';
+  const engineGlyph = isClaudeCodeSession ? (
     <span
       className="inline-flex flex-shrink-0 items-center text-muted-foreground"
       title={t('sessions.sidebar.session.engine.claudeCodeTooltip')}
       aria-label={t('sessions.sidebar.session.engine.claudeCodeAria')}
     >
       <Icon name="sparkling" className="h-3 w-3" />
+    </span>
+  ) : isCursorSession ? (
+    <span
+      className="inline-flex flex-shrink-0 items-center text-muted-foreground"
+      title={t('sessions.sidebar.session.engine.cursorTooltip')}
+      aria-label={t('sessions.sidebar.session.engine.cursorAria')}
+    >
+      <Icon name="cursor" className="h-3 w-3" />
     </span>
   ) : null;
   const hasChildren = node.children.length > 0;
@@ -1125,7 +1134,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                   >
                     <div className={cn('flex w-full items-center min-w-0 flex-1 overflow-hidden', isMinimalMode ? 'gap-1' : 'gap-1')}>
                       <div className={cn('flex min-w-0 flex-1 items-center gap-1 overflow-hidden', isActive ? 'text-primary' : 'text-foreground')}>
-                        {claudeEngineGlyph}
+                        {engineGlyph}
                         <span className="block min-w-0 flex-1 truncate typography-ui-label font-normal">{renderHighlightedText(sessionTitle, normalizedSessionSearchQuery)}</span>
                       </div>
                       {alwaysShowActions ? (
@@ -1198,7 +1207,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
               >
                 <div className={cn('flex w-full items-center min-w-0 flex-1 overflow-hidden', isMinimalMode ? 'gap-1' : 'gap-1')}>
                     <div className={cn('flex min-w-0 flex-1 items-center gap-1 overflow-hidden', isActive ? 'text-primary' : 'text-foreground')}>
-                      {claudeEngineGlyph}
+                      {engineGlyph}
                       <span className="block min-w-0 flex-1 truncate typography-ui-label font-normal">{renderHighlightedText(sessionTitle, normalizedSessionSearchQuery)}</span>
                     </div>
                     {pendingPermissionCount > 0 ? (

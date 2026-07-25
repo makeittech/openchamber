@@ -3,7 +3,9 @@
  */
 
 import { createClaudeCodeTranslator } from './translators/claude-code/index.js';
+import { createCursorTranslator } from './translators/cursor/index.js';
 import { createOpenCodeTranslator } from './translators/opencode/index.js';
+import { getSessionBinding } from './session-bindings.js';
 
 /**
  * @param {object} [deps]
@@ -11,6 +13,7 @@ import { createOpenCodeTranslator } from './translators/opencode/index.js';
 export function createHarnessRouter(deps = {}) {
   const getBroadcast = deps.getBroadcast || (() => null);
   const claude = deps.claudeTranslator || createClaudeCodeTranslator({ getBroadcast });
+  const cursor = deps.cursorTranslator || createCursorTranslator({ getBroadcast });
   const opencode = deps.opencodeTranslator || createOpenCodeTranslator();
 
   /**
@@ -24,6 +27,9 @@ export function createHarnessRouter(deps = {}) {
     if (harnessId === 'claude-code') {
       return claude.prompt(body);
     }
+    if (harnessId === 'cursor') {
+      return cursor.prompt(body);
+    }
     const error = new Error(harnessId
       ? `Unsupported harnessId: ${harnessId}`
       : 'target.harnessId is required');
@@ -36,7 +42,12 @@ export function createHarnessRouter(deps = {}) {
    * @param {object} body
    */
   const abort = async (body) => {
-    // Abort is session-scoped; Claude translator owns active-turn state.
+    const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : '';
+    const binding = sessionId ? getSessionBinding(sessionId) : null;
+    if (binding?.harnessId === 'cursor') {
+      return cursor.abort(body);
+    }
+    // Default: Claude translator owns active-turn state for claude-code.
     // OpenCode abort remains on the SDK path.
     return claude.abort(body);
   };
@@ -55,5 +66,5 @@ export function createHarnessRouter(deps = {}) {
     return claude.replyPermission(body);
   };
 
-  return { prompt, abort, replyPermission, claude, opencode };
+  return { prompt, abort, replyPermission, claude, cursor, opencode };
 }

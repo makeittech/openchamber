@@ -28,8 +28,13 @@ Parent specs:
 | Attachment mapping | `translators/claude-code/attachments.js` |
 | Claude permissions bridge | `translators/claude-code/permissions.js` |
 | Claude prompt orchestration | `translators/claude-code/index.js` |
+| Cursor Agent Run client / H2 bridge | `translators/cursor/agent-client.js`, `h2-bridge*.mjs` |
+| Cursor OAuth (PKCE + refresh) | `translators/cursor/auth.js`, `login.js`, `credentials.js` |
+| Cursor models | `translators/cursor/models.js` |
+| Cursor prompt orchestration | `translators/cursor/index.js` |
 | OpenCode stub (SDK path stays in UI) | `translators/opencode/index.js` |
 | Claude → canonical events | `events/from-claude.js` |
+| Cursor → canonical events | `events/from-cursor.js` |
 | Broadcaster wrapper | `events/emit.js` |
 
 Registration: `packages/web/server/lib/opencode/feature-routes-runtime.js`
@@ -40,11 +45,13 @@ generic OpenCode proxy. JSON body parsing for `/api/harness` is enabled in
 ## Boundary (ui-api-decoupling)
 
 - OpenCode engine traffic stays on `@opencode-ai/sdk/v2` from the UI.
-- Claude Code engine traffic uses OpenChamber routes `/api/harness/*` via
-  `runtimeFetch` (`packages/ui/src/lib/harness/client.ts`).
-- Never call Anthropic HTTP from the UI for this engine.
-- Never put Claude OAuth into `RuntimeAPIs` or OpenChamber settings JSON.
+- Claude Code and Cursor engine traffic use OpenChamber routes `/api/harness/*`
+  via `runtimeFetch` (`packages/ui/src/lib/harness/client.ts`).
+- Never call Anthropic or Cursor Agent APIs from the UI for these engines.
+- Never put Claude/Cursor OAuth tokens into `RuntimeAPIs` or OpenChamber settings JSON.
 - Child Claude processes use subscription-only env (API keys stripped).
+- Cursor uses `subscription-oauth` (no CLI binary); credentials live in the
+  managed quota credential store / env, never in detect or login responses.
 
 ## Session shell model
 
@@ -93,9 +100,11 @@ in responses. Never log tokens, OAuth material, or attachment bytes.
 | GET | `/api/harness` | List engines + runtime status |
 | GET | `/api/harness/:id` | Engine detail + catalog |
 | POST | `/api/harness/:id/detect` | Force refresh detect |
-| POST | `/api/harness/prompt` | Start Claude turn |
-| POST | `/api/harness/abort` | Abort active Claude turn |
-| POST | `/api/harness/permission/reply` | Resolve bridged `canUseTool` prompt |
+| POST | `/api/harness/prompt` | Start engine turn (Claude / Cursor) |
+| POST | `/api/harness/abort` | Abort active engine turn |
+| POST | `/api/harness/permission/reply` | Resolve bridged Claude `canUseTool` prompt |
+| POST | `/api/harness/cursor/login/start` | Start Cursor PKCE login (`loginId`, `loginUrl` only) |
+| POST | `/api/harness/cursor/login/poll` | Poll Cursor login (`pending` / `complete` / `error`) |
 | GET | `/api/harness/sessions/:sessionId` | Binding debug/UI |
 
 ### Prompt body
@@ -134,11 +143,11 @@ Streaming continues asynchronously via the event broadcaster.
 
 | Status | Meaning |
 | --- | --- |
-| `ready` | Binary found, SDK importable, subscription login probe positive |
-| `needs-login` | Binary + SDK OK; no subscription login (includes API-key-only hosts) |
-| `missing-cli` | `claude` not on PATH |
+| `ready` | Engine can accept prompts (Claude: binary + SDK + subscription; Cursor: valid OAuth access) |
+| `needs-login` | Engine present but not authenticated (Claude API-key-only / logged out; Cursor missing/expired OAuth) |
+| `missing-cli` | `claude` not on PATH (Claude only; Cursor has no CLI) |
 | `unsupported-host` | Reserved (mobile-only / no exec host) — not emitted by v1 local detect |
-| `error` | SDK import failure or unexpected detect exception |
+| `error` | SDK/import/catalog failure or unexpected detect exception |
 
 **Login probe (B6):** `claude auth status --json` with API-priority env stripped
 (`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`). OAuth-like `authMethod` → ready;
@@ -148,6 +157,18 @@ structured presence of `claudeAiOauth.accessToken` in the Claude credentials fil
 
 **Invariant:** detect failure never returns `status: "ready"` with an empty
 success catalog. Error / missing-cli responses use `sections: []`.
+
+### Cursor engine (`harnessId: cursor`)
+
+- Auth mode: `subscription-oauth` (PKCE via `loginDeepControl` + managed credentials).
+- Transport: Node `h2-bridge.mjs` child process → Cursor Agent Run (Connect/protobuf).
+- Prompt binds `{ harnessId: 'cursor', … }` and streams OpenCode-shaped events with
+  `providerID: 'cursor'`.
+- Resume: conversation id + checkpoint bytes stored in `foreignSessionId`
+  (`cursor:<conversationId>[:<base64url-checkpoint>]`).
+- MVP gaps: native Cursor tools / MCP / images / attachments are not bridged;
+  native tool exec requests are rejected with a host-tools message.
+- Login responses never include verifiers, access tokens, or refresh tokens.
 
 ### Dependency injection
 
@@ -243,6 +264,7 @@ client-provided `messageId` / `assistantMessageId` for optimistic reconcile.
 ## Out of scope (later slices)
 
 - Codex CLI / Gemini CLI engines
+- Cursor host-tool / MCP bridging, images, attachments
 - Reverse handoff billing notice (Claude → OpenCode)
 - Goal / MultiRun / OpenChamber injected tool on Claude
 
@@ -254,9 +276,12 @@ bun test packages/web/server/lib/harness/detect.test.js
 bun test packages/web/server/lib/harness/routes.test.js
 bun test packages/web/server/lib/harness/session-bindings.test.js
 bun test packages/web/server/lib/harness/events/from-claude.test.js
+bun test packages/web/server/lib/harness/events/from-cursor.test.js
 bun test packages/web/server/lib/harness/translators/claude-code/auth-env.test.js
 bun test packages/web/server/lib/harness/translators/claude-code/attachments.test.js
 bun test packages/web/server/lib/harness/translators/claude-code/permissions.test.js
+bun test packages/web/server/lib/harness/translators/cursor/auth.test.js
+bun test packages/web/server/lib/harness/translators/cursor/credentials.test.js
 bun test packages/ui/src/lib/harness/client.test.js
 ```
 

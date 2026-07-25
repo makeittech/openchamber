@@ -4,6 +4,7 @@ import { SETTINGS_HELPER_CLASS } from '@/components/sections/shared/SettingsSect
 import { useI18n } from '@/lib/i18n';
 import { useHarnessStore } from '@/stores/useHarnessStore';
 import { ClaudeCodeEngineDetail } from './ClaudeCodeEngineDetail';
+import { CursorEngineDetail } from './CursorEngineDetail';
 import { OpenCodeEngineDetail } from './OpenCodeEngineDetail';
 
 export const EnginesPage: React.FC = () => {
@@ -12,6 +13,10 @@ export const EnginesPage: React.FC = () => {
 
   if (selectedHarnessId === 'claude-code') {
     return <ClaudeCodeEngineDetail />;
+  }
+
+  if (selectedHarnessId === 'cursor') {
+    return <CursorEngineDetail />;
   }
 
   if (selectedHarnessId === 'opencode') {

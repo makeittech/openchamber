@@ -39,10 +39,28 @@ describe('shouldShowHandoffBillingNotice', () => {
     })).toBe(true);
   });
 
+  test('shows for OpenCode → Cursor when warn setting is true/undefined', () => {
+    expect(shouldShowHandoffBillingNotice({
+      sourceHarnessId: 'opencode',
+      targetHarnessId: 'cursor',
+      warnOnOpenCodeHandoff: true,
+    })).toBe(true);
+    expect(shouldShowHandoffBillingNotice({
+      sourceHarnessId: 'opencode',
+      targetHarnessId: 'cursor',
+      warnOnOpenCodeHandoff: undefined,
+    })).toBe(true);
+  });
+
   test('hides when warn setting is false', () => {
     expect(shouldShowHandoffBillingNotice({
       sourceHarnessId: 'opencode',
       targetHarnessId: 'claude-code',
+      warnOnOpenCodeHandoff: false,
+    })).toBe(false);
+    expect(shouldShowHandoffBillingNotice({
+      sourceHarnessId: 'opencode',
+      targetHarnessId: 'cursor',
       warnOnOpenCodeHandoff: false,
     })).toBe(false);
   });
@@ -50,6 +68,11 @@ describe('shouldShowHandoffBillingNotice', () => {
   test('hides for reverse or same-engine handoffs', () => {
     expect(shouldShowHandoffBillingNotice({
       sourceHarnessId: 'claude-code',
+      targetHarnessId: 'opencode',
+      warnOnOpenCodeHandoff: true,
+    })).toBe(false);
+    expect(shouldShowHandoffBillingNotice({
+      sourceHarnessId: 'cursor',
       targetHarnessId: 'opencode',
       warnOnOpenCodeHandoff: true,
     })).toBe(false);

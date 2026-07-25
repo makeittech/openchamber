@@ -746,6 +746,20 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['handoff', 'billing', 'warning', 'subscription', 'switch engine'],
   },
   {
+    id: 'engines.cursor',
+    page: 'engines',
+    titleKey: 'settings.engines.cursor.title',
+    descriptionKey: 'settings.engines.cursor.description',
+    keywords: ['cursor', 'subscription', 'oauth', 'login', 'detect'],
+  },
+  {
+    id: 'engines.cursor.warn-handoff',
+    page: 'engines',
+    titleKey: 'settings.engines.cursor.warnHandoff.label',
+    descriptionKey: 'settings.engines.cursor.warnHandoff.info',
+    keywords: ['handoff', 'billing', 'warning', 'subscription', 'switch engine', 'cursor'],
+  },
+  {
     id: 'providers.connect',
     page: 'providers',
     titleKey: 'settings.providers.page.connect.title',

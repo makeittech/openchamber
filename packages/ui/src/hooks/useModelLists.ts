@@ -4,6 +4,7 @@ import { useUIStore } from '@/stores/useUIStore';
 import { useHarnessStore } from '@/stores/useHarnessStore';
 import {
   CLAUDE_FAVORITE_PROVIDER_ID,
+  CURSOR_FAVORITE_PROVIDER_ID,
   executionTargetIdentityKey,
   favoriteRefFromExecutionTarget,
   legacyRefsToFavoriteTargets,
@@ -22,8 +23,12 @@ export interface ModelListItem {
   target: ExecutionTarget;
 }
 
-const buildClaudeProvider = (name: string, models: ProviderModel[]): ProviderWithModelList => ({
-  id: CLAUDE_FAVORITE_PROVIDER_ID,
+const buildSyntheticProvider = (
+  id: string,
+  name: string,
+  models: ProviderModel[],
+): ProviderWithModelList => ({
+  id,
   name,
   source: 'custom',
   options: {},
@@ -31,10 +36,10 @@ const buildClaudeProvider = (name: string, models: ProviderModel[]): ProviderWit
   models,
 });
 
-const asProviderModel = (id: string, name: string): ProviderModel => ({
+const asProviderModel = (providerID: string, id: string, name: string): ProviderModel => ({
   id,
   name,
-  providerID: CLAUDE_FAVORITE_PROVIDER_ID,
+  providerID,
   api: { npm: '', id },
   capabilities: {
     temperature: false,
@@ -58,6 +63,7 @@ export const useModelLists = () => {
   const recentModels = useUIStore((state) => state.recentModels);
   const hiddenModels = useUIStore((state) => state.hiddenModels);
   const claudeCatalog = useHarnessStore((state) => state.catalogsById['claude-code']);
+  const cursorCatalog = useHarnessStore((state) => state.catalogsById.cursor);
 
   const isHidden = React.useCallback((providerID: string, modelID: string) => {
     return hiddenModels.some((item) => item.providerID === providerID && item.modelID === modelID);
@@ -80,9 +86,33 @@ export const useModelLists = () => {
         if (!model) continue;
         const ref = favoriteRefFromExecutionTarget(target);
         if (isHidden(ref.providerID, ref.modelID)) continue;
-        const providerModel = asProviderModel(model.id, model.name);
-        const provider = buildClaudeProvider(
+        const providerModel = asProviderModel(CLAUDE_FAVORITE_PROVIDER_ID, model.id, model.name);
+        const provider = buildSyntheticProvider(
+          CLAUDE_FAVORITE_PROVIDER_ID,
           claudeCatalog?.engine.displayName || 'Claude Code',
+          [providerModel],
+        );
+        items.push({
+          provider,
+          model: providerModel,
+          providerID: ref.providerID,
+          modelID: ref.modelID,
+          target,
+        });
+        continue;
+      }
+
+      if (target.harnessId === 'cursor') {
+        const model = cursorCatalog?.sections
+          .flatMap((section) => section.models)
+          .find((entry) => entry.id === target.modelRef);
+        if (!model) continue;
+        const ref = favoriteRefFromExecutionTarget(target);
+        if (isHidden(ref.providerID, ref.modelID)) continue;
+        const providerModel = asProviderModel(CURSOR_FAVORITE_PROVIDER_ID, model.id, model.name);
+        const provider = buildSyntheticProvider(
+          CURSOR_FAVORITE_PROVIDER_ID,
+          cursorCatalog?.engine.displayName || 'Cursor',
           [providerModel],
         );
         items.push({
@@ -110,7 +140,7 @@ export const useModelLists = () => {
       });
     }
     return items;
-  }, [claudeCatalog, isHidden, providers]);
+  }, [claudeCatalog, cursorCatalog, isHidden, providers]);
 
   const favoriteModelsList = React.useMemo(
     () => resolveTargetList(favoriteTargets, favoriteModels),

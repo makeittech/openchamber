@@ -44,6 +44,22 @@ describe('sessionSupports', () => {
     expect(sessionSupports('ses_claude', 'abort')).toBe(true);
   });
 
+  test('returns Cursor static capabilities for cursor sessions', () => {
+    useSelectionStore.getState().saveSessionTarget('ses_cursor', {
+      harnessId: 'cursor',
+      modelRef: 'composer-1.5',
+    });
+    expect(sessionSupports('ses_cursor', 'prompt')).toBe(true);
+    expect(sessionSupports('ses_cursor', 'abort')).toBe(true);
+    expect(sessionSupports('ses_cursor', 'resume')).toBe(true);
+    expect(sessionSupports('ses_cursor', 'shell')).toBe(false);
+    expect(sessionSupports('ses_cursor', 'slash-commands')).toBe(false);
+    expect(sessionSupports('ses_cursor', 'images')).toBe(false);
+    expect(sessionSupports('ses_cursor', 'goal')).toBe(false);
+    expect(STATIC_HARNESS_CAPABILITIES.cursor.resume).toBe('partial');
+    expect(STATIC_HARNESS_CAPABILITIES.cursor['streaming-tools']).toBe('none');
+  });
+
   test('prefers sticky session target over last-used', () => {
     useSelectionStore.setState({
       lastUsedTarget: { harnessId: 'claude-code', modelRef: 'opus' },

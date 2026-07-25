@@ -128,11 +128,15 @@ export type DesktopSettings = {
   sessionGoalDefaultBudget?: number;
   smallModelOverride?: string; // format: "provider/model"
   /** Default execution engine for new sessions. */
-  enginesDefaultHarnessId?: 'opencode' | 'claude-code';
+  enginesDefaultHarnessId?: 'opencode' | 'claude-code' | 'cursor';
   /** Show billing notice when handing off OpenCode → Claude Code. Default true. */
   enginesClaudeCodeWarnOnOpenCodeHandoff?: boolean;
   /** Feature flag: expose Claude Code engine in picker / routing. Default true. */
   enginesClaudeCodeEnabled?: boolean;
+  /** Show billing notice when handing off OpenCode → Cursor. Default true. */
+  enginesCursorWarnOnOpenCodeHandoff?: boolean;
+  /** Feature flag: expose Cursor engine in picker / routing. Default true. */
+  enginesCursorEnabled?: boolean;
   defaultGitIdentityId?: string; // ''/undefined = unset, 'global' or profile id
   openInAppId?: string;
   autoCreateWorktree?: boolean;
@@ -182,10 +186,11 @@ export type DesktopSettings = {
   shortcutOverrides?: Record<string, string>;
 
   favoriteModels?: Array<{ providerID: string; modelID: string }>;
-  /** Target-aware favorites (OpenCode + Claude). Legacy favoriteModels remain for older clients. */
+  /** Target-aware favorites (OpenCode + Claude + Cursor). Legacy favoriteModels remain for older clients. */
   favoriteTargets?: Array<
     | { harnessId: 'opencode'; providerId: string; modelId: string }
     | { harnessId: 'claude-code'; modelRef: string }
+    | { harnessId: 'cursor'; modelRef: string; variant?: string }
   >;
   hiddenModels?: Array<{ providerID: string; modelID: string }>;
   collapsedModelProviders?: string[];
@@ -193,6 +198,7 @@ export type DesktopSettings = {
   recentTargets?: Array<
     | { harnessId: 'opencode'; providerId: string; modelId: string }
     | { harnessId: 'claude-code'; modelRef: string }
+    | { harnessId: 'cursor'; modelRef: string; variant?: string }
   >;
   recentAgents?: string[];
   recentEfforts?: Record<string, string[]>;

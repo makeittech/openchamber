@@ -1059,7 +1059,7 @@ export async function abortCurrentOperation(sessionId: string): Promise<void> {
   const { directory } = dirStoreForSession(sessionId)
   try {
     const target = useSelectionStore.getState().getSessionTarget(sessionId)
-    if (target?.harnessId === "claude-code") {
+    if (target?.harnessId === "claude-code" || target?.harnessId === "cursor") {
       await harnessAbort({
         sessionId,
         ...(directory ? { directory } : {}),

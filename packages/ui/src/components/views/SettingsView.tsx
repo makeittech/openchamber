@@ -500,6 +500,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
       const harnessStore = useHarnessStore.getState();
       if (result.id.startsWith('engines.claude-code')) {
         harnessStore.setSelectedHarnessId('claude-code');
+      } else if (result.id.startsWith('engines.cursor')) {
+        harnessStore.setSelectedHarnessId('cursor');
       } else if (result.id.startsWith('engines.opencode')) {
         harnessStore.setSelectedHarnessId('opencode');
       }

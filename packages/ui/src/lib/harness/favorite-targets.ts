@@ -2,12 +2,14 @@
  * Target-aware favorites / recents helpers.
  * Legacy { providerID, modelID } is treated as an OpenCode target.
  * Claude favorites use harnessId: 'claude-code' (or providerID sentinel 'claude-code').
+ * Cursor favorites use harnessId: 'cursor' (or providerID sentinel 'cursor').
  */
 
 import type { ClaudePermissionMode, ExecutionTarget } from '@/types/harness';
 import { isClaudePermissionMode, isExecutionTarget, isHarnessId } from '@/types/harness';
 
 export const CLAUDE_FAVORITE_PROVIDER_ID = 'claude-code';
+export const CURSOR_FAVORITE_PROVIDER_ID = 'cursor';
 
 export type LegacyModelRef = { providerID: string; modelID: string };
 
@@ -18,6 +20,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 export function executionTargetIdentityKey(target: ExecutionTarget): string {
   if (target.harnessId === 'claude-code') {
     return `claude-code:${target.modelRef}`;
+  }
+  if (target.harnessId === 'cursor') {
+    return `cursor:${target.modelRef}`;
   }
   return `opencode:${target.providerId}/${target.modelId}`;
 }
@@ -31,6 +36,9 @@ export function normalizeFavoriteTarget(target: ExecutionTarget): ExecutionTarge
   if (target.harnessId === 'claude-code') {
     return { harnessId: 'claude-code', modelRef: target.modelRef };
   }
+  if (target.harnessId === 'cursor') {
+    return { harnessId: 'cursor', modelRef: target.modelRef };
+  }
   return {
     harnessId: 'opencode',
     providerId: target.providerId,
@@ -42,6 +50,9 @@ export function favoriteRefFromExecutionTarget(target: ExecutionTarget): LegacyM
   if (target.harnessId === 'claude-code') {
     return { providerID: CLAUDE_FAVORITE_PROVIDER_ID, modelID: target.modelRef };
   }
+  if (target.harnessId === 'cursor') {
+    return { providerID: CURSOR_FAVORITE_PROVIDER_ID, modelID: target.modelRef };
+  }
   return { providerID: target.providerId, modelID: target.modelId };
 }
 
@@ -51,6 +62,9 @@ export function executionTargetFromFavoriteRef(ref: LegacyModelRef): ExecutionTa
   if (!providerID || !modelID) return null;
   if (providerID === CLAUDE_FAVORITE_PROVIDER_ID) {
     return { harnessId: 'claude-code', modelRef: modelID };
+  }
+  if (providerID === CURSOR_FAVORITE_PROVIDER_ID) {
+    return { harnessId: 'cursor', modelRef: modelID };
   }
   return {
     harnessId: 'opencode',
@@ -86,6 +100,9 @@ export function parseFavoriteTargetEntry(value: unknown): ExecutionTarget | null
       if (providerId === CLAUDE_FAVORITE_PROVIDER_ID) {
         return { harnessId: 'claude-code', modelRef: modelId };
       }
+      if (providerId === CURSOR_FAVORITE_PROVIDER_ID) {
+        return { harnessId: 'cursor', modelRef: modelId };
+      }
       return { harnessId: 'opencode', providerId, modelId };
     }
   }
@@ -105,6 +122,19 @@ export function parseFavoriteTargetEntry(value: unknown): ExecutionTarget | null
       return null;
     }
     return { harnessId: 'claude-code', modelRef };
+  }
+
+  if (value.harnessId === 'cursor') {
+    const modelRef = typeof value.modelRef === 'string'
+      ? value.modelRef.trim()
+      : typeof value.modelID === 'string'
+        ? value.modelID.trim()
+        : typeof value.modelId === 'string'
+          ? value.modelId.trim()
+          : '';
+    if (!modelRef) return null;
+    // Favorites ignore variant (same as Claude permissionMode).
+    return { harnessId: 'cursor', modelRef };
   }
 
   if (isHarnessId(value.harnessId)) {

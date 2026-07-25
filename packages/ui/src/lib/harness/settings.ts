@@ -5,15 +5,19 @@ export type EnginesSettingsFields = {
   enginesDefaultHarnessId: HarnessId;
   enginesClaudeCodeWarnOnOpenCodeHandoff: boolean;
   enginesClaudeCodeEnabled: boolean;
+  enginesCursorWarnOnOpenCodeHandoff: boolean;
+  enginesCursorEnabled: boolean;
 };
 
 export const ENGINES_SETTINGS_DEFAULTS: EnginesSettingsFields = {
   enginesDefaultHarnessId: 'opencode',
   enginesClaudeCodeWarnOnOpenCodeHandoff: true,
   enginesClaudeCodeEnabled: true,
+  enginesCursorWarnOnOpenCodeHandoff: true,
+  enginesCursorEnabled: true,
 };
 
-/** In-memory mirror of the handoff billing warn toggle for send-path gates. */
+/** In-memory mirror of the Claude handoff billing warn toggle for send-path gates. */
 let cachedWarnOnOpenCodeHandoff: boolean =
   ENGINES_SETTINGS_DEFAULTS.enginesClaudeCodeWarnOnOpenCodeHandoff;
 
@@ -23,6 +27,18 @@ export function getCachedWarnOnOpenCodeHandoff(): boolean {
 
 export function setCachedWarnOnOpenCodeHandoff(enabled: boolean): void {
   cachedWarnOnOpenCodeHandoff = enabled;
+}
+
+/** In-memory mirror of the Cursor handoff billing warn toggle for send-path gates. */
+let cachedCursorWarnOnOpenCodeHandoff: boolean =
+  ENGINES_SETTINGS_DEFAULTS.enginesCursorWarnOnOpenCodeHandoff;
+
+export function getCachedCursorWarnOnOpenCodeHandoff(): boolean {
+  return cachedCursorWarnOnOpenCodeHandoff;
+}
+
+export function setCachedCursorWarnOnOpenCodeHandoff(enabled: boolean): void {
+  cachedCursorWarnOnOpenCodeHandoff = enabled;
 }
 
 export type SanitizedEnginesSettings = Partial<EnginesSettingsFields>;
@@ -48,6 +64,14 @@ export function sanitizeEnginesSettings(candidate: Record<string, unknown>): San
     result.enginesClaudeCodeEnabled = candidate.enginesClaudeCodeEnabled;
   }
 
+  if (typeof candidate.enginesCursorWarnOnOpenCodeHandoff === 'boolean') {
+    result.enginesCursorWarnOnOpenCodeHandoff = candidate.enginesCursorWarnOnOpenCodeHandoff;
+  }
+
+  if (typeof candidate.enginesCursorEnabled === 'boolean') {
+    result.enginesCursorEnabled = candidate.enginesCursorEnabled;
+  }
+
   return result;
 }
 
@@ -62,5 +86,10 @@ export function withEnginesSettingsDefaults(
       ?? ENGINES_SETTINGS_DEFAULTS.enginesClaudeCodeWarnOnOpenCodeHandoff,
     enginesClaudeCodeEnabled:
       partial?.enginesClaudeCodeEnabled ?? ENGINES_SETTINGS_DEFAULTS.enginesClaudeCodeEnabled,
+    enginesCursorWarnOnOpenCodeHandoff:
+      partial?.enginesCursorWarnOnOpenCodeHandoff
+      ?? ENGINES_SETTINGS_DEFAULTS.enginesCursorWarnOnOpenCodeHandoff,
+    enginesCursorEnabled:
+      partial?.enginesCursorEnabled ?? ENGINES_SETTINGS_DEFAULTS.enginesCursorEnabled,
   };
 }
