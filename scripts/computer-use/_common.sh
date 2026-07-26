@@ -3,7 +3,17 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# Prefer explicit repo root so these scripts can live outside the worktree
+# (needed when rebuild checks out a branch that does not contain them).
+if [[ -n "${OPENCHAMBER_REPO_ROOT:-}" ]]; then
+  REPO_ROOT="$OPENCHAMBER_REPO_ROOT"
+elif git -C "$SCRIPT_DIR/../.." rev-parse --show-toplevel >/dev/null 2>&1; then
+  REPO_ROOT="$(git -C "$SCRIPT_DIR/../.." rev-parse --show-toplevel)"
+elif git rev-parse --show-toplevel >/dev/null 2>&1; then
+  REPO_ROOT="$(git rev-parse --show-toplevel)"
+else
+  REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+fi
 STATE_DIR="${OPENCHAMBER_CU_STATE_DIR:-/tmp/openchamber-computer-use}"
 PID_FILE="$STATE_DIR/app.pid"
 LOG_FILE="$STATE_DIR/app.log"
