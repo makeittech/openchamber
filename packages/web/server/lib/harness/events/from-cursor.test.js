@@ -74,4 +74,53 @@ describe('from-cursor event mapping', () => {
     expect(mapCursorEventToEvents(ctx, { type: 'nope' }).events).toEqual([]);
     expect(mapCursorEventToEvents(ctx, null).events).toEqual([]);
   });
+
+  it('maps tool-call + tool-result to OpenCode-shaped tool parts', () => {
+    const ctx = createCursorMapperContext({
+      sessionId: 'ses_1',
+      directory: '/tmp/proj',
+      userMessageId: 'msg_user',
+      assistantMessageId: 'msg_asst',
+      modelRef: 'composer-1.5',
+    });
+    expect(ctx.toolPartIds).toBeInstanceOf(Map);
+
+    const started = mapCursorEventToEvents(ctx, {
+      type: 'tool-call',
+      toolCallId: 'call_abc',
+      toolName: 'bash',
+      input: { command: 'echo hi' },
+      status: 'running',
+    });
+    const runningPart = started.events.find((e) => e.type === 'message.part.updated')?.properties?.part;
+    expect(runningPart?.type).toBe('tool');
+    expect(runningPart?.tool).toBe('bash');
+    expect(runningPart?.callID).toBe('call_abc');
+    expect(runningPart?.state?.status).toBe('running');
+    expect(runningPart?.state?.input).toEqual({ command: 'echo hi' });
+    expect(ctx.toolPartIds.get('call_abc')).toBe(runningPart.id);
+
+    const completed = mapCursorEventToEvents(ctx, {
+      type: 'tool-result',
+      toolCallId: 'call_abc',
+      toolName: 'bash',
+      output: 'hi\n',
+      isError: false,
+    });
+    const donePart = completed.events.find((e) => e.type === 'message.part.updated')?.properties?.part;
+    expect(donePart?.id).toBe(runningPart.id);
+    expect(donePart?.state?.status).toBe('completed');
+    expect(donePart?.state?.output).toBe('hi\n');
+
+    const errored = mapCursorEventToEvents(ctx, {
+      type: 'tool-result',
+      toolCallId: 'call_err',
+      toolName: 'read',
+      output: 'missing',
+      isError: true,
+    });
+    const errPart = errored.events.find((e) => e.type === 'message.part.updated')?.properties?.part;
+    expect(errPart?.state?.status).toBe('error');
+    expect(errPart?.state?.error).toBe('missing');
+  });
 });

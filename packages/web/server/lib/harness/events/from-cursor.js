@@ -17,6 +17,7 @@ import {
  * @property {string} [modelRef]
  * @property {string} [textPartId]
  * @property {string} [thinkingPartId]
+ * @property {Map<string, string>} [toolPartIds]
  * @property {number} [assistantCreatedAt]
  * @property {string} [accumulatedText]
  * @property {string} [accumulatedThinking]
@@ -33,6 +34,7 @@ export function createCursorMapperContext(input) {
     ...base,
     modelRef: input.modelRef || base.modelRef || 'composer-1.5',
     thinkingPartId: input.thinkingPartId || createOpenCodeId('prt'),
+    toolPartIds: input.toolPartIds || base.toolPartIds || new Map(),
     accumulatedThinking: input.accumulatedThinking || '',
     assistantStarted: Boolean(input.assistantStarted),
   };
@@ -240,11 +242,100 @@ export function mapCursorEventToEvents(ctx, event) {
       return { events };
     }
     case 'tool-call':
-      // MVP: surface as ignored — no OpenCode tool part yet.
-      return { events: [] };
+      return { events: toolCallEvents(ctx, event) };
+    case 'tool-result':
+      return { events: toolResultEvents(ctx, event) };
     default:
       return { events: [] };
   }
+}
+
+/**
+ * @param {CursorMapperContext} ctx
+ * @param {object} event
+ * @returns {object[]}
+ */
+function toolCallEvents(ctx, event) {
+  const toolCallId = typeof event.toolCallId === 'string' && event.toolCallId
+    ? event.toolCallId
+    : createOpenCodeId('call');
+  let partId = ctx.toolPartIds.get(toolCallId);
+  if (!partId) {
+    partId = createOpenCodeId('prt');
+    ctx.toolPartIds.set(toolCallId, partId);
+  }
+  const toolName = typeof event.toolName === 'string' ? event.toolName : 'tool';
+  const input = event.input && typeof event.input === 'object' ? event.input : {};
+  const events = ensureAssistantStarted(ctx);
+  events.push({
+    type: 'message.part.updated',
+    properties: {
+      sessionID: ctx.sessionId,
+      part: {
+        id: partId,
+        sessionID: ctx.sessionId,
+        messageID: ctx.assistantMessageId,
+        type: 'tool',
+        callID: toolCallId,
+        tool: toolName,
+        state: {
+          status: 'running',
+          input,
+          time: { start: Date.now() },
+        },
+      },
+    },
+  });
+  return events;
+}
+
+/**
+ * @param {CursorMapperContext} ctx
+ * @param {object} event
+ * @returns {object[]}
+ */
+function toolResultEvents(ctx, event) {
+  const toolCallId = typeof event.toolCallId === 'string' ? event.toolCallId : '';
+  if (!toolCallId) return [];
+  let partId = ctx.toolPartIds.get(toolCallId);
+  if (!partId) {
+    partId = createOpenCodeId('prt');
+    ctx.toolPartIds.set(toolCallId, partId);
+  }
+  const toolName = typeof event.toolName === 'string' ? event.toolName : 'tool';
+  const output = typeof event.output === 'string' ? event.output : '';
+  const isError = event.isError === true;
+  const events = ensureAssistantStarted(ctx);
+  events.push({
+    type: 'message.part.updated',
+    properties: {
+      sessionID: ctx.sessionId,
+      part: {
+        id: partId,
+        sessionID: ctx.sessionId,
+        messageID: ctx.assistantMessageId,
+        type: 'tool',
+        callID: toolCallId,
+        tool: toolName,
+        state: isError
+          ? {
+            status: 'error',
+            input: {},
+            error: output || 'Tool error',
+            time: { start: Date.now(), end: Date.now() },
+          }
+          : {
+            status: 'completed',
+            input: {},
+            output: output || '',
+            title: toolName,
+            metadata: {},
+            time: { start: Date.now(), end: Date.now() },
+          },
+      },
+    },
+  });
+  return events;
 }
 
 /**

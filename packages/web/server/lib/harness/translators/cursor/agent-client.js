@@ -32,7 +32,11 @@ import {
   LsRejectedSchema,
   LsResultSchema,
   McpErrorSchema,
+  McpInstructionsSchema,
   McpResultSchema,
+  McpSuccessSchema,
+  McpTextContentSchema,
+  McpToolResultContentItemSchema,
   ModelDetailsSchema,
   ReadRejectedSchema,
   ReadResultSchema,
@@ -50,6 +54,12 @@ import {
   WriteResultSchema,
 } from './proto/agent_pb.js';
 import { literalCursorModelSelection } from './model-selection.js';
+import { createHostTools } from './host-tools.js';
+import {
+  buildOpenChamberMcpTools,
+  decodeMcpArgsMap,
+  executeMcpTool,
+} from './mcp-tools.js';
 
 const CURSOR_API_URL = process.env.CURSOR_API_URL ?? 'https://api2.cursor.sh';
 const CONNECT_END_STREAM_FLAG = 0b00000010;
@@ -64,7 +74,7 @@ const HERE = typeof import.meta.dirname === 'string'
     : dirname(fileURLToPath(import.meta.url)));
 const BRIDGE_PATH = pathResolve(HERE, 'h2-bridge.mjs');
 
-const REJECT_REASON = 'Native Cursor tools are not available in OpenChamber. Use host tools instead.';
+const REJECT_REASON = 'Tool not available in this environment. Use the MCP tools provided instead.';
 
 /**
  * @param {Uint8Array} data
@@ -456,26 +466,67 @@ function handleKvMessage(kvMsg, blobStore, sendFrame) {
 }
 
 /**
- * MVP: reject native tool exec; answer requestContext with a no-native-tools rule.
+ * @param {boolean} ok
+ * @param {string} output
+ */
+function buildMcpSuccessResult(ok, output) {
+  return create(McpResultSchema, {
+    result: {
+      case: 'success',
+      value: create(McpSuccessSchema, {
+        content: [
+          create(McpToolResultContentItemSchema, {
+            content: {
+              case: 'text',
+              value: create(McpTextContentSchema, {
+                text: typeof output === 'string' ? output : '',
+              }),
+            },
+          }),
+        ],
+        isError: !ok,
+      }),
+    },
+  });
+}
+
+/**
+ * Inject MCP tools into RequestContext; reject native Cursor tools; execute mcpArgs locally.
  *
  * @param {any} execMsg
- * @param {(data: Uint8Array) => void} sendFrame
- * @param {string} [cwd]
- * @param {(event: object) => void} [onEvent]
+ * @param {{
+ *   sendFrame: (data: Uint8Array) => void,
+ *   cwd?: string,
+ *   onEvent?: (event: object) => void,
+ *   mcpTools?: unknown[],
+ *   hostTools?: object,
+ *   executeTool?: (toolName: string, args: Record<string, unknown>) => Promise<{ ok: boolean, text: string }>,
+ *   trackPendingTool?: (delta: number) => void,
+ * }} ctx
  */
-function handleExecMessage(execMsg, sendFrame, cwd, onEvent) {
+function handleExecMessage(execMsg, ctx) {
+  const {
+    sendFrame,
+    cwd,
+    onEvent,
+    mcpTools = [],
+    hostTools,
+    executeTool,
+    trackPendingTool,
+  } = ctx;
   const execCase = execMsg.message.case;
 
   if (execCase === 'requestContextArgs') {
     const workspaceNote = cwd
-      ? ` The project workspace root is "${cwd}".`
+      ? ` The project workspace root is "${cwd}". All file paths must stay under that root.`
       : '';
-    const rule = `CRITICAL: Do NOT use native Cursor tools (read, ls, grep, shell, write, delete, fetch). They are disabled in OpenChamber.${workspaceNote}`;
+    const MCP_ONLY_RULE = `CRITICAL: Do NOT use native tools (read, ls, grep, shell, write, delete, fetch, diagnostics, backgroundShellSpawn, writeShellStdin). They are ALL disabled in this environment. Use ONLY the MCP tools provided in the tools list. Every native tool call will be rejected and waste time. Always use MCP tools for all file operations, shell commands, searches, and any other actions.${workspaceNote}`;
+
     const requestContext = create(RequestContextSchema, {
       rules: [
         create(CursorRuleSchema, {
           fullPath: '.cursorrules',
-          content: rule,
+          content: MCP_ONLY_RULE,
           type: create(CursorRuleTypeSchema, {
             type: { case: 'global', value: create(CursorRuleTypeGlobalSchema, {}) },
           }),
@@ -483,10 +534,15 @@ function handleExecMessage(execMsg, sendFrame, cwd, onEvent) {
         }),
       ],
       repositoryInfo: [],
-      tools: [],
-      gitRepos: [],
+      tools: mcpTools,
+      gitStatuses: [],
       projectLayouts: [],
-      mcpInstructions: [],
+      mcpInstructions: [
+        create(McpInstructionsSchema, {
+          serverName: 'openchamber',
+          instructions: MCP_ONLY_RULE,
+        }),
+      ],
       fileContents: {},
       customSubagents: [],
     });
@@ -501,22 +557,71 @@ function handleExecMessage(execMsg, sendFrame, cwd, onEvent) {
   }
 
   if (execCase === 'mcpArgs') {
-    const toolName = execMsg.message.value?.toolName || execMsg.message.value?.name || 'tool';
+    const mcpArgs = execMsg.message.value;
+    const decoded = decodeMcpArgsMap(mcpArgs.args ?? {});
+    const toolName = mcpArgs.toolName || mcpArgs.name || 'tool';
+    const toolCallId = mcpArgs.toolCallId || randomUUID();
+
     onEvent?.({
       type: 'tool-call',
+      toolCallId,
       toolName,
-      rejected: true,
-      message: REJECT_REASON,
+      input: decoded,
+      status: 'running',
     });
-    sendExecResult(execMsg, 'mcpResult', create(McpResultSchema, {
-      result: {
-        case: 'error',
-        value: create(McpErrorSchema, { error: REJECT_REASON }),
-      },
-    }), sendFrame);
+
+    trackPendingTool?.(1);
+    void (async () => {
+      try {
+        let outcome;
+        if (typeof executeTool === 'function') {
+          outcome = await executeTool(toolName, decoded);
+        } else if (hostTools) {
+          outcome = await executeMcpTool(toolName, decoded, hostTools);
+        } else {
+          outcome = { ok: false, text: 'Host tools are not available' };
+        }
+        const ok = Boolean(outcome?.ok);
+        const text = typeof outcome?.text === 'string' ? outcome.text : '';
+        sendExecResult(execMsg, 'mcpResult', buildMcpSuccessResult(ok, text), sendFrame);
+        onEvent?.({
+          type: 'tool-result',
+          toolCallId,
+          toolName,
+          output: text,
+          isError: !ok,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Tool execution failed';
+        try {
+          sendExecResult(execMsg, 'mcpResult', buildMcpSuccessResult(false, message), sendFrame);
+        } catch {
+          try {
+            sendExecResult(execMsg, 'mcpResult', create(McpResultSchema, {
+              result: {
+                case: 'error',
+                value: create(McpErrorSchema, { error: message }),
+              },
+            }), sendFrame);
+          } catch {
+            // ignore send failures after bridge close
+          }
+        }
+        onEvent?.({
+          type: 'tool-result',
+          toolCallId,
+          toolName,
+          output: message,
+          isError: true,
+        });
+      } finally {
+        trackPendingTool?.(-1);
+      }
+    })();
     return;
   }
 
+  // --- Reject native Cursor tools (steer model to MCP tools) ---
   if (execCase === 'readArgs') {
     const args = execMsg.message.value;
     sendExecResult(execMsg, 'readResult', create(ReadResultSchema, {
@@ -583,9 +688,15 @@ function handleExecMessage(execMsg, sendFrame, cwd, onEvent) {
  * @param {Map<string, Uint8Array>} blobStore
  * @param {(data: Uint8Array) => void} sendFrame
  * @param {(event: object) => void} onEvent
- * @param {string} [cwd]
+ * @param {{
+ *   cwd?: string,
+ *   mcpTools?: unknown[],
+ *   hostTools?: object,
+ *   executeTool?: (toolName: string, args: Record<string, unknown>) => Promise<{ ok: boolean, text: string }>,
+ *   trackPendingTool?: (delta: number) => void,
+ * }} [execCtx]
  */
-function processServerMessage(msg, blobStore, sendFrame, onEvent, cwd) {
+function processServerMessage(msg, blobStore, sendFrame, onEvent, execCtx = {}) {
   const msgCase = msg.message.case;
 
   if (msgCase === 'interactionUpdate') {
@@ -607,7 +718,15 @@ function processServerMessage(msg, blobStore, sendFrame, onEvent, cwd) {
   }
 
   if (msgCase === 'execServerMessage') {
-    handleExecMessage(msg.message.value, sendFrame, cwd, onEvent);
+    handleExecMessage(msg.message.value, {
+      sendFrame,
+      cwd: execCtx.cwd,
+      onEvent,
+      mcpTools: execCtx.mcpTools,
+      hostTools: execCtx.hostTools,
+      executeTool: execCtx.executeTool,
+      trackPendingTool: execCtx.trackPendingTool,
+    });
     return;
   }
 
@@ -622,6 +741,7 @@ function processServerMessage(msg, blobStore, sendFrame, onEvent, cwd) {
 
 /**
  * Run one Cursor agent turn. Streams events via onEvent.
+ * Keeps the H2 bridge alive across MCP tool rounds (does not kill while tools run).
  *
  * @param {{
  *   accessToken: string,
@@ -632,6 +752,9 @@ function processServerMessage(msg, blobStore, sendFrame, onEvent, cwd) {
  *   conversationState?: Uint8Array | null,
  *   onEvent?: (event: object) => void,
  *   abortSignal?: AbortSignal,
+ *   hostTools?: object,
+ *   executeTool?: (toolName: string, args: Record<string, unknown>) => Promise<{ ok: boolean, text: string }>,
+ *   mcpTools?: unknown[],
  * }} options
  * @returns {Promise<{ conversationId: string, checkpoint: Uint8Array | null }>}
  */
@@ -644,9 +767,14 @@ export async function runCursorAgentTurn(options) {
   }
 
   const onEvent = typeof options.onEvent === 'function' ? options.onEvent : () => {};
+  const cwd = typeof options.cwd === 'string' ? options.cwd.trim() : '';
+  const mcpTools = Array.isArray(options.mcpTools) ? options.mcpTools : buildOpenChamberMcpTools();
+  const hostTools = options.hostTools
+    || (cwd ? createHostTools({ cwd }) : null);
+
   const payload = buildCursorRequest({
     text: options.text,
-    cwd: options.cwd,
+    cwd,
     modelSelection: options.modelSelection,
     conversationId: options.conversationId,
     conversationState: options.conversationState,
@@ -662,24 +790,60 @@ export async function runCursorAgentTurn(options) {
   let lastCheckpoint = null;
   let settled = false;
   let heartbeatTimer;
+  let pendingTools = 0;
+  /** @type {{ error?: Error } | null} */
+  let pendingFinish = null;
+  /** @type {(() => void) | null} */
+  let resolveWait = null;
 
-  const finish = (error) => {
-    if (settled) return;
-    settled = true;
+  const killBridge = () => {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
+    heartbeatTimer = undefined;
     try {
       bridge.kill();
     } catch {
       // ignore
     }
+  };
+
+  const emitDone = (error) => {
+    if (settled) return;
+    settled = true;
+    killBridge();
     if (error) {
       onEvent({ type: 'error', error: error instanceof Error ? error.message : String(error) });
     }
     onEvent({ type: 'done' });
+    resolveWait?.();
+  };
+
+  /**
+   * Defer bridge kill while MCP tools are still executing so mcpResult can be sent.
+   * @param {Error} [error]
+   */
+  const finish = (error) => {
+    if (settled) return;
+    if (pendingTools > 0) {
+      pendingFinish = { error };
+      return;
+    }
+    emitDone(error);
+  };
+
+  const trackPendingTool = (delta) => {
+    pendingTools = Math.max(0, pendingTools + delta);
+    if (pendingTools === 0 && pendingFinish && !settled) {
+      const { error } = pendingFinish;
+      pendingFinish = null;
+      emitDone(error);
+    }
   };
 
   const abortHandler = () => {
-    finish(new Error('Aborted'));
+    // Abort must not wait for in-flight host tools.
+    pendingTools = 0;
+    pendingFinish = null;
+    emitDone(new Error('Aborted'));
   };
   if (options.abortSignal) {
     if (options.abortSignal.aborted) {
@@ -693,7 +857,25 @@ export async function runCursorAgentTurn(options) {
   }
 
   await new Promise((resolve) => {
-    const sendFrame = (data) => bridge.write(data);
+    resolveWait = () => resolve(undefined);
+    const sendFrame = (data) => {
+      // Keep writing while tools are in flight even if stream end was requested.
+      if (!settled || pendingTools > 0) {
+        try {
+          bridge.write(data);
+        } catch {
+          // ignore
+        }
+      }
+    };
+
+    const execCtx = {
+      cwd,
+      mcpTools,
+      hostTools,
+      executeTool: options.executeTool,
+      trackPendingTool,
+    };
 
     bridge.onData(createConnectFrameParser(
       (messageBytes) => {
@@ -709,7 +891,7 @@ export async function runCursorAgentTurn(options) {
               }
               onEvent(event);
             },
-            options.cwd,
+            execCtx,
           );
         } catch {
           // ignore unparseable frames
@@ -719,18 +901,19 @@ export async function runCursorAgentTurn(options) {
         const err = parseConnectEndStream(endStreamBytes);
         if (err) finish(err);
         else finish();
-        resolve(undefined);
+        if (pendingTools === 0) resolve(undefined);
       },
     ));
 
     bridge.onClose(() => {
       if (!settled) finish();
-      resolve(undefined);
+      if (pendingTools === 0) resolve(undefined);
     });
 
     bridge.write(frameConnectMessage(payload.requestBytes));
     heartbeatTimer = setInterval(() => {
-      if (!settled && bridge.alive) {
+      // Heartbeat continues across tool rounds until the turn fully settles.
+      if ((!settled || pendingTools > 0) && bridge.alive) {
         bridge.write(makeHeartbeatBytes());
       }
     }, HEARTBEAT_INTERVAL_MS);

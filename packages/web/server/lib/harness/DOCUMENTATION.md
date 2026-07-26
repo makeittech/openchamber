@@ -29,6 +29,7 @@ Parent specs:
 | Claude permissions bridge | `translators/claude-code/permissions.js` |
 | Claude prompt orchestration | `translators/claude-code/index.js` |
 | Cursor Agent Run client / H2 bridge | `translators/cursor/agent-client.js`, `h2-bridge*.mjs` |
+| Cursor MCP host tools (sandboxed) | `translators/cursor/host-tools.js`, `mcp-tools.js` |
 | Cursor OAuth (PKCE + refresh) | `translators/cursor/auth.js`, `login.js`, `credentials.js` |
 | Cursor models | `translators/cursor/models.js` |
 | Cursor prompt orchestration | `translators/cursor/index.js` |
@@ -166,8 +167,16 @@ success catalog. Error / missing-cli responses use `sections: []`.
   `providerID: 'cursor'`.
 - Resume: conversation id + checkpoint bytes stored in `foreignSessionId`
   (`cursor:<conversationId>[:<base64url-checkpoint>]`).
-- MVP gaps: native Cursor tools / MCP / images / attachments are not bridged;
-  native tool exec requests are rejected with a host-tools message.
+- **Tools (plugin-parity MCP loop):** OpenChamber injects MCP tool definitions
+  (`bash`, `read`, `write`, `edit`, `delete`, `list`, `glob`, `grep`) into
+  `RequestContext` with `providerIdentifier: "openchamber"`. Native Cursor tools
+  are rejected with a message to use MCP tools instead. On `mcpArgs`, the host
+  decodes args, executes under a session-directory sandbox (`host-tools.js`),
+  sends `mcpResult` on the same H2 bridge, and emits UI `tool-call` /
+  `tool-result` events. The bridge stays alive across tool rounds (not killed
+  while host tools run).
+- Remaining gaps vs full opencode-cursor plugin: stall recovery / bridge resume
+  across HTTP requests, images, attachments, permission prompts.
 - Login responses never include verifiers, access tokens, or refresh tokens.
 
 ### Dependency injection
@@ -264,7 +273,7 @@ client-provided `messageId` / `assistantMessageId` for optimistic reconcile.
 ## Out of scope (later slices)
 
 - Codex CLI / Gemini CLI engines
-- Cursor host-tool / MCP bridging, images, attachments
+- Cursor images / attachments / stall-recovery parity with opencode-cursor
 - Reverse handoff billing notice (Claude → OpenCode)
 - Goal / MultiRun / OpenChamber injected tool on Claude
 
@@ -282,6 +291,8 @@ bun test packages/web/server/lib/harness/translators/claude-code/attachments.tes
 bun test packages/web/server/lib/harness/translators/claude-code/permissions.test.js
 bun test packages/web/server/lib/harness/translators/cursor/auth.test.js
 bun test packages/web/server/lib/harness/translators/cursor/credentials.test.js
+bun test packages/web/server/lib/harness/translators/cursor/host-tools.test.js
+bun test packages/web/server/lib/harness/translators/cursor/mcp-tools.test.js
 bun test packages/ui/src/lib/harness/client.test.js
 ```
 

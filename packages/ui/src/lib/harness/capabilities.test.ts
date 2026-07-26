@@ -52,12 +52,15 @@ describe('sessionSupports', () => {
     expect(sessionSupports('ses_cursor', 'prompt')).toBe(true);
     expect(sessionSupports('ses_cursor', 'abort')).toBe(true);
     expect(sessionSupports('ses_cursor', 'resume')).toBe(true);
-    expect(sessionSupports('ses_cursor', 'shell')).toBe(false);
+    expect(sessionSupports('ses_cursor', 'shell')).toBe(true);
+    expect(sessionSupports('ses_cursor', 'streaming-tools')).toBe(true);
+    expect(sessionSupports('ses_cursor', 'mcp')).toBe(true);
     expect(sessionSupports('ses_cursor', 'slash-commands')).toBe(false);
     expect(sessionSupports('ses_cursor', 'images')).toBe(false);
     expect(sessionSupports('ses_cursor', 'goal')).toBe(false);
     expect(STATIC_HARNESS_CAPABILITIES.cursor.resume).toBe('partial');
-    expect(STATIC_HARNESS_CAPABILITIES.cursor['streaming-tools']).toBe('none');
+    expect(STATIC_HARNESS_CAPABILITIES.cursor['streaming-tools']).toBe('full');
+    expect(STATIC_HARNESS_CAPABILITIES.cursor.mcp).toBe('partial');
   });
 
   test('prefers sticky session target over last-used', () => {

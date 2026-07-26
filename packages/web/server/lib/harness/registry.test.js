@@ -34,7 +34,10 @@ describe('harness registry', () => {
     expect(cursor.auth.mode).toBe('subscription-oauth');
     expect(cursor.install.binaryNames).toEqual([]);
     expect(cursor.capabilities.prompt).toBe('full');
-    expect(cursor.capabilities['streaming-tools']).toBe('none');
+    expect(cursor.capabilities['streaming-tools']).toBe('full');
+    expect(cursor.capabilities.shell).toBe('full');
+    expect(cursor.capabilities.mcp).toBe('partial');
+    expect(cursor.capabilities.permissions).toBe('none');
     expect(isKnownHarnessId('cursor')).toBe(true);
   });
 
