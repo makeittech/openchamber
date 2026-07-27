@@ -19,6 +19,11 @@ import { isMobileSurfaceRuntime } from "@/lib/runtimeSurface"
 import { clearSessionPrefetch } from "./session-prefetch-cache"
 import { getSessionMaterializationStatus } from "./materialization"
 import { getRuntimeKey } from "@/lib/runtime-switch"
+import {
+  resetSyncSessionInflight,
+  syncSessionGenerationByKey,
+  syncSessionInflightByKey,
+} from "./sync-session-inflight"
 
 const INITIAL_MESSAGE_PAGE_SIZE = 50
 const VSCODE_INITIAL_MESSAGE_PAGE_SIZE = 30
@@ -36,15 +41,7 @@ type SeenDirectoryEntry = {
 }
 const seenByDirectory = new Map<string, SeenDirectoryEntry>()
 
-// Shared across useSync() hook instances. Chat, model controls, and sidebar can
-// all request the same session during startup; coalesce them into one HTTP load.
-const syncSessionInflightByKey = new Map<string, Promise<void>>()
-
-// Per-session generation counter. When a newer syncSession request starts for
-// the same session, older in-flight requests become stale and must not write
-// to the store. This prevents rapid session switches (e.g. 1→2→3 in the
-// sidebar) from having each completed fetch fight for focus.
-const syncSessionGenerationByKey = new Map<string, number>()
+export { resetSyncSessionInflight }
 
 type SdkResult<T> = {
   data?: T
@@ -237,9 +234,10 @@ export function useSync() {
       touch(sessionID, targetDirectory)
       const key = keyFor(sessionID, targetDirectory)
 
-      // Dedup inflight requests
+      // Dedup inflight requests. Forced loads must not join a doomed Strict Mode
+      // / disposed-loader promise that finishes empty with no commit.
       const existing = syncSessionInflightByKey.get(key)
-      if (existing) return existing
+      if (existing && !force) return existing
 
       // This is a new request. Bump generation so any older request that
       // might still be finishing (e.g. from a previous component lifecycle)

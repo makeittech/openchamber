@@ -541,7 +541,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
     const syncDirectory = useSyncDirectory();
     const effectiveSessionDirectory = currentSessionDirectory ?? syncDirectory;
     const ensureSessionRenderable = React.useCallback(
-        (sessionId: string) => sync.ensureSessionRenderable(sessionId, false, effectiveSessionDirectory),
+        (sessionId: string, force = false) => sync.ensureSessionRenderable(sessionId, force, effectiveSessionDirectory),
         [effectiveSessionDirectory, sync],
     );
     const loadMoreMessages = React.useCallback(
@@ -980,11 +980,13 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
         // still need a harness overlay fetch. Keep ensuring while local message
         // count is still zero — a stale startup load can finish without
         // changing React deps, so a one-shot effect would leave chat blank.
+        // Force while empty so we never join a disposed Strict Mode inflight.
         if (hasRenderableSessionSnapshot && sessionMessageCount > 0) return;
-        void ensureSessionRenderable(currentSessionId);
+        const forceEmpty = sessionMessageCount === 0;
+        void ensureSessionRenderable(currentSessionId, forceEmpty);
         if (typeof window === 'undefined') return;
         const timer = window.setInterval(() => {
-            void ensureSessionRenderable(currentSessionId);
+            void ensureSessionRenderable(currentSessionId, forceEmpty);
         }, 1_500);
         return () => window.clearInterval(timer);
     }, [active, currentSessionId, ensureSessionRenderable, hasRenderableSessionSnapshot, sessionMessageCount]);

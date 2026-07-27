@@ -73,6 +73,7 @@ import {
   setImperativeSessionMessageLoader,
   type SessionMessageLoadState,
 } from "./session-message-loader"
+import { resetSyncSessionInflight } from "./sync-session-inflight"
 
 // ---------------------------------------------------------------------------
 // Context
@@ -2265,9 +2266,18 @@ export function SyncProvider(props: {
     }
   }, [props.sdk, props.directory, childStores, messageLoader, routingIndex])
 
+  useEffect(() => {
+    // React Strict Mode remounts SyncProvider while a module-level syncSession
+    // inflight promise still belongs to the disposed loader. Clear it so the
+    // remounted tree can fetch Claude/harness messages instead of joining the
+    // doomed empty completion.
+    resetSyncSessionInflight()
+  }, [messageLoader])
+
   useEffect(() => () => {
     messageLoader.dispose()
     childStores.disposeAll()
+    resetSyncSessionInflight()
   }, [childStores, messageLoader])
 
   // Subscribe to child store for streaming state derivation
