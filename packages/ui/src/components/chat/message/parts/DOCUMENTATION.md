@@ -56,6 +56,7 @@ Use this doc when you ask an agent to change tool/header/description behavior.
 - The managed `openchamber` plugin tool uses the expandable path and hides its broad protocol input. The plugin supplies the selected action's human description as the native tool title; the UI renders that metadata without owning an action map. The full versioned result envelope renders through the same neutral JSON summary/tree/raw views as other tools, without a tool-specific output card.
 - `ToolPart` defers expanded content after a user toggle, preventing large tool input/output payloads from mounting during the initial chat render.
 - Thinking/Justification duration is hidden in `sorted` mode (handled in `ReasoningPart.tsx` + `JustificationBlock.tsx`).
+- Tool live duration (`formatToolDuration.ts`) is unbounded and switches to `Xm Ys` / `Xh Ym` after one minute so long shell tasks do not appear stuck at `300.0s`.
 
 ## "I want to change description for Perplexity" (example recipe)
 

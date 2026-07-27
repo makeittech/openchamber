@@ -31,6 +31,7 @@ import { bootstrapGlobal, bootstrapDirectory } from "./bootstrap"
 import { retry } from "./retry"
 import { touchStreamingSession, updateChangedStreamingSessions, updateStreamingState } from "./streaming"
 import { countSyncPerformance } from "./performance-diagnostics"
+import { applyStaleToolPartSettlements } from "./stale-tool-parts"
 import { setActionRefs } from "./session-actions"
 import { setSyncRefs, getAllSyncSessions } from "./sync-refs"
 import { stripSessionDiffSnapshots } from "./sanitize"
@@ -72,6 +73,7 @@ import {
   setImperativeSessionMessageLoader,
   type SessionMessageLoadState,
 } from "./session-message-loader"
+import { resetSyncSessionInflight } from "./sync-session-inflight"
 
 // ---------------------------------------------------------------------------
 // Context
@@ -1799,6 +1801,8 @@ export function SyncProvider(props: {
     })
   }
   const messageLoader = messageLoaderRef.current
+  // Render-path configure kept for sdk/runtime identity checks; the effect below
+  // also configures so Strict Mode dispose+re-run revives the same instance.
   messageLoader.configure({ sdk: props.sdk, runtimeKey })
   const routingIndexRef = useRef<EventRoutingIndex | null>(null)
   if (!routingIndexRef.current) routingIndexRef.current = createEventRoutingIndex()
@@ -2159,6 +2163,10 @@ export function SyncProvider(props: {
           if (stopped) return
           const now = Date.now()
           for (const [directory, store] of childStores.children.entries()) {
+            // Always scan directory stores — idle sessions with orphan running
+            // tools are not in the active-candidate set, but still need settle.
+            applyStaleToolPartSettlements(store, now)
+
             const state = store.getState()
             const candidateSessionIds = getActiveSessionCandidateIds(directory, state)
             if (candidateSessionIds.length === 0) {
@@ -2260,10 +2268,30 @@ export function SyncProvider(props: {
     }
   }, [props.sdk, props.directory, childStores, messageLoader, routingIndex])
 
-  useEffect(() => () => {
-    messageLoader.dispose()
-    childStores.disposeAll()
-  }, [childStores, messageLoader])
+  useEffect(() => {
+    // Configure (and revive after Strict Mode dispose) in an effect so the
+    // cleanup+re-run cycle restores a disposed loader before chat ensure runs.
+    messageLoader.configure({ sdk: props.sdk, runtimeKey })
+    return () => {
+      messageLoader.dispose()
+    }
+  }, [messageLoader, props.sdk, runtimeKey])
+
+  useEffect(() => {
+    // Drop coalesced syncSession work when this provider's loader is disposed.
+    // Do not disposeAll here in the same tick as loader.dispose without a
+    // matching configure revive — childStores.configure() clears its disposed
+    // bit when the bootstrap effect re-runs after Strict Mode.
+    return () => {
+      resetSyncSessionInflight()
+    }
+  }, [messageLoader])
+
+  // Do not disposeAll() in an effect cleanup: React Strict Mode runs that
+  // cleanup while this provider instance stays mounted, wiping directory
+  // stores that already hold hydrated Claude messages and leaving chat on
+  // skeletons. Child stores are discarded with the provider instance on a
+  // real unmount (runtime key change recreates SyncProvider via key=).
 
   // Subscribe to child store for streaming state derivation
   useEffect(() => {
