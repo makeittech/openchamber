@@ -24,7 +24,6 @@ Product intent: keep OpenChamber UI/API as the primary surface; expand execution
 - Codex CLI / Gemini CLI engines (structure must allow them later).
 - Using Claude subscription OAuth through direct Anthropic HTTP from OpenChamber.
 - Full TTY parity with interactive `claude` (rewind UI, all interactive-only slash commands).
-- MultiRun / injected `openchamber` tool on Claude sessions.
 - Separate Claude permission-mode chip (Claude `permissionMode` mirrors OpenCode agent edit + auto-accept).
 - Editing Claude MCP/settings from OpenChamber Providers/MCP pages.
 - Lossless binary clone of OpenCode sessions into Claude native session format.
