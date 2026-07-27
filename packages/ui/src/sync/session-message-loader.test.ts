@@ -148,7 +148,7 @@ describe("SessionMessageLoader", () => {
     const second = deferred<ReturnType<typeof response>>()
     let calls = 0
     const childStores = new ChildStoreManager()
-    const sdkA = { session: { messages: async ({ sessionID }: { sessionID: string }) => {
+    const sdkA = { session: { messages: async () => {
       calls += 1
       return calls === 1 ? first.promise : second.promise
     } } } as unknown as OpencodeClient
@@ -159,7 +159,7 @@ describe("SessionMessageLoader", () => {
     // Recreate the SDK client mid-flight (SyncProvider configure) — previously
     // marked the fetch stale and left Claude sessions with zero messages.
     loader.configure({
-      sdk: { session: { messages: async ({ sessionID }: { sessionID: string }) => {
+      sdk: { session: { messages: async () => {
         calls += 1
         return second.promise
       } } } as unknown as OpencodeClient,
@@ -169,10 +169,41 @@ describe("SessionMessageLoader", () => {
     await loading
     expect(childStores.getChild(target.directory)?.getState().message[target.sessionID]?.length ?? 0).toBe(0)
 
+    // Auto-retry must land without a manual ensure — ChatContainer deps do not
+    // change when a stale load commits nothing.
     second.resolve(response([createRecord(target.sessionID, "msg_live")]))
     await new Promise((resolve) => setTimeout(resolve, 1600))
-    await loader.ensure(target, { reason: "reactive" })
 
+    expect(childStores.getChild(target.directory)?.getState().message[target.sessionID]?.map((message) => message.id))
+      .toEqual(["msg_live"])
+    loader.dispose()
+    childStores.disposeAll()
+  })
+
+  test("retries after invalidateDirectory deletes the loader entry mid-flight", async () => {
+    const first = deferred<ReturnType<typeof response>>()
+    const second = deferred<ReturnType<typeof response>>()
+    let calls = 0
+    const childStores = new ChildStoreManager()
+    const sdk = { session: { messages: async () => {
+      calls += 1
+      return calls === 1 ? first.promise : second.promise
+    } } } as unknown as OpencodeClient
+    const loader = new SessionMessageLoader(childStores, { sdk, runtimeKey: "runtime-a" })
+    const target = { directory: "/repo", sessionID: "session-b" }
+
+    const loading = loader.ensure(target, { reason: "navigation" })
+    // Directory disposal deletes the entry; the previous identity check aborted retry.
+    loader.invalidateDirectory(target.directory)
+    childStores.disposeDirectory(target.directory)
+    first.resolve(response([createRecord(target.sessionID, "msg_stale")]))
+    await loading
+    expect(calls).toBe(1)
+
+    second.resolve(response([createRecord(target.sessionID, "msg_live")]))
+    await new Promise((resolve) => setTimeout(resolve, 1600))
+
+    expect(calls).toBeGreaterThan(1)
     expect(childStores.getChild(target.directory)?.getState().message[target.sessionID]?.map((message) => message.id))
       .toEqual(["msg_live"])
     loader.dispose()

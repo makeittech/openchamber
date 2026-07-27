@@ -539,18 +539,34 @@ export class SessionMessageLoader {
         finishPerformanceEvent(completed ? "complete" : "stale")
         if (completed) return
         // Stale empty loads must retry — otherwise Claude overlay data fetched
-        // during bootstrap store replacement never lands in the live store.
-        const live = this.childStores.getChild(target.directory)
-        const count = live?.getState().message[target.sessionID]?.length ?? 0
-        if (count > 0 || this.disposed) return
-        const entryKey = this.keyFor(target)
-        setTimeout(() => {
-          if (this.disposed) return
-          if (this.entries.get(entryKey) !== entry) return
-          const again = this.childStores.getChild(target.directory)?.getState().message[target.sessionID]?.length ?? 0
-          if (again > 0) return
-          void this.ensure(target, { reason: "reactive" })
-        }, EMPTY_HYDRATION_RETRY_MS)
+        // during bootstrap store replacement / directory invalidation never
+        // lands in the live store. Do not require the same entry object:
+        // invalidateDirectory deletes entries, and requiring identity silently
+        // dropped the only recovery path (ChatContainer deps also stay unchanged
+        // when a stale load commits nothing).
+        if (this.disposed) return
+        const liveCount = () => (
+          this.childStores.getChild(target.directory)?.getState().message[target.sessionID]?.length ?? 0
+        )
+        if (liveCount() > 0) return
+        const scheduleStaleRetry = (attempt: number) => {
+          setTimeout(() => {
+            if (this.disposed) return
+            try {
+              this.childStores.ensureChild(target.directory, { bootstrap: false })
+            } catch {
+              if (attempt < 4) scheduleStaleRetry(attempt + 1)
+              return
+            }
+            if (liveCount() > 0) return
+            void this.ensure(target, { force: true, reason: "navigation" }).then(() => {
+              if (this.disposed) return
+              if (liveCount() > 0) return
+              if (attempt < 4) scheduleStaleRetry(attempt + 1)
+            })
+          }, EMPTY_HYDRATION_RETRY_MS)
+        }
+        scheduleStaleRetry(0)
       })
       .catch((error: unknown) => {
         if (!isCurrent()) {

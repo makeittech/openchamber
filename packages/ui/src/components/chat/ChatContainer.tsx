@@ -977,10 +977,16 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
     React.useEffect(() => {
         if (!active || !currentSessionId) return;
         // Empty [] is renderable (stops skeletons) but Claude transcripts may
-        // still need a harness overlay fetch. Force one ensure while local
-        // message count is still zero.
+        // still need a harness overlay fetch. Keep ensuring while local message
+        // count is still zero — a stale startup load can finish without
+        // changing React deps, so a one-shot effect would leave chat blank.
         if (hasRenderableSessionSnapshot && sessionMessageCount > 0) return;
         void ensureSessionRenderable(currentSessionId);
+        if (typeof window === 'undefined') return;
+        const timer = window.setInterval(() => {
+            void ensureSessionRenderable(currentSessionId);
+        }, 1_500);
+        return () => window.clearInterval(timer);
     }, [active, currentSessionId, ensureSessionRenderable, hasRenderableSessionSnapshot, sessionMessageCount]);
 
 	if (!currentSessionId && !draftOpen) {
