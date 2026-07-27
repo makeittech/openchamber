@@ -191,6 +191,7 @@ type HarnessDescriptor = {
 | permissions | full | `canUseTool` → `permission.asked` with Always patterns + tool linkage; agent-derived `permissionMode`; fail-closed timeout/abort |
 | images | full | base64 image blocks |
 | file-attachments | full | `data:` embeds; sandboxed `file://` / project-path refs; images, text-like, PDF; reject opaque binaries |
+| shell | full | OpenCode `session.shell` on the shared session id (engine-independent; available while Claude owns prompt turns) |
 | slash-commands | partial | known OpenCode slash/skills blocked on Claude send; CLI-native skills via prompt text only |
 | mcp | partial | whatever Claude loads natively; no OpenChamber MCP editor bridge |
 | subagents | partial | appear in stream if CLI emits; limited UI affordances |
@@ -413,11 +414,13 @@ Status matrix: `ready` / `needs-login` / `missing-cli` / `error`. `unsupported-h
 ```
 sendMessage / routeMessage
   resolve ExecutionTarget (sticky session → pending handoff → last-used)
-  if harnessId === 'opencode':
+  if inputMode === 'shell':
+    opencodeClient.shellSession (shared session infrastructure; all engines)
+  else if harnessId === 'opencode':
     existing opencodeClient path
   else if harnessId === 'claude-code':
     block if catalog status ≠ ready (toast + deep-link Engines)
-    block shell mode and known OpenCode slash/skills
+    block known OpenCode slash/skills
     optimisticSend → POST /api/harness/prompt {
       sessionId, directory, target, text, files?, messageId?, assistantMessageId?, seedFromSessionId?
     }

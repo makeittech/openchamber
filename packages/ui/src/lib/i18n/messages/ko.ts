@@ -2210,7 +2210,6 @@ export const dict: Record<I18nKey, string> = {
   'chat.engines.manageEngines': '엔진 관리…',
   'chat.engines.chip.claude': 'Claude · {model}',
   'chat.engines.notReady': 'Claude Code가 준비되지 않았습니다. 설정 → 엔진에서 설치, 로그인 또는 다시 감지하세요.',
-  'chat.engines.shellUnsupported': 'Claude Code에서는 셸 모드를 사용할 수 없습니다. OpenCode로 전환하거나 일반 메시지를 보내세요.',
   'chat.engines.slashUnsupported': 'Claude Code에서는 슬래시 명령을 사용할 수 없습니다. OpenCode로 전환하거나 일반 메시지를 보내세요.',
   'chat.engines.permissionMode.label': '권한 모드',
   'chat.engines.permissionMode.default': '기본',

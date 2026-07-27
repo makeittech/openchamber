@@ -87,8 +87,6 @@ import type { ExecutionTarget } from "@/types/harness"
 
 export type { AttachedFile }
 
-const CLAUDE_SHELL_UNSUPPORTED =
-  "Shell mode is not available on Claude Code. Switch to OpenCode or send a normal message."
 const CLAUDE_SLASH_UNSUPPORTED =
   "Slash commands are not available on Claude Code. Switch to OpenCode or send a normal message."
 const CLAUDE_NOT_READY_MESSAGE =
@@ -141,12 +139,22 @@ export function routeMessage(params: {
     persistSessionExecutionTarget(params.sessionId, target)
   }
 
-  if (target.harnessId === "claude-code") {
-    if (params.inputMode === "shell") {
-      return Promise.reject(new HarnessClientError(CLAUDE_SHELL_UNSUPPORTED, "CLAUDE_SHELL_UNSUPPORTED", 400))
-    }
+  // Shell mode uses OpenCode session.shell on the shared session id. It is
+  // session infrastructure, not an engine prompt path — available for every
+  // sticky harness (including Claude Code).
+  if (params.inputMode === "shell") {
+    return opencodeClient.shellSession({
+      sessionId: params.sessionId,
+      directory: requestDirectory,
+      agent: params.agent ?? "",
+      model: { providerID: params.providerID, modelID: params.modelID },
+      command: params.content,
+    }).then(() => undefined)
+  }
 
-    // Reject slash/shell on Claude rather than silently falling back to OpenCode.
+  if (target.harnessId === "claude-code") {
+    // Reject known OpenCode slash/skills on Claude rather than silently falling
+    // back to OpenCode command dispatch.
     if (params.content.startsWith("/")) {
       const [head] = params.content.split(" ")
       const cmdName = head.slice(1)
@@ -219,16 +227,6 @@ export function routeMessage(params: {
         seedFromSessionId: params.seedFromSessionId,
       }).then(() => {}),
     })
-  }
-
-  if (params.inputMode === "shell") {
-    return opencodeClient.shellSession({
-      sessionId: params.sessionId,
-      directory: requestDirectory,
-      agent: params.agent ?? "",
-      model: { providerID: params.providerID, modelID: params.modelID },
-      command: params.content,
-    }).then(() => undefined)
   }
 
   // Slash commands — fire and forget, SSE delivers messages and status

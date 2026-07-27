@@ -2176,7 +2176,6 @@ export const dict: Record<I18nKey, string> = {
   "chat.engines.manageEngines": "Керувати рушіями…",
   "chat.engines.chip.claude": "Claude · {model}",
   "chat.engines.notReady": "Claude Code не готовий. Відкрийте Налаштування → Рушії, щоб встановити, увійти або виявити знову.",
-  "chat.engines.shellUnsupported": "Режим оболонки недоступний у Claude Code. Перейдіть на OpenCode або надішліть звичайне повідомлення.",
   "chat.engines.slashUnsupported": "Команди зі слешем недоступні у Claude Code. Перейдіть на OpenCode або надішліть звичайне повідомлення.",
   "chat.engines.permissionMode.label": "Режим дозволів",
   "chat.engines.permissionMode.default": "Типовий",

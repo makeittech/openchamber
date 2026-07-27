@@ -2209,7 +2209,6 @@ export const dict: Record<I18nKey, string> = {
   'chat.engines.manageEngines': 'エンジンを管理…',
   'chat.engines.chip.claude': 'Claude · {model}',
   'chat.engines.notReady': 'Claude Code の準備ができていません。設定 → エンジンでインストール、ログイン、または再検出してください。',
-  'chat.engines.shellUnsupported': 'シェルモードは Claude Code では利用できません。OpenCode に切り替えるか、通常のメッセージを送信してください。',
   'chat.engines.slashUnsupported': 'スラッシュコマンドは Claude Code では利用できません。OpenCode に切り替えるか、通常のメッセージを送信してください。',
   'chat.engines.permissionMode.label': '権限モード',
   'chat.engines.permissionMode.default': 'デフォルト',

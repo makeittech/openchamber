@@ -1976,7 +1976,6 @@ export const dict = {
   'chat.engines.manageEngines': 'Gérer les moteurs…',
   'chat.engines.chip.claude': 'Claude · {model}',
   'chat.engines.notReady': 'Claude Code n’est pas prêt. Ouvrez Réglages → Moteurs pour installer, vous connecter ou redétecter.',
-  'chat.engines.shellUnsupported': 'Le mode shell n’est pas disponible sur Claude Code. Passez à OpenCode ou envoyez un message normal.',
   'chat.engines.slashUnsupported': 'Les commandes slash ne sont pas disponibles sur Claude Code. Passez à OpenCode ou envoyez un message normal.',
   'chat.engines.permissionMode.label': 'Mode d’autorisation',
   'chat.engines.permissionMode.default': 'Par défaut',

@@ -35,11 +35,14 @@ const { useSkillsStore } = await import('@/stores/useSkillsStore');
 
 describe('routeMessage Claude harness branch', () => {
   const sendMessageCalls = [];
+  const shellSessionCalls = [];
   let originalSendMessage;
+  let originalShellSession;
 
   beforeEach(() => {
     harnessPromptCalls.length = 0;
     sendMessageCalls.length = 0;
+    shellSessionCalls.length = 0;
     harnessPromptMock.mockClear();
 
     const childStore = {
@@ -89,10 +92,16 @@ describe('routeMessage Claude harness branch', () => {
       sendMessageCalls.push(params);
       return 'msg';
     };
+    originalShellSession = opencodeClient.shellSession;
+    opencodeClient.shellSession = async (params) => {
+      shellSessionCalls.push(params);
+      return { info: {}, parts: [] };
+    };
   });
 
   afterEach(() => {
     opencodeClient.sendMessage = originalSendMessage;
+    opencodeClient.shellSession = originalShellSession;
     useSelectionStore.setState({
       sessionTargets: new Map(),
       lastUsedTarget: null,
@@ -127,27 +136,30 @@ describe('routeMessage Claude harness branch', () => {
     expect(sendMessageCalls).toHaveLength(0);
   });
 
-  test('rejects shell mode on Claude instead of OpenCode fallback', async () => {
+  test('routes shell mode through OpenCode session.shell on Claude sessions', async () => {
     useSelectionStore.getState().saveSessionTarget('session-claude', {
       harnessId: 'claude-code',
       modelRef: 'sonnet',
     });
 
-    let caught = null;
-    try {
-      await routeMessage({
-        sessionId: 'session-claude',
-        directory: '/claude/project',
-        content: 'ls',
-        providerID: 'anthropic',
-        modelID: 'claude-sonnet',
-        inputMode: 'shell',
-      });
-    } catch (error) {
-      caught = error;
-    }
+    await routeMessage({
+      sessionId: 'session-claude',
+      directory: '/claude/project',
+      content: 'ls',
+      providerID: 'anthropic',
+      modelID: 'claude-sonnet',
+      agent: 'build',
+      inputMode: 'shell',
+    });
 
-    expect(caught?.code).toBe('CLAUDE_SHELL_UNSUPPORTED');
+    expect(shellSessionCalls).toHaveLength(1);
+    expect(shellSessionCalls[0]).toEqual({
+      sessionId: 'session-claude',
+      directory: '/claude/project',
+      agent: 'build',
+      model: { providerID: 'anthropic', modelID: 'claude-sonnet' },
+      command: 'ls',
+    });
     expect(harnessPromptCalls).toHaveLength(0);
     expect(sendMessageCalls).toHaveLength(0);
   });

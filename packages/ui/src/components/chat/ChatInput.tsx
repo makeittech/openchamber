@@ -2639,11 +2639,9 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                     || error.code === 'CLAUDE_MISSING_CLI'
                     || error.code === 'CLAUDE_NEEDS_LOGIN'
                     ? t('chat.engines.notReady')
-                    : error.code === 'CLAUDE_SHELL_UNSUPPORTED'
-                        ? t('chat.engines.shellUnsupported')
-                        : error.code === 'CLAUDE_SLASH_UNSUPPORTED'
-                            ? t('chat.engines.slashUnsupported')
-                            : (rawMessage || t('chat.chatInput.toast.messageSendFailed'));
+                    : error.code === 'CLAUDE_SLASH_UNSUPPORTED'
+                        ? t('chat.engines.slashUnsupported')
+                        : (rawMessage || t('chat.chatInput.toast.messageSendFailed'));
                 if (allAttachments.length > 0) {
                     useInputStore.getState().setAttachedFiles(allAttachments);
                 }

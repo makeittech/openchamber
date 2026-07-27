@@ -2180,7 +2180,6 @@ export const dict: Record<I18nKey, string> = {
   'chat.engines.manageEngines': '管理引擎…',
   'chat.engines.chip.claude': 'Claude · {model}',
   'chat.engines.notReady': 'Claude Code 尚未就緒。請開啟設定 → 引擎以安裝、登入或重新偵測。',
-  'chat.engines.shellUnsupported': 'Claude Code 不支援 Shell 模式。請切換到 OpenCode，或傳送一般訊息。',
   'chat.engines.slashUnsupported': 'Claude Code 不支援斜線指令。請切換到 OpenCode，或傳送一般訊息。',
   'chat.engines.permissionMode.label': '權限模式',
   'chat.engines.permissionMode.default': '預設',

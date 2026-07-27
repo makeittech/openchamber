@@ -1214,7 +1214,6 @@ export const dict: Record<I18nKey, string> = {
   'chat.engines.manageEngines': 'Zarządzaj silnikami…',
   'chat.engines.chip.claude': 'Claude · {model}',
   'chat.engines.notReady': 'Claude Code nie jest gotowy. Otwórz Ustawienia → Silniki, aby zainstalować, zalogować się lub wykryć ponownie.',
-  'chat.engines.shellUnsupported': 'Tryb powłoki nie jest dostępny w Claude Code. Przełącz na OpenCode lub wyślij zwykłą wiadomość.',
   'chat.engines.slashUnsupported': 'Polecenia slash nie są dostępne w Claude Code. Przełącz na OpenCode lub wyślij zwykłą wiadomość.',
   'chat.engines.permissionMode.label': 'Tryb uprawnień',
   'chat.engines.permissionMode.default': 'Domyślny',

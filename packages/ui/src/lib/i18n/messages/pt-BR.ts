@@ -2176,7 +2176,6 @@ export const dict: Record<I18nKey, string> = {
   "chat.engines.manageEngines": "Gerenciar mecanismos…",
   "chat.engines.chip.claude": "Claude · {model}",
   "chat.engines.notReady": "O Claude Code não está pronto. Abra Configurações → Mecanismos para instalar, entrar ou detectar novamente.",
-  "chat.engines.shellUnsupported": "O modo shell não está disponível no Claude Code. Mude para o OpenCode ou envie uma mensagem normal.",
   "chat.engines.slashUnsupported": "Comandos com barra não estão disponíveis no Claude Code. Mude para o OpenCode ou envie uma mensagem normal.",
   "chat.engines.permissionMode.label": "Modo de permissão",
   "chat.engines.permissionMode.default": "Padrão",

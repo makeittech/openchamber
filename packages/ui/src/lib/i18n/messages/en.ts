@@ -2210,7 +2210,6 @@ export const dict = {
   'chat.engines.manageEngines': 'Manage engines…',
   'chat.engines.chip.claude': 'Claude · {model}',
   'chat.engines.notReady': 'Claude Code is not ready. Open Settings → Engines to install, log in, or re-detect.',
-  'chat.engines.shellUnsupported': 'Shell mode is not available on Claude Code. Switch to OpenCode or send a normal message.',
   'chat.engines.slashUnsupported': 'Slash commands are not available on Claude Code. Switch to OpenCode or send a normal message.',
   'chat.engines.permissionMode.label': 'Permission mode',
   'chat.engines.permissionMode.default': 'Default',
