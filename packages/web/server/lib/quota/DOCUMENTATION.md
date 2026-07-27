@@ -16,7 +16,7 @@ These provider IDs are currently dispatchable via `fetchQuotaForProvider(provide
 
 | Provider ID | Display name | Module | Auth aliases/keys |
 | --- | --- | --- | --- |
-| `claude` | Claude subscription | `providers/claude.js` (+ `claude-cli-auth.js`, `claude-oauth.js`) | Claude Code CLI `~/.claude/.credentials.json` OAuth first; fallback OpenCode `auth.json` aliases `anthropic`, `claude`. Expired access tokens are refreshed via the public Claude Code / OpenCode Anthropic OAuth client before `/api/oauth/usage`; rotated tokens are persisted and concurrent refreshes are single-flighted. |
+| `claude` | Claude subscription | `providers/claude.js` (+ `claude-cli-auth.js`, `claude-oauth.js`) | Prefer Claude Code CLI credentials / OpenCode OAuth over inference-only `CLAUDE_CODE_OAUTH_TOKEN` setup tokens. Usage calls require `User-Agent: claude-code/...`. Expired tokens refresh via the public Claude Code / OpenCode Anthropic OAuth client. If `/api/oauth/usage` returns 403 for missing `user:profile`, fall back to unified rate-limit headers from a tiny Messages probe so Services/Settings still show 5h and 7d windows. |
 | `codex` | Codex | `providers/codex.js` | `openai`, `codex`, `chatgpt` |
 | `cursor` | Cursor | `providers/cursor.js` | Environment/token files, OpenChamber-managed credentials, or explicit one-time Cursor import |
 | `google` | Google | `providers/google/index.js` | `google`, `google.oauth`, Antigravity accounts file |

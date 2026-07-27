@@ -59,7 +59,12 @@ function toExpiresAtMs(value) {
  * Supports camelCase (current CLI) and snake_case variants.
  *
  * @param {unknown} parsed
- * @returns {{ accessToken: string, refreshToken: string | null, expiresAt: number | null } | null}
+ * @returns {{
+ *   accessToken: string,
+ *   refreshToken: string | null,
+ *   expiresAt: number | null,
+ *   scopes: string[] | null,
+ * } | null}
  */
 export function extractClaudeOAuthCredentials(parsed) {
   if (!parsed || typeof parsed !== 'object') return null;
@@ -82,11 +87,15 @@ export function extractClaudeOAuthCredentials(parsed) {
     ? refreshRaw.trim()
     : null;
   const expiresAt = toExpiresAtMs(block.expiresAt ?? block.expires_at);
+  const scopes = Array.isArray(block.scopes)
+    ? block.scopes.filter((scope) => typeof scope === 'string' && scope.trim()).map((scope) => scope.trim())
+    : null;
 
   return {
     accessToken: accessRaw.trim(),
     refreshToken,
     expiresAt,
+    scopes: scopes && scopes.length > 0 ? scopes : null,
   };
 }
 
@@ -111,6 +120,7 @@ export function extractClaudeOAuthAccessToken(parsed) {
  *   accessToken: string,
  *   refreshToken: string | null,
  *   expiresAt: number | null,
+ *   scopes: string[] | null,
  *   source: 'env' | 'file',
  *   credentialsPath: string | null,
  * } | null}
@@ -123,6 +133,7 @@ export function readClaudeCliOAuthCredentials(options = {}) {
       accessToken: fromEnv,
       refreshToken: null,
       expiresAt: null,
+      scopes: null,
       source: 'env',
       credentialsPath: null,
     };

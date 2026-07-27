@@ -8,9 +8,13 @@ import {
   toTimestamp
 } from '../utils/index.js';
 import {
+  CLAUDE_SCOPE_ERROR,
   CLAUDE_SESSION_EXPIRED_ERROR,
+  classifyClaudeUsageHttpError,
   ensureClaudeUsageAccessToken,
   fetchClaudeUsagePayload,
+  fetchClaudeUsageWindowsFromRateLimits,
+  hasClaudeProfileScope,
 } from './claude-oauth.js';
 import { readClaudeCliOAuthAccessToken } from './claude-cli-auth.js';
 
@@ -43,31 +47,31 @@ export function mapClaudeUsageWindows(payload) {
   const sevenDaySonnet = payload?.seven_day_sonnet ?? null;
   const sevenDayOpus = payload?.seven_day_opus ?? null;
 
-  if (fiveHour) {
+  if (fiveHour && typeof fiveHour === 'object') {
     windows['5h'] = toUsageWindow({
       usedPercent: toNumber(fiveHour.utilization),
-      windowSeconds: null,
+      windowSeconds: 5 * 60 * 60,
       resetAt: toTimestamp(fiveHour.resets_at)
     });
   }
-  if (sevenDay) {
+  if (sevenDay && typeof sevenDay === 'object') {
     windows['7d'] = toUsageWindow({
       usedPercent: toNumber(sevenDay.utilization),
-      windowSeconds: null,
+      windowSeconds: 7 * 24 * 60 * 60,
       resetAt: toTimestamp(sevenDay.resets_at)
     });
   }
-  if (sevenDaySonnet) {
+  if (sevenDaySonnet && typeof sevenDaySonnet === 'object') {
     windows['7d-sonnet'] = toUsageWindow({
       usedPercent: toNumber(sevenDaySonnet.utilization),
-      windowSeconds: null,
+      windowSeconds: 7 * 24 * 60 * 60,
       resetAt: toTimestamp(sevenDaySonnet.resets_at)
     });
   }
-  if (sevenDayOpus) {
+  if (sevenDayOpus && typeof sevenDayOpus === 'object') {
     windows['7d-opus'] = toUsageWindow({
       usedPercent: toNumber(sevenDayOpus.utilization),
-      windowSeconds: null,
+      windowSeconds: 7 * 24 * 60 * 60,
       resetAt: toTimestamp(sevenDayOpus.resets_at)
     });
   }
@@ -76,11 +80,11 @@ export function mapClaudeUsageWindows(payload) {
 }
 
 /**
- * @param {number} status
+ * @param {string} accessToken
+ * @param {{ fetchImpl?: typeof fetch }} [options]
  */
-function usageAuthError(status) {
-  if (status === 401) return CLAUDE_SESSION_EXPIRED_ERROR;
-  return `API error: ${status}`;
+async function loadWindowsWithRateLimitFallback(accessToken, options = {}) {
+  return fetchClaudeUsageWindowsFromRateLimits(accessToken, options);
 }
 
 export const fetchQuota = async () => {
@@ -108,6 +112,21 @@ export const fetchQuota = async () => {
   }
 
   try {
+    const knownMissingProfile = access.scopes != null && !hasClaudeProfileScope(access.scopes);
+
+    // Inference-only setup tokens cannot call /api/oauth/usage. Skip straight to
+    // the Messages rate-limit header probe when scopes are known to lack profile.
+    if (knownMissingProfile) {
+      const windows = await loadWindowsWithRateLimitFallback(access.accessToken);
+      return buildResult({
+        providerId,
+        providerName,
+        ok: true,
+        configured: true,
+        usage: { windows },
+      });
+    }
+
     let response = await fetchClaudeUsagePayload(access.accessToken);
 
     if (response.status === 401 && access.canRefresh) {
@@ -136,26 +155,63 @@ export const fetchQuota = async () => {
       response = await fetchClaudeUsagePayload(access.accessToken);
     }
 
-    if (!response.ok) {
+    if (response.ok) {
+      const payload = await response.json();
+      const windows = mapClaudeUsageWindows(payload);
+      if (Object.keys(windows).length > 0) {
+        return buildResult({
+          providerId,
+          providerName,
+          ok: true,
+          configured: true,
+          usage: { windows }
+        });
+      }
+    }
+
+    // 403 scope errors (and empty usage payloads) fall back to unified rate-limit
+    // headers from a tiny Messages call — works with inference-only tokens.
+    if (!response.ok && response.status !== 403 && response.status !== 401) {
+      const bodyText = await response.text().catch(() => '');
       return buildResult({
         providerId,
         providerName,
         ok: false,
         configured: true,
-        error: usageAuthError(response.status)
+        error: classifyClaudeUsageHttpError(response.status, bodyText),
       });
     }
 
-    const payload = await response.json();
-    const windows = mapClaudeUsageWindows(payload);
-
-    return buildResult({
-      providerId,
-      providerName,
-      ok: true,
-      configured: true,
-      usage: { windows }
-    });
+    try {
+      const windows = await loadWindowsWithRateLimitFallback(access.accessToken);
+      return buildResult({
+        providerId,
+        providerName,
+        ok: true,
+        configured: true,
+        usage: { windows },
+      });
+    } catch {
+      if (response.status === 401) {
+        return buildResult({
+          providerId,
+          providerName,
+          ok: false,
+          configured: true,
+          error: CLAUDE_SESSION_EXPIRED_ERROR,
+        });
+      }
+      const bodyText = await response.clone().text().catch(() => '');
+      return buildResult({
+        providerId,
+        providerName,
+        ok: false,
+        configured: true,
+        error: response.ok
+          ? CLAUDE_SCOPE_ERROR
+          : classifyClaudeUsageHttpError(response.status, bodyText),
+      });
+    }
   } catch (error) {
     return buildResult({
       providerId,

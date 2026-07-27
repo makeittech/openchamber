@@ -2,12 +2,17 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import {
   CLAUDE_CLI_TOKEN_URL,
   CLAUDE_OAUTH_CLIENT_ID,
+  CLAUDE_SCOPE_ERROR,
   CLAUDE_SESSION_EXPIRED_ERROR,
   CLAUDE_USAGE_URL,
+  CLAUDE_USAGE_USER_AGENT,
   OPENCODE_CLAUDE_TOKEN_URL,
   __resetClaudeRefreshLockForTests,
+  buildClaudeUsageHeaders,
+  classifyClaudeUsageHttpError,
   ensureClaudeUsageAccessToken,
   isClaudeAccessExpired,
+  mapClaudeRateLimitHeaders,
   refreshClaudeOAuthToken,
   resolveClaudeUsageCredential,
 } from './claude-oauth.js';
@@ -57,6 +62,7 @@ describe('claude quota provider', () => {
       accessToken: 'access',
       refreshToken: 'refresh',
       expiresAt: 1_700_000_000_000,
+      scopes: null,
     });
   });
 
@@ -254,7 +260,52 @@ describe('claude quota provider', () => {
     });
   });
 
-  it('exposes a stable session-expired message constant for UI panels', () => {
+  it('prefers Claude CLI credentials over inference-only env setup tokens', () => {
+    const resolved = resolveClaudeUsageCredential({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'env-setup-token' },
+      homeDir: '/home/u',
+      existsSync: (filePath) => filePath.endsWith('.claude/.credentials.json'),
+      readFile: () => JSON.stringify({
+        claudeAiOauth: {
+          accessToken: 'cli-access',
+          refreshToken: 'cli-refresh',
+          expiresAt: Date.now() + 120_000,
+          scopes: ['user:inference', 'user:profile'],
+        },
+      }),
+      readAuth: () => ({}),
+    });
+
+    expect(resolved?.source).toBe('claude-cli');
+    expect(resolved?.accessToken).toBe('cli-access');
+  });
+
+  it('builds Claude Code User-Agent headers required by the usage endpoint', () => {
+    const headers = buildClaudeUsageHeaders('token');
+    expect(headers['User-Agent']).toBe(CLAUDE_USAGE_USER_AGENT);
+    expect(headers['User-Agent'].startsWith('claude-code/')).toBe(true);
+    expect(headers['anthropic-beta']).toBe('oauth-2025-04-20');
+  });
+
+  it('maps unified rate-limit header ratios into usage windows', () => {
+    const windows = mapClaudeRateLimitHeaders({
+      'anthropic-ratelimit-unified-5h-utilization': '0.25',
+      'anthropic-ratelimit-unified-5h-reset': '1785149400',
+      'anthropic-ratelimit-unified-7d-utilization': '0.02',
+      'anthropic-ratelimit-unified-7d-reset': '1785430800',
+    });
+
+    expect(windows['5h']?.usedPercent).toBe(25);
+    expect(windows['5h']?.windowSeconds).toBe(5 * 60 * 60);
+    expect(windows['5h']?.resetAt).toBe(1785149400 * 1000);
+    expect(windows['7d']?.usedPercent).toBe(2);
+    expect(windows['7d']?.windowSeconds).toBe(7 * 24 * 60 * 60);
+  });
+
+  it('classifies scope and auth failures for UI panels', () => {
+    expect(classifyClaudeUsageHttpError(403, 'OAuth token does not meet scope requirement user:profile'))
+      .toBe(CLAUDE_SCOPE_ERROR);
+    expect(classifyClaudeUsageHttpError(401)).toBe(CLAUDE_SESSION_EXPIRED_ERROR);
     expect(CLAUDE_USAGE_URL).toContain('/api/oauth/usage');
     expect(CLAUDE_SESSION_EXPIRED_ERROR).toContain('re-authenticate');
   });

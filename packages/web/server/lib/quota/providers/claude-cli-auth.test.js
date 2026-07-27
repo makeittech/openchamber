@@ -33,7 +33,19 @@ describe('claude-cli-auth', () => {
       accessToken: 'access',
       refreshToken: 'refresh',
       expiresAt: 1_700_000_000_000,
+      scopes: null,
     });
+  });
+
+  it('extracts scopes when present', () => {
+    expect(extractClaudeOAuthCredentials({
+      claudeAiOauth: {
+        accessToken: 'access',
+        refreshToken: 'refresh',
+        expiresAt: 1,
+        scopes: ['user:inference', 'user:profile'],
+      },
+    })?.scopes).toEqual(['user:inference', 'user:profile']);
   });
 
   it('returns null for empty or missing oauth blocks', () => {

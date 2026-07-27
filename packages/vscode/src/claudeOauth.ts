@@ -1,6 +1,6 @@
 /**
  * Claude subscription OAuth access for VS Code Usage probes.
- * Mirrors packages/web/server/lib/quota/providers/claude-oauth.js + claude-cli-auth.js.
+ * Mirrors packages/web/server/lib/quota/providers/claude-oauth.js + claude.js.
  * Never logs token values.
  */
 
@@ -11,16 +11,21 @@ import path from 'node:path';
 const OPENCODE_DATA_DIR = path.join(os.homedir(), '.local', 'share', 'opencode');
 const AUTH_FILE = path.join(OPENCODE_DATA_DIR, 'auth.json');
 
-/** Public Claude Code / OpenCode Anthropic OAuth client id (not a secret). */
 const CLAUDE_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const OPENCODE_CLAUDE_TOKEN_URL = 'https://console.anthropic.com/v1/oauth/token';
 const CLAUDE_CLI_TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
 const CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
+const CLAUDE_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 const CLAUDE_OAUTH_BETA = 'oauth-2025-04-20';
+const CLAUDE_API_VERSION = '2023-06-01';
+const CLAUDE_USAGE_USER_AGENT = 'claude-code/2.1.72';
 export const CLAUDE_SESSION_EXPIRED_ERROR = 'Session expired — please re-authenticate with Claude';
+export const CLAUDE_SCOPE_ERROR =
+  'Claude usage requires a full Claude Code login (user:profile scope). Run `claude auth login`, then refresh.';
 
 const AUTH_ALIASES = ['anthropic', 'claude'] as const;
 const REFRESH_BUFFER_MS = 60_000;
+const RATE_LIMIT_PROBE_MODEL = 'claude-haiku-4-5-20251001';
 
 type AuthFile = Record<string, Record<string, unknown>>;
 
@@ -32,15 +37,70 @@ export type ClaudeUsageCredential = {
   tokenUrl: string | null;
   authKey?: string;
   credentialsPath?: string;
+  scopes?: string[] | null;
 };
 
 export type ClaudeUsageAccess = {
   accessToken: string;
   source: ClaudeUsageCredential['source'];
   canRefresh: boolean;
+  scopes?: string[] | null;
+};
+
+type UsageWindow = {
+  usedPercent: number | null;
+  remainingPercent: number | null;
+  windowSeconds: number | null;
+  resetAfterSeconds: number | null;
+  resetAt: number | null;
+  resetAtFormatted: string | null;
+  resetAfterFormatted: string | null;
 };
 
 let claudeRefreshPromise: Promise<ClaudeUsageAccess> | null = null;
+
+const toNumber = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+const toTimestamp = (value: unknown): number | null => {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number') return value < 1_000_000_000_000 ? value * 1000 : value;
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
+};
+
+const toUsageWindow = ({
+  usedPercent,
+  windowSeconds,
+  resetAt,
+}: {
+  usedPercent: number | null;
+  windowSeconds: number | null;
+  resetAt: number | null;
+}): UsageWindow => {
+  const hasFinite = typeof usedPercent === 'number' && Number.isFinite(usedPercent);
+  const resetAfterSeconds = typeof resetAt === 'number'
+    ? Math.max(0, Math.floor((resetAt - Date.now()) / 1000))
+    : null;
+  return {
+    usedPercent,
+    remainingPercent: hasFinite ? Math.max(0, 100 - usedPercent) : null,
+    windowSeconds,
+    resetAfterSeconds,
+    resetAt,
+    resetAtFormatted: null,
+    resetAfterFormatted: null,
+  };
+};
 
 const readAuthFile = (): AuthFile => {
   if (!fs.existsSync(AUTH_FILE)) return {};
@@ -102,6 +162,7 @@ const extractClaudeOAuthCredentials = (parsed: unknown): {
   accessToken: string;
   refreshToken: string | null;
   expiresAt: number | null;
+  scopes: string[] | null;
 } | null => {
   if (!parsed || typeof parsed !== 'object') return null;
   const root = parsed as Record<string, unknown>;
@@ -115,10 +176,14 @@ const extractClaudeOAuthCredentials = (parsed: unknown): {
   const accessRaw = block.accessToken ?? block.access_token;
   if (typeof accessRaw !== 'string' || !accessRaw.trim()) return null;
   const refreshRaw = block.refreshToken ?? block.refresh_token;
+  const scopes = Array.isArray(block.scopes)
+    ? block.scopes.filter((scope): scope is string => typeof scope === 'string' && Boolean(scope.trim())).map((scope) => scope.trim())
+    : null;
   return {
     accessToken: accessRaw.trim(),
     refreshToken: typeof refreshRaw === 'string' && refreshRaw.trim() ? refreshRaw.trim() : null,
     expiresAt: toExpiresAtMs(block.expiresAt ?? block.expires_at),
+    scopes: scopes && scopes.length > 0 ? scopes : null,
   };
 };
 
@@ -172,24 +237,26 @@ const writeClaudeCliOAuthCredentials = (
   }
 };
 
+const hasClaudeProfileScope = (scopes: string[] | null | undefined): boolean => {
+  if (!Array.isArray(scopes) || scopes.length === 0) return false;
+  return scopes.some((scope) => scope.trim() === 'user:profile');
+};
+
 const isClaudeAccessExpired = (expiresAt: number | null | undefined, now = Date.now()): boolean => {
   if (typeof expiresAt !== 'number' || !Number.isFinite(expiresAt)) return false;
   return expiresAt - REFRESH_BUFFER_MS <= now;
 };
 
-const resolveClaudeUsageCredential = (): ClaudeUsageCredential | null => {
-  const envToken = typeof process.env.CLAUDE_CODE_OAUTH_TOKEN === 'string'
-    ? process.env.CLAUDE_CODE_OAUTH_TOKEN.trim()
-    : '';
-  if (envToken) {
-    return {
-      accessToken: envToken,
-      refreshToken: null,
-      expiresAt: null,
-      source: 'env',
-      tokenUrl: null,
-    };
-  }
+const buildClaudeUsageHeaders = (accessToken: string): Record<string, string> => ({
+  Authorization: `Bearer ${accessToken}`,
+  'anthropic-beta': CLAUDE_OAUTH_BETA,
+  'User-Agent': CLAUDE_USAGE_USER_AGENT,
+  Accept: 'application/json',
+  'Content-Type': 'application/json',
+});
+
+const listClaudeUsageCredentials = (): ClaudeUsageCredential[] => {
+  const candidates: ClaudeUsageCredential[] = [];
 
   for (const candidate of listClaudeCredentialsCandidates()) {
     try {
@@ -198,12 +265,13 @@ const resolveClaudeUsageCredential = (): ClaudeUsageCredential | null => {
       if (!raw.trim()) continue;
       const creds = extractClaudeOAuthCredentials(JSON.parse(raw));
       if (!creds) continue;
-      return {
+      candidates.push({
         ...creds,
         source: 'claude-cli',
         tokenUrl: CLAUDE_CLI_TOKEN_URL,
         credentialsPath: candidate,
-      };
+      });
+      break;
     } catch {
       // continue
     }
@@ -222,17 +290,46 @@ const resolveClaudeUsageCredential = (): ClaudeUsageCredential | null => {
     const refresh = typeof entry.refresh === 'string' && entry.refresh.trim()
       ? entry.refresh.trim()
       : null;
-    return {
+    const scopes = Array.isArray(entry.scopes)
+      ? entry.scopes.filter((scope): scope is string => typeof scope === 'string' && Boolean(scope.trim())).map((scope) => scope.trim())
+      : null;
+    candidates.push({
       accessToken: access,
       refreshToken: refresh,
       expiresAt: toExpiresAtMs(entry.expires),
       source: 'opencode-auth',
       tokenUrl: OPENCODE_CLAUDE_TOKEN_URL,
       authKey: alias,
-    };
+      scopes: scopes && scopes.length > 0 ? scopes : null,
+    });
+    break;
   }
 
-  return null;
+  const envToken = typeof process.env.CLAUDE_CODE_OAUTH_TOKEN === 'string'
+    ? process.env.CLAUDE_CODE_OAUTH_TOKEN.trim()
+    : '';
+  if (envToken) {
+    candidates.push({
+      accessToken: envToken,
+      refreshToken: null,
+      expiresAt: null,
+      source: 'env',
+      tokenUrl: null,
+      scopes: null,
+    });
+  }
+
+  return candidates;
+};
+
+const resolveClaudeUsageCredential = (): ClaudeUsageCredential | null => {
+  const candidates = listClaudeUsageCredentials();
+  if (candidates.length === 0) return null;
+  const withProfile = candidates.find((candidate) => hasClaudeProfileScope(candidate.scopes));
+  if (withProfile) return withProfile;
+  const nonEnv = candidates.find((candidate) => candidate.source !== 'env');
+  if (nonEnv) return nonEnv;
+  return candidates[0] ?? null;
 };
 
 const refreshClaudeOAuthToken = async (input: {
@@ -244,6 +341,7 @@ const refreshClaudeOAuthToken = async (input: {
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json',
+      'User-Agent': CLAUDE_USAGE_USER_AGENT,
       'anthropic-beta': CLAUDE_OAUTH_BETA,
     },
     body: JSON.stringify({
@@ -304,12 +402,22 @@ export const ensureClaudeUsageAccessToken = async (options: {
     || isClaudeAccessExpired(credential.expiresAt);
 
   if (!needsRefresh) {
-    return { accessToken: credential.accessToken, source: credential.source, canRefresh };
+    return {
+      accessToken: credential.accessToken,
+      source: credential.source,
+      canRefresh,
+      scopes: credential.scopes ?? null,
+    };
   }
 
   if (!canRefresh || !credential.refreshToken || !credential.tokenUrl) {
     return credential.accessToken
-      ? { accessToken: credential.accessToken, source: credential.source, canRefresh: false }
+      ? {
+          accessToken: credential.accessToken,
+          source: credential.source,
+          canRefresh: false,
+          scopes: credential.scopes ?? null,
+        }
       : null;
   }
 
@@ -321,6 +429,7 @@ export const ensureClaudeUsageAccessToken = async (options: {
           accessToken: latest.accessToken,
           source: latest.source,
           canRefresh: Boolean(latest.refreshToken && latest.tokenUrl),
+          scopes: latest.scopes ?? null,
         };
       }
 
@@ -336,6 +445,7 @@ export const ensureClaudeUsageAccessToken = async (options: {
         accessToken: tokens.accessToken,
         source: latest.source,
         canRefresh: true,
+        scopes: latest.scopes ?? null,
       };
     })().finally(() => {
       claudeRefreshPromise = null;
@@ -348,10 +458,109 @@ export const ensureClaudeUsageAccessToken = async (options: {
 export const fetchClaudeUsagePayload = async (accessToken: string): Promise<Response> => {
   return fetch(CLAUDE_USAGE_URL, {
     method: 'GET',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'anthropic-beta': CLAUDE_OAUTH_BETA,
-    },
+    headers: buildClaudeUsageHeaders(accessToken),
     signal: AbortSignal.timeout(30_000),
   });
+};
+
+const mapClaudeRateLimitHeaders = (
+  headers: Headers,
+): Record<string, UsageWindow> => {
+  const windows: Record<string, UsageWindow> = {};
+  const fiveUtil = toNumber(headers.get('anthropic-ratelimit-unified-5h-utilization'));
+  const fiveReset = toNumber(headers.get('anthropic-ratelimit-unified-5h-reset'));
+  if (fiveUtil !== null) {
+    windows['5h'] = toUsageWindow({
+      usedPercent: fiveUtil * 100,
+      windowSeconds: 5 * 60 * 60,
+      resetAt: toTimestamp(fiveReset),
+    });
+  }
+  const sevenUtil = toNumber(headers.get('anthropic-ratelimit-unified-7d-utilization'));
+  const sevenReset = toNumber(headers.get('anthropic-ratelimit-unified-7d-reset'));
+  if (sevenUtil !== null) {
+    windows['7d'] = toUsageWindow({
+      usedPercent: sevenUtil * 100,
+      windowSeconds: 7 * 24 * 60 * 60,
+      resetAt: toTimestamp(sevenReset),
+    });
+  }
+  return windows;
+};
+
+export const fetchClaudeUsageWindowsFromRateLimits = async (
+  accessToken: string,
+): Promise<Record<string, UsageWindow>> => {
+  const response = await fetch(CLAUDE_MESSAGES_URL, {
+    method: 'POST',
+    headers: {
+      ...buildClaudeUsageHeaders(accessToken),
+      'anthropic-version': CLAUDE_API_VERSION,
+    },
+    body: JSON.stringify({
+      model: RATE_LIMIT_PROBE_MODEL,
+      max_tokens: 1,
+      messages: [{ role: 'user', content: '.' }],
+    }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) {
+    throw new Error(`Claude rate-limit probe failed: ${response.status}`);
+  }
+  const windows = mapClaudeRateLimitHeaders(response.headers);
+  if (Object.keys(windows).length === 0) {
+    throw new Error('Claude rate-limit probe returned no usage headers');
+  }
+  return windows;
+};
+
+export const classifyClaudeUsageHttpError = (status: number, bodyText = ''): string => {
+  if (status === 401) return CLAUDE_SESSION_EXPIRED_ERROR;
+  if (status === 403 && /user:profile|permission_error|scope/i.test(bodyText)) {
+    return CLAUDE_SCOPE_ERROR;
+  }
+  if (status === 403) return CLAUDE_SCOPE_ERROR;
+  return `API error: ${status}`;
+};
+
+export const mapClaudeUsageWindows = (payload: Record<string, unknown>): Record<string, UsageWindow> => {
+  const windows: Record<string, UsageWindow> = {};
+  const fiveHour = payload.five_hour as Record<string, unknown> | undefined;
+  const sevenDay = payload.seven_day as Record<string, unknown> | undefined;
+  const sevenDaySonnet = payload.seven_day_sonnet as Record<string, unknown> | undefined;
+  const sevenDayOpus = payload.seven_day_opus as Record<string, unknown> | undefined;
+
+  if (fiveHour && typeof fiveHour === 'object') {
+    windows['5h'] = toUsageWindow({
+      usedPercent: toNumber(fiveHour.utilization),
+      windowSeconds: 5 * 60 * 60,
+      resetAt: toTimestamp(fiveHour.resets_at),
+    });
+  }
+  if (sevenDay && typeof sevenDay === 'object') {
+    windows['7d'] = toUsageWindow({
+      usedPercent: toNumber(sevenDay.utilization),
+      windowSeconds: 7 * 24 * 60 * 60,
+      resetAt: toTimestamp(sevenDay.resets_at),
+    });
+  }
+  if (sevenDaySonnet && typeof sevenDaySonnet === 'object') {
+    windows['7d-sonnet'] = toUsageWindow({
+      usedPercent: toNumber(sevenDaySonnet.utilization),
+      windowSeconds: 7 * 24 * 60 * 60,
+      resetAt: toTimestamp(sevenDaySonnet.resets_at),
+    });
+  }
+  if (sevenDayOpus && typeof sevenDayOpus === 'object') {
+    windows['7d-opus'] = toUsageWindow({
+      usedPercent: toNumber(sevenDayOpus.utilization),
+      windowSeconds: 7 * 24 * 60 * 60,
+      resetAt: toTimestamp(sevenDayOpus.resets_at),
+    });
+  }
+  return windows;
+};
+
+export const hasKnownMissingProfileScope = (scopes: string[] | null | undefined): boolean => {
+  return scopes != null && !hasClaudeProfileScope(scopes);
 };
