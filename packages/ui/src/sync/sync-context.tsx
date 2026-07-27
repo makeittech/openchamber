@@ -2287,9 +2287,11 @@ export function SyncProvider(props: {
     }
   }, [messageLoader])
 
-  useEffect(() => () => {
-    childStores.disposeAll()
-  }, [childStores])
+  // Do not disposeAll() in an effect cleanup: React Strict Mode runs that
+  // cleanup while this provider instance stays mounted, wiping directory
+  // stores that already hold hydrated Claude messages and leaving chat on
+  // skeletons. Child stores are discarded with the provider instance on a
+  // real unmount (runtime key change recreates SyncProvider via key=).
 
   // Subscribe to child store for streaming state derivation
   useEffect(() => {

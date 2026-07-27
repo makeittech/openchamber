@@ -577,8 +577,11 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
     const sessionMessageCount = useSessionMessageCount(currentSessionId ?? '', effectiveSessionDirectory);
     const hasRenderableSessionSnapshot = useSessionRenderable(currentSessionId ?? '', effectiveSessionDirectory);
     // Messages from sync system
+    // Always read the selected session transcript while it is open. Gating on
+    // `active` returned an empty list during Command Palette / tab transitions
+    // and left the chat stuck on hydrating skeletons even after messages landed.
     const sessionMessageRecords = useSessionMessageRecords(currentSessionId ?? '', effectiveSessionDirectory, {
-        enabled: active,
+        enabled: Boolean(currentSessionId),
         suspendPartUpdates: Boolean(streamingMessageId),
         suspendPartUpdatesForMessageId: streamingMessageId,
     });
