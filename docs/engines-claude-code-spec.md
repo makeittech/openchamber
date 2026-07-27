@@ -239,6 +239,7 @@ recentTargets: ExecutionTarget[]
 enginesDefaultHarnessId: HarnessId              // default 'opencode'
 enginesClaudeCodeWarnOnOpenCodeHandoff: boolean // default true
 enginesClaudeCodeEnabled: boolean               // default true (feature flag)
+enginesClaudeCodeAgentsMode: 'claude' | 'opencode' // default 'opencode'
 ```
 
 Favorites / recents / shortcuts key by `harnessId + model identity` (Claude uses `providerID: 'claude-code'` compatibility shape where needed) to avoid collisions with OpenCode `anthropic/...`.
