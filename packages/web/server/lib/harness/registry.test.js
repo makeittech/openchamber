@@ -23,9 +23,9 @@ describe('harness registry', () => {
     expect(claude.capabilities.prompt).toBe('full');
     expect(claude.capabilities.permissions).toBe('full');
     expect(claude.capabilities['file-attachments']).toBe('full');
-    expect(claude.capabilities.multirun).toBe('none');
-    expect(claude.capabilities.goal).toBe('partial');
-    expect(claude.capabilities['openchamber-tool']).toBe('none');
+    expect(claude.capabilities.multirun).toBe('full');
+    expect(claude.capabilities.goal).toBe('full');
+    expect(claude.capabilities['openchamber-tool']).toBe('full');
     expect(CLAUDE_CODE_MODELS.length).toBeGreaterThan(0);
     const byId = Object.fromEntries(CLAUDE_CODE_MODELS.map((model) => [model.id, model]));
     const displayNames = CLAUDE_CODE_MODELS.map((model) => model.name);
