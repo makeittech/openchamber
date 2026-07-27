@@ -242,6 +242,11 @@ Claude session status / messages / wait overlay harness turn-snapshots so
 `wait` works for Claude-bound sessions. Session create/send/fork with
 `claude-code/<modelRef>` dispatch through `/api/harness/prompt`.
 
+Injected `mcp__openchamber__*` tool asks are auto-allowed in
+`permissions.js` (no PermissionCard) — the tool is already gated by the
+settings flag and a fixed action allowlist, matching OpenCode's managed
+plugin (which has no equivalent second prompt).
+
 ## MultiRun on Claude
 
 Capability `multirun: full`. The MultiRun launcher model picker includes
