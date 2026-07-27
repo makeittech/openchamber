@@ -290,7 +290,7 @@ export function useSync() {
           shouldLoadMessages
             ? messageLoader.ensure(
                 { directory: targetDirectory, sessionID },
-                { force, reason: "reactive" },
+                { force, reason: force ? "navigation" : "reactive" },
               )
             : Promise.resolve(),
         ])

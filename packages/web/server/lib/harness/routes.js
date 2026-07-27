@@ -130,7 +130,17 @@ export function registerHarnessRoutes(app, deps = {}) {
             limit: typeof req.query?.limit === 'string' ? req.query.limit : '',
           },
         );
-        if (messages === null) return next();
+        if (messages === null) {
+          // OpenCode fetch failed — still serve harness overlay when present so
+          // Claude transcripts are not replaced by an authoritative-looking empty
+          // proxy response that skips mergeHarnessMessagesIntoSessionMessages.
+          const harnessOnly = mergeHarnessMessagesIntoSessionMessages([], sessionId);
+          if (harnessOnly.length > 0) {
+            res.json(harnessOnly);
+            return;
+          }
+          return next();
+        }
         res.json(mergeHarnessMessagesIntoSessionMessages(messages, sessionId));
       } catch {
         next();

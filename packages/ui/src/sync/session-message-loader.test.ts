@@ -143,6 +143,34 @@ describe("SessionMessageLoader", () => {
     childStores.disposeAll()
   })
 
+  test("retries early empty snapshots so Claude harness overlay can catch up", async () => {
+    let calls = 0
+    const { childStores, loader } = createLoader(async ({ sessionID }) => {
+      calls += 1
+      if (calls === 1) return response([])
+      return response([createRecord(sessionID)])
+    })
+    const target = { directory: "/repo", sessionID: "claude-empty-race" }
+
+    await loader.ensure(target, { reason: "reactive" })
+    expect(loader.getSnapshot(target).emptyHydrated).toBe(true)
+    expect(loader.getSnapshot(target).emptyHydrationAttempts).toBe(1)
+    expect(childStores.getChild(target.directory)?.getState().message[target.sessionID]).toEqual([])
+
+    // Cooldown still active — reactive ensure must not storm.
+    await loader.ensure(target, { reason: "reactive" })
+    expect(calls).toBe(1)
+
+    // Navigation ignores the empty-hydration sticky bit and refetches.
+    await loader.ensure(target, { reason: "navigation" })
+    expect(calls).toBe(2)
+    expect(loader.getSnapshot(target).emptyHydrated).toBe(false)
+    expect(childStores.getChild(target.directory)?.getState().message[target.sessionID]?.length).toBe(1)
+
+    loader.dispose()
+    childStores.disposeAll()
+  })
+
   test("treats an empty successful response as resolved authoritative state", async () => {
     const { childStores, loader } = createLoader(async () => response([]))
     const target = { directory: "/repo", sessionID: "empty" }

@@ -473,7 +473,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
       return;
     }
 
-    await sync.ensureSessionRenderable(session.id, false, sessionDirectory);
+    await sync.ensureSessionRenderable(session.id, true, sessionDirectory);
 
     const records = buildSessionMessageRecordsSnapshot(directoryStore.getState(), session.id).list;
     if (records.length === 0) {

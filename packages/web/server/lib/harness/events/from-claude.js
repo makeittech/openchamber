@@ -71,7 +71,7 @@ export function resetOpenCodeIdState() {
  * @property {string} assistantMessageId
  * @property {string} [modelRef]
  * @property {string} [textPartId]
- * @property {Map<string, { partId: string, toolName: string, input: object }>} [toolParts]
+ * @property {Map<string, { partId: string, toolName: string, input: object, startedAt?: number, settled?: boolean }>} [toolParts]
  * @property {string} [foreignSessionId]
  * @property {number} [assistantCreatedAt]
  * @property {string} [accumulatedText]
@@ -616,6 +616,9 @@ function mapContentBlock(ctx, block) {
     // Retained so the completed/error state can echo the same arguments — the UI
     // reducer replaces `part.state` wholesale, so omitting them blanks the args.
     if (Object.keys(input).length > 0 || !entry.input) entry.input = input;
+    // Preserve wall-clock start across running → completed so long tools keep a
+    // real duration instead of collapsing to 0s when the result event arrives.
+    if (typeof entry.startedAt !== 'number') entry.startedAt = Date.now();
     // Next assistant output belongs after this tool in transcript order.
     ctx.needsNewTextSegment = true;
     ctx.needsNewReasoningSegment = true;
@@ -639,7 +642,7 @@ function mapContentBlock(ctx, block) {
             state: {
               status: 'running',
               input,
-              time: { start: Date.now() },
+              time: { start: entry.startedAt },
             },
           },
         },
@@ -692,6 +695,8 @@ function mapToolResultBlock(ctx, block) {
       ? block.content.map((c) => (typeof c?.text === 'string' ? c.text : '')).join('\n')
       : '';
   const isError = block.is_error === true;
+  const endedAt = Date.now();
+  const startedAt = typeof entry.startedAt === 'number' ? entry.startedAt : endedAt;
   return [
     {
       type: 'message.part.updated',
@@ -709,7 +714,7 @@ function mapToolResultBlock(ctx, block) {
               status: 'error',
               input,
               error: output || 'Tool error',
-              time: { start: Date.now(), end: Date.now() },
+              time: { start: startedAt, end: endedAt },
             }
             : {
               status: 'completed',
@@ -717,7 +722,7 @@ function mapToolResultBlock(ctx, block) {
               output: output || '',
               title: entry.toolName,
               metadata: {},
-              time: { start: Date.now(), end: Date.now() },
+              time: { start: startedAt, end: endedAt },
             },
         },
       },
@@ -796,7 +801,10 @@ export function buildTurnAbortEvents(ctx, reason = 'Aborted by user') {
             status: 'error',
             input: entry.input && typeof entry.input === 'object' ? entry.input : {},
             error: reason,
-            time: { start: ctx.assistantCreatedAt, end: now },
+            time: {
+              start: typeof entry.startedAt === 'number' ? entry.startedAt : ctx.assistantCreatedAt,
+              end: now,
+            },
           },
         },
       },

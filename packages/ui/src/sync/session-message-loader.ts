@@ -45,10 +45,14 @@ export type SessionMessageLoadState = {
   updatedAt: number | undefined
   /**
    * An early empty [] snapshot looks renderable and would skip Claude harness
-   * overlay hydration forever. After one empty hydration attempt we stop
-   * retrying until messages appear or force=true.
+   * overlay hydration forever. Empty OpenCode sessions stay resolved after one
+   * successful empty fetch, but Claude turns can appear in the harness overlay
+   * shortly after that first miss — retry a bounded number of times with a
+   * short cooldown (or immediately on force/navigation) until messages arrive.
    */
   emptyHydrated: boolean
+  emptyHydrationAttempts: number
+  emptyHydratedAt: number | undefined
 }
 
 type LoaderEntry = {
@@ -79,6 +83,23 @@ const getInitialPageSize = () => isConstrainedRuntime()
 const getInitialExpansionLimits = () => isConstrainedRuntime()
   ? CONSTRAINED_INITIAL_PAGE_EXPANSION_LIMITS
   : INITIAL_PAGE_EXPANSION_LIMITS
+
+/** Bounded retries after an early empty [] so Claude harness overlay can catch up. */
+const EMPTY_HYDRATION_MAX_ATTEMPTS = 8
+const EMPTY_HYDRATION_RETRY_MS = 1_500
+
+const needsEmptyHydrationRetry = (
+  entry: LoaderEntry,
+  localCount: number,
+  options?: { force?: boolean; reason?: "navigation" | "reactive" | "prefetch" },
+): boolean => {
+  if (localCount > 0) return false
+  if (options?.force || options?.reason === "navigation") return true
+  if (!entry.snapshot.emptyHydrated) return true
+  if (entry.snapshot.emptyHydrationAttempts >= EMPTY_HYDRATION_MAX_ATTEMPTS) return false
+  const hydratedAt = entry.snapshot.emptyHydratedAt ?? 0
+  return Date.now() - hydratedAt >= EMPTY_HYDRATION_RETRY_MS
+}
 
 const isUserMessage = (message: Message): boolean => {
   const candidate = message as Message & { clientRole?: unknown; role?: unknown }
@@ -122,6 +143,8 @@ const createDefaultState = (generation = 0): SessionMessageLoadState => ({
   generation,
   updatedAt: undefined,
   emptyHydrated: false,
+  emptyHydrationAttempts: 0,
+  emptyHydratedAt: undefined,
 })
 
 export const EMPTY_SESSION_MESSAGE_LOAD_STATE = createDefaultState()
@@ -177,8 +200,8 @@ export class SessionMessageLoader {
     const localCount = store.getState().message[normalized.sessionID]?.length ?? 0
     // Claude turns are served via the harness message overlay. An early empty
     // [] snapshot looks "renderable" and would skip hydration forever — force
-    // one fetch when the local transcript is still empty.
-    const needsEmptyHydration = localCount === 0 && !entry.snapshot.emptyHydrated
+    // one fetch when the local transcript is still empty, then retry briefly.
+    const needsEmptyHydration = needsEmptyHydrationRetry(entry, localCount, options)
     if (!options?.force && materialization.renderable && !needsEmptyHydration) {
       if (!entry.snapshot.resolved) {
         this.patchEntry(entry, {
@@ -202,9 +225,35 @@ export class SessionMessageLoader {
       await this.loadInitial(normalized, entry, store, isCurrent)
       if (!isCurrent()) return
       const hydratedCount = store.getState().message[normalized.sessionID]?.length ?? 0
-      this.patchEntry(entry, {
-        emptyHydrated: hydratedCount === 0,
-      })
+      if (hydratedCount > 0) {
+        this.patchEntry(entry, {
+          emptyHydrated: false,
+          emptyHydrationAttempts: 0,
+          emptyHydratedAt: undefined,
+        })
+      } else {
+        const attempts = entry.snapshot.emptyHydrationAttempts + 1
+        this.patchEntry(entry, {
+          emptyHydrated: true,
+          emptyHydrationAttempts: attempts,
+          emptyHydratedAt: Date.now(),
+        })
+        // Claude harness overlay can populate after the first empty OpenCode
+        // snapshot. Self-schedule bounded retries so chat does not stay blank
+        // waiting for a later navigation/force.
+        if (attempts < EMPTY_HYDRATION_MAX_ATTEMPTS) {
+          const entryKey = this.keyFor(normalized)
+          const generation = entry.snapshot.generation
+          setTimeout(() => {
+            if (this.disposed) return
+            const current = this.entries.get(entryKey)
+            if (!current || current.snapshot.generation !== generation) return
+            const count = store.getState().message[normalized.sessionID]?.length ?? 0
+            if (count > 0) return
+            void this.ensure(normalized, { reason: "reactive" })
+          }, EMPTY_HYDRATION_RETRY_MS)
+        }
+      }
       if (!isMobileSurfaceRuntime() && isCurrent()) {
         queueMicrotask(() => {
           if (isCurrent() && entry.snapshot.cursor && !entry.snapshot.complete) {

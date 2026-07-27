@@ -110,6 +110,8 @@ describe('from-claude mapper', () => {
     const toolPart = toolStart.events.find((e) => e.properties?.part?.type === 'tool');
     expect(toolPart.properties.part.tool).toBe('Read');
     expect(toolPart.properties.part.state.status).toBe('running');
+    const startedAt = toolPart.properties.part.state.time.start;
+    expect(typeof startedAt).toBe('number');
 
     const toolEnd = mapClaudeMessageToEvents(ctx, {
       type: 'user',
@@ -121,6 +123,8 @@ describe('from-claude mapper', () => {
     const completed = toolEnd.events.find((e) => e.properties?.part?.type === 'tool');
     expect(completed.properties.part.state.status).toBe('completed');
     expect(completed.properties.part.tool).toBe('Read');
+    expect(completed.properties.part.state.time.start).toBe(startedAt);
+    expect(completed.properties.part.state.time.end).toBeGreaterThanOrEqual(startedAt);
   });
 
   it('interleaves text → tool → text with ascending part ids (tools not below final reply)', () => {
