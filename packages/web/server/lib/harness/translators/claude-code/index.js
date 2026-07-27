@@ -5,6 +5,10 @@
 import { mapAttachmentsToContentBlocks } from './attachments.js';
 import { startClaudeQuery } from './query.js';
 import {
+  buildClaudeMcpServersFromOpenChamber,
+  buildMcpAllowedToolPatterns,
+} from './mcp-config.js';
+import {
   createCanUseTool,
   rejectPendingForSession,
   replyPermission as replyPendingPermission,
@@ -26,6 +30,7 @@ import {
 } from '../../session-bindings.js';
 import { getHarnessCapabilities } from '../../registry.js';
 import { detectClaudeCode } from '../../detect.js';
+import { updateSessionCapabilities } from '../../session-capabilities.js';
 
 const ABORT_INTERRUPT_TIMEOUT_MS = 2_000;
 
@@ -213,16 +218,27 @@ export function createClaudeCodeTranslator(deps = {}) {
       assistantMessageId,
     });
 
-    let mcpServers = null;
+    // Bridge user/project OpenChamber MCP configs, then merge the in-process
+    // OpenChamber control tool (if enabled). Control-tool failure must not block
+    // the turn — Claude can still answer with bridged MCP alone.
+    const bridgedMcpServers = buildClaudeMcpServersFromOpenChamber(directory);
+    let controlMcpServers = null;
     try {
-      mcpServers = await createOpenChamberMcpServers({ contextDirectory: directory });
+      controlMcpServers = await createOpenChamberMcpServers({ contextDirectory: directory });
     } catch (error) {
-      // Tool injection must not block the turn — Claude can still answer without it.
       console.warn(
         '[harness/claude-code] OpenChamber MCP injection failed:',
         error instanceof Error ? error.message : error,
       );
     }
+    const mcpServers = {
+      ...bridgedMcpServers,
+      ...(controlMcpServers && typeof controlMcpServers === 'object' ? controlMcpServers : {}),
+    };
+    // Only forward MCP wildcards here. Bare names like Agent/Skill auto-approve in
+    // the SDK and emit CLAUDE_SDK_CAN_USE_TOOL_SHADOWED, defeating canUseTool.
+    // Agent/Task/Skill remain available via Claude defaults + skills:'all'.
+    const allowedTools = buildMcpAllowedToolPatterns(mcpServers);
 
     const agentsMode = body?.agentsMode === 'claude' || body?.agentsMode === 'opencode'
       ? body.agentsMode
@@ -261,7 +277,12 @@ export function createClaudeCodeTranslator(deps = {}) {
         systemPrompt,
         canUseTool,
         includePartialMessages: true,
-        ...(mcpServers ? { mcpServers } : {}),
+        ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
+        ...(allowedTools.length > 0 ? { allowedTools } : {}),
+        skills: 'all',
+        settingSources: ['user', 'project', 'local'],
+        forwardSubagentText: true,
+        agentProgressSummaries: true,
       });
     } catch (error) {
       const wrapped = error instanceof Error ? error : new Error(String(error));
@@ -296,9 +317,12 @@ export function createClaudeCodeTranslator(deps = {}) {
     void (async () => {
       try {
         for await (const message of handle.stream) {
-          const { events, foreignSessionId } = mapClaudeMessageToEvents(ctx, message);
+          const { events, foreignSessionId, capabilities } = mapClaudeMessageToEvents(ctx, message);
           if (foreignSessionId) {
             setForeignSessionId(sessionId, foreignSessionId);
+          }
+          if (capabilities) {
+            updateSessionCapabilities(sessionId, capabilities);
           }
           emitEvents(events);
         }

@@ -114,6 +114,7 @@ in responses. Never log tokens, OAuth material, or attachment bytes.
 | POST | `/api/harness/abort` | Abort active Claude turn |
 | POST | `/api/harness/permission/reply` | Resolve bridged `canUseTool` prompt |
 | GET | `/api/harness/sessions/:sessionId` | Binding debug/UI |
+| GET | `/api/harness/sessions/:sessionId/capabilities` | Claude slash/MCP/agents snapshot (built-in defaults before init) |
 | GET | `/api/harness/claude-code/import/candidates` | List local Claude Code projects/chats |
 | POST | `/api/harness/claude-code/import` | Import selected chats (OpenCode shell + binding) |
 
@@ -275,6 +276,20 @@ Capability `multirun: full`. The MultiRun launcher model picker includes
 Claude Code engines/models. Each run persists an `ExecutionTarget` and
 `routeMessage` sends Claude runs through `/api/harness/prompt`.
 
+## Slash commands / MCP / subagents
+
+Capabilities: `slash-commands: full`, `mcp: full`, `subagents: full`.
+
+| Concern | Behavior |
+| --- | --- |
+| Slash | Claude-native `/command` (from `system/init.slash_commands` + built-ins) is sent as harness prompt text. UI autocomplete switches to Claude commands on Claude sessions. OpenCode-only slash/skills still reject with `CLAUDE_SLASH_UNSUPPORTED`. `/compact` uses Claude compaction, not OpenCode summarize. |
+| MCP | OpenChamber MCP configs (`opencode` mcp entries) convert to Claude `mcpServers` (`stdio` / `http`). Project `.mcp.json` still loads via `settingSources`. Status from `system/init.mcp_servers` is stored in `session-capabilities.js`. |
+| Subagents | `Agent` is allowed; nested `parent_tool_use_id` streams map into synthetic child sessions (`session.created` with `parentID`) so the sidebar shows subagent work. |
+
+`GET /api/harness/sessions/:sessionId/capabilities` returns the latest snapshot
+(built-in slash defaults before the first init). UI:
+`useClaudeSessionCapabilitiesStore` + `harnessSessionCapabilities`.
+
 ## Follow-ups while busy
 
 Claude rejects a second `prompt` for the same session with HTTP `409`
@@ -316,12 +331,17 @@ Dependency: `@anthropic-ai/claude-agent-sdk` in `packages/web/package.json`.
 `query.js`:
 
 - Lazy-imports the SDK; caches load failures.
-- `startClaudeQuery({ prompt, cwd, model, resume, permissionMode, effort, systemPrompt, canUseTool, env })`
+- `startClaudeQuery({ prompt, cwd, model, resume, permissionMode, effort, systemPrompt, canUseTool, mcpServers, allowedTools, skills, settingSources, forwardSubagentText, agentProgressSummaries, env })`
 - Resolves `pathToClaudeCodeExecutable` via `executable-path.js` (PATH / env /
   `app.asar.unpacked` native package) so Electron does not spawn a path inside
   `app.asar` (that fails with `ENOTDIR`).
 - Validates `cwd` is a real directory before starting the query.
 - `includePartialMessages: true` for streaming deltas
+- Defaults: `skills: 'all'`, `settingSources: ['user','project','local']`,
+  `forwardSubagentText: true`, `agentProgressSummaries: true`
+- Bridges OpenChamber MCP configs via `mcp-config.js` into `mcpServers` and
+  `allowedTools` MCP wildcards only (`mcp__name__*`; bare Agent/Skill omitted so
+  they do not shadow `canUseTool`)
 - `interrupt()` when available, plus `killProcessTree(pid)` on abort/close
 
 If the SDK import fails:

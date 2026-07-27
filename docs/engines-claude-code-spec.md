@@ -191,9 +191,9 @@ type HarnessDescriptor = {
 | images | full | base64 image blocks |
 | file-attachments | full | `data:` embeds; sandboxed `file://` / project-path refs; images, text-like, PDF; reject opaque binaries |
 | shell | full | OpenCode `session.shell` on the shared session id (engine-independent; available while Claude owns prompt turns) |
-| slash-commands | partial | known OpenCode slash/skills blocked on Claude send; CLI-native skills via prompt text only |
-| mcp | partial | whatever Claude loads natively; no OpenChamber MCP editor bridge |
-| subagents | partial | appear in stream if CLI emits; limited UI affordances |
+| slash-commands | full | Claude-native `/command` via harness prompt + system/init discovery; OpenCode-only slash blocked |
+| mcp | full | OpenChamber MCP configs bridged into SDK `mcpServers`; project `.mcp.json` via `settingSources`; status from init |
+| subagents | full | Agent tool + `forwardSubagentText`; nested child sessions in sidebar |
 | goal | full | Server loop via harness turn snapshots + `/api/harness/prompt` continuations; Claude `result.usage` mapped into `assistant.info.tokens` |
 | multirun | full | MultiRun launcher includes Claude models; sticky `ExecutionTarget` + harness prompt per run |
 | openchamber-tool | full | In-process Claude SDK MCP (`createSdkMcpServer`) → shared control service; gated by `agentControlToolEnabled` |
