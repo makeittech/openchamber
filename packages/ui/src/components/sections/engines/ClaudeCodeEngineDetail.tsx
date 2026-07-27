@@ -4,6 +4,7 @@ import {
   SettingsSection,
   SettingsCheckboxRow,
   SettingsFieldRow,
+  SettingsChipGroup,
   SETTINGS_FIELDS_STACK_CLASS,
   SETTINGS_HELPER_CLASS,
 } from '@/components/sections/shared/SettingsSection';
@@ -11,14 +12,19 @@ import { Button } from '@/components/ui/button';
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { updateDesktopSettings } from '@/lib/persistence';
-import { setCachedWarnOnOpenCodeHandoff } from '@/lib/harness/settings';
+import {
+  setCachedWarnOnOpenCodeHandoff,
+  setCachedClaudeAgentsMode,
+  withEnginesSettingsDefaults,
+  type ClaudeAgentsMode,
+} from '@/lib/harness/settings';
 import { openExternalUrl } from '@/lib/url';
 import { useHarnessStore } from '@/stores/useHarnessStore';
 import { useUIStore } from '@/stores/useUIStore';
-import { withEnginesSettingsDefaults } from '@/lib/harness/settings';
 import type { CapabilityLevel, HarnessCapability, HarnessRuntimeStatus } from '@/types/harness';
 import { HARNESS_CAPABILITIES } from '@/types/harness';
 import { useShallow } from 'zustand/react/shallow';
+import { ClaudeImportDialog } from '@/components/sections/engines/ClaudeImportDialog';
 
 const STATUS_LABEL_KEYS: Record<
   HarnessRuntimeStatus,
@@ -78,7 +84,9 @@ export const ClaudeCodeEngineDetail: React.FC = () => {
   })));
 
   const [warnOnHandoff, setWarnOnHandoff] = React.useState(true);
+  const [agentsMode, setAgentsMode] = React.useState<ClaudeAgentsMode>('opencode');
   const [settingsLoaded, setSettingsLoaded] = React.useState(false);
+  const [importOpen, setImportOpen] = React.useState(false);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -100,9 +108,15 @@ export const ClaudeCodeEngineDetail: React.FC = () => {
             typeof data.enginesClaudeCodeWarnOnOpenCodeHandoff === 'boolean'
               ? data.enginesClaudeCodeWarnOnOpenCodeHandoff
               : undefined,
+          enginesClaudeCodeAgentsMode:
+            data.enginesClaudeCodeAgentsMode === 'claude' || data.enginesClaudeCodeAgentsMode === 'opencode'
+              ? data.enginesClaudeCodeAgentsMode
+              : undefined,
         });
         setWarnOnHandoff(resolved.enginesClaudeCodeWarnOnOpenCodeHandoff);
         setCachedWarnOnOpenCodeHandoff(resolved.enginesClaudeCodeWarnOnOpenCodeHandoff);
+        setAgentsMode(resolved.enginesClaudeCodeAgentsMode);
+        setCachedClaudeAgentsMode(resolved.enginesClaudeCodeAgentsMode);
       } catch {
         // keep default
       } finally {
@@ -120,6 +134,12 @@ export const ClaudeCodeEngineDetail: React.FC = () => {
     setWarnOnHandoff(enabled);
     setCachedWarnOnOpenCodeHandoff(enabled);
     void updateDesktopSettings({ enginesClaudeCodeWarnOnOpenCodeHandoff: enabled });
+  }, []);
+
+  const handleAgentsModeChange = React.useCallback((mode: ClaudeAgentsMode) => {
+    setAgentsMode(mode);
+    setCachedClaudeAgentsMode(mode);
+    void updateDesktopSettings({ enginesClaudeCodeAgentsMode: mode });
   }, []);
 
   const handleRedetect = React.useCallback(() => {
@@ -215,6 +235,35 @@ export const ClaudeCodeEngineDetail: React.FC = () => {
       </SettingsSection>
 
       <SettingsSection
+        title={t('settings.engines.claudeCode.section.agents')}
+        contentClassName={SETTINGS_FIELDS_STACK_CLASS}
+      >
+        <SettingsFieldRow
+          label={t('settings.engines.claudeCode.agentsMode.label')}
+          info={t('settings.engines.claudeCode.agentsMode.info')}
+          settingsItem="engines.claude-code.agents-mode"
+        >
+          <SettingsChipGroup
+            aria-label={t('settings.engines.claudeCode.agentsMode.aria')}
+            value={agentsMode}
+            onChange={handleAgentsModeChange}
+            options={[
+              {
+                value: 'claude',
+                label: t('settings.engines.claudeCode.agentsMode.claude'),
+                disabled: !settingsLoaded,
+              },
+              {
+                value: 'opencode',
+                label: t('settings.engines.claudeCode.agentsMode.opencode'),
+                disabled: !settingsLoaded,
+              },
+            ]}
+          />
+        </SettingsFieldRow>
+      </SettingsSection>
+
+      <SettingsSection
         title={t('settings.engines.claudeCode.section.warnings')}
         contentClassName={SETTINGS_FIELDS_STACK_CLASS}
       >
@@ -227,6 +276,23 @@ export const ClaudeCodeEngineDetail: React.FC = () => {
           info={t('settings.engines.claudeCode.warnHandoff.info')}
           settingsItem="engines.claude-code.warn-handoff"
         />
+      </SettingsSection>
+
+      <SettingsSection
+        title={t('settings.engines.claudeCode.section.import')}
+        settingsItem="engines.claude-code.import"
+        contentClassName="space-y-3"
+      >
+        <p className={SETTINGS_HELPER_CLASS}>{t('settings.engines.claudeCode.import.note')}</p>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={() => setImportOpen(true)}
+          aria-label={t('settings.engines.claudeCode.import.actions.openAria')}
+        >
+          {t('settings.engines.claudeCode.import.actions.open')}
+        </Button>
       </SettingsSection>
 
       <SettingsSection
@@ -244,6 +310,8 @@ export const ClaudeCodeEngineDetail: React.FC = () => {
           {t('settings.engines.opencode.link.providers')}
         </Button>
       </SettingsSection>
+
+      <ClaudeImportDialog open={importOpen} onOpenChange={setImportOpen} />
     </SettingsPageLayout>
   );
 };

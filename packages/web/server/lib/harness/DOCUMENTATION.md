@@ -28,6 +28,7 @@ Parent specs:
 | Attachment mapping | `translators/claude-code/attachments.js` |
 | Claude permissions bridge | `translators/claude-code/permissions.js` |
 | Claude prompt orchestration | `translators/claude-code/index.js` |
+| Claude local project/chat import | `translators/claude-code/import-from-disk.js` |
 | OpenCode stub (SDK path stays in UI) | `translators/opencode/index.js` |
 | Claude → canonical events | `events/from-claude.js` |
 | Broadcaster wrapper | `events/emit.js` |
@@ -113,6 +114,24 @@ in responses. Never log tokens, OAuth material, or attachment bytes.
 | POST | `/api/harness/abort` | Abort active Claude turn |
 | POST | `/api/harness/permission/reply` | Resolve bridged `canUseTool` prompt |
 | GET | `/api/harness/sessions/:sessionId` | Binding debug/UI |
+| GET | `/api/harness/claude-code/import/candidates` | List local Claude Code projects/chats |
+| POST | `/api/harness/claude-code/import` | Import selected chats (OpenCode shell + binding) |
+
+### Claude Code import
+
+Reads transcripts under `$CLAUDE_CONFIG_DIR/projects` (fallback `~/.claude/projects`
+then `~/.config/claude/projects`). Listing never treats a missing config dir as
+an authoritative empty failure of the engine — the response is
+`{ projects: [] }` with null roots.
+
+Import creates an OpenCode session per selected Claude chat, then
+`bindSession` with `foreignSessionId` so the next Claude prompt resumes the
+native transcript. JSONL is **not** replayed into OpenCode message stores
+(format is Anthropic-internal and unstable). One failed chat does not roll
+back others; already-bound `foreignSessionId` values are skipped. Batch limit:
+100 sessions.
+
+Owning module: `translators/claude-code/import-from-disk.js`.
 
 ### Prompt body
 
@@ -208,13 +227,16 @@ Capability: `permissions: full`.
 UI: `harnessPermissionReply` → `respondToPermission` / `dismissPermission` branch
 when `getSessionTarget(sessionId)?.harnessId === 'claude-code'`.
 
-`permissionMode` is not a separate Claude composer control. The UI derives it
-from the selected OpenCode agent's edit permission (`allow`→`acceptEdits`,
-`ask`→`default`, `deny`→`plan`) on each send. Session permission auto-accept
-also settles bridged harness asks via `replyHarnessPermission` (never OpenCode
-`/permission/:id/reply` for Claude-bound sessions).
+### Agents mode (`enginesClaudeCodeAgentsMode`)
 
-That inheritance is enforced server-side, not just in the UI: `query.js` only
+Settings → Engines → Claude Code → **Agents to use**:
+
+| Mode | Behavior |
+| --- | --- |
+| `opencode` (default) | OpenChamber/OpenCode agents drive Claude `permissionMode` (edit → acceptEdits/default/plan) and append the selected agent’s system prompt to the Claude Code preset (`systemPrompt: { type: 'preset', preset: 'claude_code', append }`). Composer shows the OpenCode agent picker. |
+| `claude` | Native Claude Code prompts and permission settings. OpenCode agent picker is hidden on Claude sessions; sticky/OpenCode-derived `permissionMode` is not forwarded. |
+
+That inheritance is enforced server-side for `permissionMode` allowlisting: `query.js` only
 forwards `default` / `acceptEdits` / `plan` to the SDK and drops anything else.
 A client-supplied `bypassPermissions` would otherwise disable the `canUseTool`
 bridge outright — and with it auto-accept, which answers through that bridge.
@@ -294,7 +316,7 @@ Dependency: `@anthropic-ai/claude-agent-sdk` in `packages/web/package.json`.
 `query.js`:
 
 - Lazy-imports the SDK; caches load failures.
-- `startClaudeQuery({ prompt, cwd, model, resume, permissionMode, effort, canUseTool, env })`
+- `startClaudeQuery({ prompt, cwd, model, resume, permissionMode, effort, systemPrompt, canUseTool, env })`
 - Resolves `pathToClaudeCodeExecutable` via `executable-path.js` (PATH / env /
   `app.asar.unpacked` native package) so Electron does not spawn a path inside
   `app.asar` (that fails with `ENOTDIR`).

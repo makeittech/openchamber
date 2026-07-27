@@ -71,6 +71,7 @@ import {
 import {
     getCachedWarnOnOpenCodeHandoff,
     setCachedWarnOnOpenCodeHandoff,
+    setCachedClaudeAgentsMode,
     withEnginesSettingsDefaults,
 } from '@/lib/harness/settings';
 import { updateDesktopSettings } from '@/lib/persistence';
@@ -1569,8 +1570,14 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                         typeof data.enginesClaudeCodeWarnOnOpenCodeHandoff === 'boolean'
                             ? data.enginesClaudeCodeWarnOnOpenCodeHandoff
                             : undefined,
+                    enginesClaudeCodeAgentsMode:
+                        data.enginesClaudeCodeAgentsMode === 'claude'
+                        || data.enginesClaudeCodeAgentsMode === 'opencode'
+                            ? data.enginesClaudeCodeAgentsMode
+                            : undefined,
                 });
                 setCachedWarnOnOpenCodeHandoff(resolved.enginesClaudeCodeWarnOnOpenCodeHandoff);
+                setCachedClaudeAgentsMode(resolved.enginesClaudeCodeAgentsMode);
             } catch {
                 // keep cached default
             }
