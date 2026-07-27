@@ -83,6 +83,11 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
       isHarnessId(goalHarnessId) ? goalHarnessId : 'opencode',
       'goal',
     ) !== 'none';
+  const canUseOpenChamberToolCommand = canStartSessionCommand
+    && getHarnessCapabilityLevel(
+      isHarnessId(goalHarnessId) ? goalHarnessId : 'opencode',
+      'openchamber-tool',
+    ) !== 'none';
 
   const [commands, setCommands] = React.useState<CommandInfo[]>([]);
   const [loading, setLoading] = React.useState(false);
@@ -183,7 +188,7 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
             ? [{ id: 'openchamber:craft-goal', name: 'craft-goal', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.craftGoalDescription'), isOpenChamber: true }]
             : []
           ),
-          ...(canStartSessionCommand
+          ...(canUseOpenChamberToolCommand
             ? [{ id: 'openchamber:schedule-task', name: 'schedule-task', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.scheduleTaskDescription'), isOpenChamber: true }]
             : []
           ),
@@ -260,7 +265,7 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
             ? [{ id: 'openchamber:craft-goal', name: 'craft-goal', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.craftGoalDescription'), isOpenChamber: true }]
             : []
           ),
-          ...(canStartSessionCommand
+          ...(canUseOpenChamberToolCommand
             ? [{ id: 'openchamber:schedule-task', name: 'schedule-task', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.scheduleTaskDescription'), isOpenChamber: true }]
             : []
           ),
@@ -296,7 +301,7 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
     };
 
     loadCommands();
-  }, [searchQuery, hasMessagesInCurrentSession, hasSession, canStartSessionCommand, canUseGoalCommand, canUseReviewHandoffFlow, commandsWithMetadata, skills, t]);
+  }, [searchQuery, hasMessagesInCurrentSession, hasSession, canStartSessionCommand, canUseGoalCommand, canUseOpenChamberToolCommand, canUseReviewHandoffFlow, commandsWithMetadata, skills, t]);
 
   React.useEffect(() => {
     setSelectedIndex(0);

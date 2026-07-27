@@ -40,9 +40,9 @@ export const STATIC_HARNESS_CAPABILITIES: Record<HarnessId, Record<HarnessCapabi
     'slash-commands': 'partial',
     mcp: 'partial',
     subagents: 'partial',
-    multirun: 'none',
-    goal: 'partial',
-    'openchamber-tool': 'none',
+    multirun: 'full',
+    goal: 'full',
+    'openchamber-tool': 'full',
   },
 };
 

@@ -96,6 +96,7 @@ export function buildClaudePrompt(text, files, options = {}) {
  * @param {() => ((payload: object, options?: object) => void) | null | undefined} [deps.getBroadcast]
  * @param {typeof startClaudeQuery} [deps.startQuery]
  * @param {typeof detectClaudeCode} [deps.detect]
+ * @param {(options?: { contextDirectory?: string | null }) => Promise<Record<string, unknown> | null>} [deps.createOpenChamberMcpServers]
  */
 export function createClaudeCodeTranslator(deps = {}) {
   /** @type {Map<string, { handle: object, ctx: object, aborting: boolean, idleEmitted: boolean }>} */
@@ -103,6 +104,7 @@ export function createClaudeCodeTranslator(deps = {}) {
   const getBroadcast = deps.getBroadcast || (() => null);
   const startQuery = deps.startQuery || startClaudeQuery;
   const detect = deps.detect || detectClaudeCode;
+  const createOpenChamberMcpServers = deps.createOpenChamberMcpServers || (async () => null);
 
   /**
    * @param {object} body
@@ -211,6 +213,17 @@ export function createClaudeCodeTranslator(deps = {}) {
       assistantMessageId,
     });
 
+    let mcpServers = null;
+    try {
+      mcpServers = await createOpenChamberMcpServers({ contextDirectory: directory });
+    } catch (error) {
+      // Tool injection must not block the turn — Claude can still answer without it.
+      console.warn(
+        '[harness/claude-code] OpenChamber MCP injection failed:',
+        error instanceof Error ? error.message : error,
+      );
+    }
+
     const agentsMode = body?.agentsMode === 'claude' || body?.agentsMode === 'opencode'
       ? body.agentsMode
       : 'opencode';
@@ -248,6 +261,7 @@ export function createClaudeCodeTranslator(deps = {}) {
         systemPrompt,
         canUseTool,
         includePartialMessages: true,
+        ...(mcpServers ? { mcpServers } : {}),
       });
     } catch (error) {
       const wrapped = error instanceof Error ? error : new Error(String(error));
