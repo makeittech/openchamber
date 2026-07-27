@@ -123,7 +123,8 @@ type ParsedStatusResult = {
 };
 
 const getToolStatusPhrase = (toolName: string): string => {
-    return TOOL_STATUS_PHRASES[toolName] ?? `using ${toolName}`;
+    const normalized = toolName.trim().toLowerCase();
+    return TOOL_STATUS_PHRASES[normalized] ?? `using ${normalized || toolName}`;
 };
 
 const hashString = (value: string): number => {
@@ -251,10 +252,13 @@ const getPartTimeInfo = (part: Part): { end?: number } | undefined => {
 
 const getToolDisplayName = (part: ToolPart): string => {
     if (part.tool) {
-        return part.tool;
+        return part.tool.trim().toLowerCase() || part.tool;
     }
     const candidate = part as ToolPart & Partial<{ name?: unknown }>;
-    return typeof candidate.name === 'string' ? candidate.name : 'tool';
+    if (typeof candidate.name === 'string' && candidate.name.trim()) {
+        return candidate.name.trim().toLowerCase();
+    }
+    return 'tool';
 };
 
 export const getActiveAssistantContext = (messages: Message[]): ActiveAssistantContext => {

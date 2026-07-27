@@ -31,6 +31,7 @@ import { bootstrapGlobal, bootstrapDirectory } from "./bootstrap"
 import { retry } from "./retry"
 import { touchStreamingSession, updateChangedStreamingSessions, updateStreamingState } from "./streaming"
 import { countSyncPerformance } from "./performance-diagnostics"
+import { applyStaleToolPartSettlements } from "./stale-tool-parts"
 import { setActionRefs } from "./session-actions"
 import { setSyncRefs, getAllSyncSessions } from "./sync-refs"
 import { stripSessionDiffSnapshots } from "./sanitize"
@@ -2159,6 +2160,10 @@ export function SyncProvider(props: {
           if (stopped) return
           const now = Date.now()
           for (const [directory, store] of childStores.children.entries()) {
+            // Always scan directory stores — idle sessions with orphan running
+            // tools are not in the active-candidate set, but still need settle.
+            applyStaleToolPartSettlements(store, now)
+
             const state = store.getState()
             const candidateSessionIds = getActiveSessionCandidateIds(directory, state)
             if (candidateSessionIds.length === 0) {
