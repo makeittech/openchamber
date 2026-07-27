@@ -43,7 +43,7 @@ Product intent: keep OpenChamber UI/API as the primary surface; expand execution
 | Mid-session engine change | Duplicate into new session + seed transcript; prefer handoff over in-place switch |
 | Billing handoff notice | On by default; dismiss forever; re-enable from Engines settings |
 | Attachments | Supported via SDK streaming input content blocks |
-| Permission mode UI | Derived from OpenCode agent edit permission — **no** separate Claude chip |
+| Permission mode UI | When agents mode is `opencode`, derived from OpenCode agent edit permission; no separate Claude chip. When `claude`, native Claude permissions (OpenCode picker hidden) |
 | Session identity | Reuse OpenCode session IDs as the UI shell; Claude `session_id` stored as `foreignSessionId` |
 | Event transport | OpenCode-shaped payloads via `createGlobalUiEventBroadcaster` (same WS/SSE path) |
 
@@ -585,7 +585,7 @@ Settings slug `engines` (split page) in the OpenCode nav group (Engines before P
 |---|---|
 | **Engines** | OpenCode + Claude Code: status, login guidance, capabilities, warnings |
 | **Providers** | OpenCode providers + API auth only |
-| **Agents** | OpenCode agents; Claude uses agent edit permission to derive `permissionMode` |
+| **Agents** | Setting `enginesClaudeCodeAgentsMode`: `opencode` (default) inherits OpenCode agent permissions + system prompt; `claude` uses native Claude Code prompts/permissions |
 | Behavior / Commands / MCP / Plugins | OpenCode-scoped |
 
 Engines → Claude Code detail:

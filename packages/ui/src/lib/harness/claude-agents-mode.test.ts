@@ -18,7 +18,7 @@ describe('resolveClaudeAgentsSendOptions', () => {
       // No agent → edit permission defaults to ask → Claude default
       permissionMode: 'default',
     });
-    expect(resolved.systemPromptAppend).toBeUndefined();
+    expect(resolved.systemPromptAppend).toBe(undefined);
   });
 
   test('claude mode strips inherited permissionMode and omits system prompt append', () => {
