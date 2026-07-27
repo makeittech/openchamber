@@ -45,6 +45,12 @@ const RATE_LIMIT_PROBE_MODEL = 'claude-haiku-4-5-20251001';
 /** @type {Promise<ClaudeUsageAccess> | null} */
 let claudeRefreshPromise = null;
 
+/** @type {{ windows: Record<string, ReturnType<typeof toUsageWindow>>, fetchedAt: number } | null} */
+let rateLimitWindowsCache = null;
+const RATE_LIMIT_CACHE_MS = 60_000;
+/** @type {Promise<Record<string, ReturnType<typeof toUsageWindow>>> | null} */
+let rateLimitProbePromise = null;
+
 /**
  * @typedef {{
  *   accessToken: string,
@@ -461,37 +467,65 @@ export function mapClaudeRateLimitHeaders(headers) {
 }
 
 /**
- * Lightweight Messages probe used when `/api/oauth/usage` rejects inference-only tokens.
+ * Lightweight Messages probe used when `/api/oauth/usage` rejects inference-only
+ * tokens or is rate-limited. Results are cached briefly and single-flighted so
+ * Services auto-refresh does not burn subscription quota or trip 429s.
  *
  * @param {string} accessToken
- * @param {{ fetchImpl?: typeof fetch }} [options]
+ * @param {{ fetchImpl?: typeof fetch, now?: () => number, bypassCache?: boolean }} [options]
  * @returns {Promise<Record<string, ReturnType<typeof toUsageWindow>>>}
  */
 export async function fetchClaudeUsageWindowsFromRateLimits(accessToken, options = {}) {
-  const fetchImpl = options.fetchImpl || fetch;
-  const response = await fetchImpl(CLAUDE_MESSAGES_URL, {
-    method: 'POST',
-    headers: {
-      ...buildClaudeUsageHeaders(accessToken),
-      'anthropic-version': CLAUDE_API_VERSION,
-    },
-    body: JSON.stringify({
-      model: RATE_LIMIT_PROBE_MODEL,
-      max_tokens: 1,
-      messages: [{ role: 'user', content: '.' }],
-    }),
-    signal: AbortSignal.timeout(30_000),
-  });
+  const now = options.now || Date.now;
+  const bypassCache = Boolean(options.bypassCache);
 
-  if (!response.ok) {
-    throw new Error(`Claude rate-limit probe failed: ${response.status}`);
+  if (
+    !bypassCache
+    && rateLimitWindowsCache
+    && now() - rateLimitWindowsCache.fetchedAt < RATE_LIMIT_CACHE_MS
+  ) {
+    return rateLimitWindowsCache.windows;
   }
 
-  const windows = mapClaudeRateLimitHeaders(response.headers);
-  if (Object.keys(windows).length === 0) {
-    throw new Error('Claude rate-limit probe returned no usage headers');
+  if (!rateLimitProbePromise) {
+    rateLimitProbePromise = (async () => {
+      const fetchImpl = options.fetchImpl || fetch;
+      const response = await fetchImpl(CLAUDE_MESSAGES_URL, {
+        method: 'POST',
+        headers: {
+          ...buildClaudeUsageHeaders(accessToken),
+          'anthropic-version': CLAUDE_API_VERSION,
+        },
+        body: JSON.stringify({
+          model: RATE_LIMIT_PROBE_MODEL,
+          max_tokens: 1,
+          messages: [{ role: 'user', content: '.' }],
+        }),
+        signal: AbortSignal.timeout(30_000),
+      });
+
+      if (!response.ok) {
+        if (
+          rateLimitWindowsCache
+          && now() - rateLimitWindowsCache.fetchedAt < RATE_LIMIT_CACHE_MS * 5
+        ) {
+          return rateLimitWindowsCache.windows;
+        }
+        throw new Error(`Claude rate-limit probe failed: ${response.status}`);
+      }
+
+      const windows = mapClaudeRateLimitHeaders(response.headers);
+      if (Object.keys(windows).length === 0) {
+        throw new Error('Claude rate-limit probe returned no usage headers');
+      }
+      rateLimitWindowsCache = { windows, fetchedAt: now() };
+      return windows;
+    })().finally(() => {
+      rateLimitProbePromise = null;
+    });
   }
-  return windows;
+
+  return rateLimitProbePromise;
 }
 
 /**
@@ -510,4 +544,6 @@ export function classifyClaudeUsageHttpError(status, bodyText = '') {
 /** @internal test helper */
 export function __resetClaudeRefreshLockForTests() {
   claudeRefreshPromise = null;
+  rateLimitProbePromise = null;
+  rateLimitWindowsCache = null;
 }

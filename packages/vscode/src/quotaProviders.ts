@@ -868,15 +868,42 @@ const fetchClaudeQuota = async (): Promise<ProviderResult> => {
       });
     }
 
-    if (hasKnownMissingProfileScope(access.scopes)) {
-      const windows = await fetchClaudeUsageWindowsFromRateLimits(access.accessToken);
-      return buildResult({
-        providerId: 'claude',
-        providerName,
-        ok: true,
-        configured: true,
-        usage: { windows },
-      });
+    const skipUsageEndpoint = access.source === 'env' || hasKnownMissingProfileScope(access.scopes);
+
+    const buildFallbackOrError = async (status: number | null = null, bodyText = '') => {
+      try {
+        const windows = await fetchClaudeUsageWindowsFromRateLimits(access!.accessToken);
+        return buildResult({
+          providerId: 'claude',
+          providerName,
+          ok: true,
+          configured: true,
+          usage: { windows },
+        });
+      } catch {
+        if (status === 401) {
+          return buildResult({
+            providerId: 'claude',
+            providerName,
+            ok: false,
+            configured: true,
+            error: CLAUDE_SESSION_EXPIRED_ERROR,
+          });
+        }
+        return buildResult({
+          providerId: 'claude',
+          providerName,
+          ok: false,
+          configured: true,
+          error: status == null
+            ? CLAUDE_SCOPE_ERROR
+            : classifyClaudeUsageHttpError(status, bodyText),
+        });
+      }
+    };
+
+    if (skipUsageEndpoint) {
+      return await buildFallbackOrError();
     }
 
     let response = await fetchClaudeUsagePayload(access.accessToken);
@@ -917,49 +944,11 @@ const fetchClaudeQuota = async (): Promise<ProviderResult> => {
           usage: { windows },
         });
       }
+      return await buildFallbackOrError();
     }
 
-    if (!response.ok && response.status !== 403 && response.status !== 401) {
-      const bodyText = await response.text().catch(() => '');
-      return buildResult({
-        providerId: 'claude',
-        providerName,
-        ok: false,
-        configured: true,
-        error: classifyClaudeUsageHttpError(response.status, bodyText),
-      });
-    }
-
-    try {
-      const windows = await fetchClaudeUsageWindowsFromRateLimits(access.accessToken);
-      return buildResult({
-        providerId: 'claude',
-        providerName,
-        ok: true,
-        configured: true,
-        usage: { windows },
-      });
-    } catch {
-      if (response.status === 401) {
-        return buildResult({
-          providerId: 'claude',
-          providerName,
-          ok: false,
-          configured: true,
-          error: CLAUDE_SESSION_EXPIRED_ERROR,
-        });
-      }
-      const bodyText = await response.clone().text().catch(() => '');
-      return buildResult({
-        providerId: 'claude',
-        providerName,
-        ok: false,
-        configured: true,
-        error: response.ok
-          ? CLAUDE_SCOPE_ERROR
-          : classifyClaudeUsageHttpError(response.status, bodyText),
-      });
-    }
+    const bodyText = await response.text().catch(() => '');
+    return await buildFallbackOrError(response.status, bodyText);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Request failed';
     const sessionExpired = /token refresh failed|no refresh token|Session expired/i.test(message);

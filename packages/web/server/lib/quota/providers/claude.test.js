@@ -309,4 +309,17 @@ describe('claude quota provider', () => {
     expect(CLAUDE_USAGE_URL).toContain('/api/oauth/usage');
     expect(CLAUDE_SESSION_EXPIRED_ERROR).toContain('re-authenticate');
   });
+
+  it('skips the usage endpoint for env setup-tokens and inference-only scopes', async () => {
+    const { shouldSkipClaudeUsageEndpoint } = await import('./claude.js');
+    expect(shouldSkipClaudeUsageEndpoint({ source: 'env', scopes: null })).toBe(true);
+    expect(shouldSkipClaudeUsageEndpoint({
+      source: 'claude-cli',
+      scopes: ['user:inference'],
+    })).toBe(true);
+    expect(shouldSkipClaudeUsageEndpoint({
+      source: 'claude-cli',
+      scopes: ['user:inference', 'user:profile'],
+    })).toBe(false);
+  });
 });

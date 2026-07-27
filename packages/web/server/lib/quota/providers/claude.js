@@ -80,11 +80,61 @@ export function mapClaudeUsageWindows(payload) {
 }
 
 /**
+ * True when this credential cannot use `/api/oauth/usage` successfully.
+ * Env setup-tokens and known inference-only scopes should skip that endpoint.
+ *
+ * @param {{ source?: string, scopes?: string[] | null } | null | undefined} access
+ */
+export function shouldSkipClaudeUsageEndpoint(access) {
+  if (!access) return true;
+  if (access.source === 'env') return true;
+  if (access.scopes != null && !hasClaudeProfileScope(access.scopes)) return true;
+  return false;
+}
+
+/**
  * @param {string} accessToken
  * @param {{ fetchImpl?: typeof fetch }} [options]
  */
 async function loadWindowsWithRateLimitFallback(accessToken, options = {}) {
   return fetchClaudeUsageWindowsFromRateLimits(accessToken, options);
+}
+
+/**
+ * @param {string} accessToken
+ * @param {number | null} [status]
+ * @param {string} [bodyText]
+ */
+async function buildFallbackOrError(accessToken, status = null, bodyText = '') {
+  try {
+    const windows = await loadWindowsWithRateLimitFallback(accessToken);
+    return buildResult({
+      providerId,
+      providerName,
+      ok: true,
+      configured: true,
+      usage: { windows },
+    });
+  } catch {
+    if (status === 401) {
+      return buildResult({
+        providerId,
+        providerName,
+        ok: false,
+        configured: true,
+        error: CLAUDE_SESSION_EXPIRED_ERROR,
+      });
+    }
+    return buildResult({
+      providerId,
+      providerName,
+      ok: false,
+      configured: true,
+      error: status == null
+        ? CLAUDE_SCOPE_ERROR
+        : classifyClaudeUsageHttpError(status, bodyText),
+    });
+  }
 }
 
 export const fetchQuota = async () => {
@@ -112,19 +162,11 @@ export const fetchQuota = async () => {
   }
 
   try {
-    const knownMissingProfile = access.scopes != null && !hasClaudeProfileScope(access.scopes);
-
-    // Inference-only setup tokens cannot call /api/oauth/usage. Skip straight to
-    // the Messages rate-limit header probe when scopes are known to lack profile.
-    if (knownMissingProfile) {
-      const windows = await loadWindowsWithRateLimitFallback(access.accessToken);
-      return buildResult({
-        providerId,
-        providerName,
-        ok: true,
-        configured: true,
-        usage: { windows },
-      });
+    // Setup-tokens / inference-only credentials cannot call /api/oauth/usage
+    // (403 scope or 429 from the non-profile bucket). Go straight to the
+    // Messages unified rate-limit header probe.
+    if (shouldSkipClaudeUsageEndpoint(access)) {
+      return await buildFallbackOrError(access.accessToken);
     }
 
     let response = await fetchClaudeUsagePayload(access.accessToken);
@@ -167,51 +209,15 @@ export const fetchQuota = async () => {
           usage: { windows }
         });
       }
+      // Empty payload — still try rate-limit headers.
+      return await buildFallbackOrError(access.accessToken);
     }
 
-    // 403 scope errors (and empty usage payloads) fall back to unified rate-limit
-    // headers from a tiny Messages call — works with inference-only tokens.
-    if (!response.ok && response.status !== 403 && response.status !== 401) {
-      const bodyText = await response.text().catch(() => '');
-      return buildResult({
-        providerId,
-        providerName,
-        ok: false,
-        configured: true,
-        error: classifyClaudeUsageHttpError(response.status, bodyText),
-      });
-    }
-
-    try {
-      const windows = await loadWindowsWithRateLimitFallback(access.accessToken);
-      return buildResult({
-        providerId,
-        providerName,
-        ok: true,
-        configured: true,
-        usage: { windows },
-      });
-    } catch {
-      if (response.status === 401) {
-        return buildResult({
-          providerId,
-          providerName,
-          ok: false,
-          configured: true,
-          error: CLAUDE_SESSION_EXPIRED_ERROR,
-        });
-      }
-      const bodyText = await response.clone().text().catch(() => '');
-      return buildResult({
-        providerId,
-        providerName,
-        ok: false,
-        configured: true,
-        error: response.ok
-          ? CLAUDE_SCOPE_ERROR
-          : classifyClaudeUsageHttpError(response.status, bodyText),
-      });
-    }
+    // 401/403/429/5xx: prefer Messages rate-limit headers over surfacing a raw
+    // status. This is what keeps Services/Settings populated for setup-tokens
+    // and when Anthropic rate-limits the undocumented usage endpoint.
+    const bodyText = await response.text().catch(() => '');
+    return await buildFallbackOrError(access.accessToken, response.status, bodyText);
   } catch (error) {
     return buildResult({
       providerId,
