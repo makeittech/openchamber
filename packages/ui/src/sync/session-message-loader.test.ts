@@ -143,6 +143,42 @@ describe("SessionMessageLoader", () => {
     childStores.disposeAll()
   })
 
+  test("retries when an in-flight load goes stale before commit", async () => {
+    const first = deferred<ReturnType<typeof response>>()
+    const second = deferred<ReturnType<typeof response>>()
+    let calls = 0
+    const childStores = new ChildStoreManager()
+    const sdkA = { session: { messages: async ({ sessionID }: { sessionID: string }) => {
+      calls += 1
+      return calls === 1 ? first.promise : second.promise
+    } } } as unknown as OpencodeClient
+    const loader = new SessionMessageLoader(childStores, { sdk: sdkA, runtimeKey: "runtime-a" })
+    const target = { directory: "/repo", sessionID: "session-a" }
+
+    const loading = loader.ensure(target, { reason: "navigation" })
+    // Recreate the SDK client mid-flight (SyncProvider configure) — previously
+    // marked the fetch stale and left Claude sessions with zero messages.
+    loader.configure({
+      sdk: { session: { messages: async ({ sessionID }: { sessionID: string }) => {
+        calls += 1
+        return second.promise
+      } } } as unknown as OpencodeClient,
+      runtimeKey: "runtime-a",
+    })
+    first.resolve(response([createRecord(target.sessionID, "msg_stale")]))
+    await loading
+    expect(childStores.getChild(target.directory)?.getState().message[target.sessionID]?.length ?? 0).toBe(0)
+
+    second.resolve(response([createRecord(target.sessionID, "msg_live")]))
+    await new Promise((resolve) => setTimeout(resolve, 1600))
+    await loader.ensure(target, { reason: "reactive" })
+
+    expect(childStores.getChild(target.directory)?.getState().message[target.sessionID]?.map((message) => message.id))
+      .toEqual(["msg_live"])
+    loader.dispose()
+    childStores.disposeAll()
+  })
+
   test("retries early empty snapshots so Claude harness overlay can catch up", async () => {
     let calls = 0
     const { childStores, loader } = createLoader(async ({ sessionID }) => {

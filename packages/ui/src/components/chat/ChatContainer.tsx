@@ -753,9 +753,14 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
     }, []);
 
     React.useEffect(() => {
-        if (autoOpenDraft && !currentSessionId && !draftOpen) {
-            openNewSessionDraft();
+        if (!autoOpenDraft || currentSessionId || draftOpen) return;
+        // Wait for deep-link `?session=` to apply before opening a draft, otherwise
+        // the draft clears the session id and Claude sessions stay blank.
+        if (typeof window !== 'undefined') {
+            const params = new URLSearchParams(window.location.search);
+            if (params.get('session')) return;
         }
+        openNewSessionDraft();
     }, [autoOpenDraft, currentSessionId, draftOpen, openNewSessionDraft]);
 
     const activeTurnChangeRef = React.useRef<(turnId: string | null) => void>(() => {});

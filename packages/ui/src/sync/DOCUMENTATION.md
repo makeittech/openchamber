@@ -162,9 +162,10 @@ Rules:
 2. One in-flight request is shared by all callers. Foreground demand may promote the visible load kind of an existing prefetch without starting another request.
 3. Load state is explicit per session: `idle`, `loading`, `ready`, or `error`. Fetch failure preserves prior materialized records and exposes retry; it never becomes authoritative empty success.
 4. An early successful empty `[]` is renderable, but Claude harness turns can appear in the overlay shortly after that miss. `SessionMessageLoader` retries empty hydration a bounded number of times with a short cooldown (and immediately on `force` / `navigation`) so chat does not stay blank waiting for a later click.
-5. Async commits are generation-checked. Runtime switches, forced refreshes, eviction, and disposal must reject stale completion.
-6. Prefetch coverage and persisted directory data are runtime-scoped. Legacy persisted directory entries may seed startup continuity, but they are not live truth.
-7. Message and part materialization preserves references for unchanged records and maintains direct message-to-parts lookup. Consumers subscribe to the selected session's records rather than broad message/part containers.
+5. In-flight message loads must not be discarded solely because directory bootstrap replaced child-store object identity. Generation and SDK epoch still reject forced refresh, eviction, and runtime switches. A stale empty load schedules a retry so Claude overlay data is not lost during startup races.
+6. Async commits are generation-checked. Runtime switches, forced refreshes, eviction, and disposal must reject stale completion.
+7. Prefetch coverage and persisted directory data are runtime-scoped. Legacy persisted directory entries may seed startup continuity, but they are not live truth.
+8. Message and part materialization preserves references for unchanged records and maintains direct message-to-parts lookup. Consumers subscribe to the selected session's records rather than broad message/part containers.
 
 Initial loads use smaller pages on constrained VS Code/mobile surfaces. Older pages are fetched through the same loader and merged with optimistic records before publication.
 

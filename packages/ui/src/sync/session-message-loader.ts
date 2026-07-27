@@ -221,10 +221,11 @@ export class SessionMessageLoader {
     }
     if (options?.force) this.bumpGeneration(entry)
     const kind: SessionMessageLoadKind = options?.reason === "prefetch" ? "prefetch" : "initial"
-    return this.startLoad(normalized, entry, store, kind, async (isCurrent) => {
-      await this.loadInitial(normalized, entry, store, isCurrent)
+    return this.startLoad(normalized, entry, store, kind, async (isCurrent, resolveStore) => {
+      const liveStore = resolveStore()
+      await this.loadInitial(normalized, entry, liveStore, isCurrent)
       if (!isCurrent()) return
-      const hydratedCount = store.getState().message[normalized.sessionID]?.length ?? 0
+      const hydratedCount = resolveStore().getState().message[normalized.sessionID]?.length ?? 0
       if (hydratedCount > 0) {
         this.patchEntry(entry, {
           emptyHydrated: false,
@@ -248,7 +249,7 @@ export class SessionMessageLoader {
             if (this.disposed) return
             const current = this.entries.get(entryKey)
             if (!current || current.snapshot.generation !== generation) return
-            const count = store.getState().message[normalized.sessionID]?.length ?? 0
+            const count = resolveStore().getState().message[normalized.sessionID]?.length ?? 0
             if (count > 0) return
             void this.ensure(normalized, { reason: "reactive" })
           }, EMPTY_HYDRATION_RETRY_MS)
@@ -276,10 +277,10 @@ export class SessionMessageLoader {
     if (entry.snapshot.complete || !entry.snapshot.cursor) return Promise.resolve()
     const store = this.childStores.ensureChild(normalized.directory, { bootstrap: false })
     const cursor = entry.snapshot.cursor
-    return this.startLoad(normalized, entry, store, "older", async (isCurrent) => {
+    return this.startLoad(normalized, entry, store, "older", async (isCurrent, resolveStore) => {
       const page = await this.fetchPage(normalized, HISTORY_MESSAGE_PAGE_SIZE, cursor)
       if (!isCurrent()) return
-      const committed = this.commitPage(normalized, entry, store, page, "prepend", isCurrent)
+      const committed = this.commitPage(normalized, entry, resolveStore(), page, "prepend", isCurrent)
       if (!committed || !isCurrent()) return
       this.patchEntry(entry, {
         status: "ready",
@@ -330,10 +331,10 @@ export class SessionMessageLoader {
     }
     const store = this.childStores.ensureChild(normalized.directory, { bootstrap: false })
     this.bumpGeneration(entry)
-    return this.startLoad(normalized, entry, store, "refresh", async (isCurrent) => {
+    return this.startLoad(normalized, entry, store, "refresh", async (isCurrent, resolveStore) => {
       const page = await this.fetchPage(normalized, Math.max(1, limit))
       if (!isCurrent()) return
-      const committed = this.commitPage(normalized, entry, store, page, "merge", isCurrent)
+      const committed = this.commitPage(normalized, entry, resolveStore(), page, "merge", isCurrent)
       if (!committed || !isCurrent()) return
       this.patchEntry(entry, {
         status: "ready",
@@ -499,7 +500,10 @@ export class SessionMessageLoader {
     entry: LoaderEntry,
     store: { getState: () => DirectoryStore; setState: DirectoryStoreSetter },
     kind: SessionMessageLoadKind,
-    run: (isCurrent: () => boolean) => Promise<void>,
+    run: (
+      isCurrent: () => boolean,
+      resolveStore: () => { getState: () => DirectoryStore; setState: DirectoryStoreSetter },
+    ) => Promise<void>,
   ): Promise<void> {
     const generation = entry.snapshot.generation
     const sdkEpoch = this.sdkEpoch
@@ -510,21 +514,44 @@ export class SessionMessageLoader {
       sessionID: target.sessionID,
       caller: kind,
     })
+    // Do not pin isCurrent() to the store object identity captured at start.
+    // Directory bootstrap can replace the child store while a message fetch is
+    // in flight; discarding that response left Claude harness sessions blank
+    // (outcome "stale") with no automatic retry. Generation + sdkEpoch still
+    // reject forced refreshes, eviction, and runtime switches.
     const isCurrent = () => (
       !this.disposed
       && this.sdkEpoch === sdkEpoch
       && entry.snapshot.generation === generation
-      && this.childStores.getChild(target.directory) === store
+      && Boolean(this.childStores.getChild(target.directory))
     )
+    const resolveStore = () => this.childStores.ensureChild(target.directory, { bootstrap: false })
     this.patchEntry(entry, { status: "loading", loadingKind: kind, error: null })
     let loadPromise: Promise<void>
     try {
-      loadPromise = run(isCurrent)
+      loadPromise = run(isCurrent, resolveStore)
     } catch (error) {
       loadPromise = Promise.reject(error)
     }
     const promise = loadPromise
-      .then(() => finishPerformanceEvent(isCurrent() ? "complete" : "stale"))
+      .then(() => {
+        const completed = isCurrent()
+        finishPerformanceEvent(completed ? "complete" : "stale")
+        if (completed) return
+        // Stale empty loads must retry — otherwise Claude overlay data fetched
+        // during bootstrap store replacement never lands in the live store.
+        const live = this.childStores.getChild(target.directory)
+        const count = live?.getState().message[target.sessionID]?.length ?? 0
+        if (count > 0 || this.disposed) return
+        const entryKey = this.keyFor(target)
+        setTimeout(() => {
+          if (this.disposed) return
+          if (this.entries.get(entryKey) !== entry) return
+          const again = this.childStores.getChild(target.directory)?.getState().message[target.sessionID]?.length ?? 0
+          if (again > 0) return
+          void this.ensure(target, { reason: "reactive" })
+        }, EMPTY_HYDRATION_RETRY_MS)
+      })
       .catch((error: unknown) => {
         if (!isCurrent()) {
           finishPerformanceEvent("stale")
@@ -554,10 +581,12 @@ export class SessionMessageLoader {
     const firstLimit = Math.max(entry.snapshot.limit, storeMessageCount, getInitialPageSize())
     const firstPage = await this.fetchPage(target, firstLimit)
     if (!isCurrent()) return
+    // Re-resolve after await — directory bootstrap may have replaced the child store.
+    const liveStore = this.childStores.ensureChild(target.directory, { bootstrap: false })
     const deferFirstCommit = !firstPage.complete && !hasUserMessage(firstPage.session)
     let committed = deferFirstCommit
       ? { messages: firstPage.session }
-      : this.commitPage(target, entry, store, firstPage, "merge", isCurrent)
+      : this.commitPage(target, entry, liveStore, firstPage, "merge", isCurrent)
     let acceptedPage = firstPage
 
     if (deferFirstCommit) {
@@ -568,8 +597,9 @@ export class SessionMessageLoader {
         acceptedPage = expandedPage
         const boundaryFound = hasUserMessage(expandedPage.session)
         const isLast = limit === getInitialExpansionLimits()[getInitialExpansionLimits().length - 1]
+        const commitStore = this.childStores.ensureChild(target.directory, { bootstrap: false })
         if (expandedPage.complete || boundaryFound || isLast) {
-          committed = this.commitPage(target, entry, store, expandedPage, "merge", isCurrent)
+          committed = this.commitPage(target, entry, commitStore, expandedPage, "merge", isCurrent)
         } else {
           committed = { messages: expandedPage.session }
         }
