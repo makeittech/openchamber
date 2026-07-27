@@ -165,6 +165,10 @@ export class SessionMessageLoader {
   }
 
   configure(configuration: LoaderConfiguration): void {
+    // React Strict Mode runs effect cleanups that call dispose() while keeping
+    // this same loader instance mounted. Always clear the disposed bit on
+    // configure so remounted effects can hydrate again.
+    this.disposed = false
     if (this.sdk === configuration.sdk && this.runtimeKey === configuration.runtimeKey) return
     const runtimeChanged = this.runtimeKey !== configuration.runtimeKey
     const previousRuntimeKey = this.runtimeKey

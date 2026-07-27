@@ -975,12 +975,9 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
     }, [active, currentSessionId, releaseAutoFollow, restoreSnapshot]);
 
     React.useEffect(() => {
-        if (!active || !currentSessionId) return;
-        // Empty [] is renderable (stops skeletons) but Claude transcripts may
-        // still need a harness overlay fetch. Keep ensuring while local message
-        // count is still zero — a stale startup load can finish without
-        // changing React deps, so a one-shot effect would leave chat blank.
-        // Force while empty so we never join a disposed Strict Mode inflight.
+        if (!currentSessionId) return;
+        // Hydrate even when ChatView is inactive (command palette / tab switch):
+        // a stale startup load must not leave the selected session blank forever.
         if (hasRenderableSessionSnapshot && sessionMessageCount > 0) return;
         const forceEmpty = sessionMessageCount === 0;
         void ensureSessionRenderable(currentSessionId, forceEmpty);
@@ -989,7 +986,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
             void ensureSessionRenderable(currentSessionId, forceEmpty);
         }, 1_500);
         return () => window.clearInterval(timer);
-    }, [active, currentSessionId, ensureSessionRenderable, hasRenderableSessionSnapshot, sessionMessageCount]);
+    }, [active, currentSessionId, effectiveSessionDirectory, ensureSessionRenderable, hasRenderableSessionSnapshot, sessionMessageCount]);
 
 	if (!currentSessionId && !draftOpen) {
 		// With auto-open, the draft welcome opens on the next tick (effect below),

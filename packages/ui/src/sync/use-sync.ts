@@ -20,7 +20,6 @@ import { clearSessionPrefetch } from "./session-prefetch-cache"
 import { getSessionMaterializationStatus } from "./materialization"
 import { getRuntimeKey } from "@/lib/runtime-switch"
 import {
-  resetSyncSessionInflight,
   syncSessionGenerationByKey,
   syncSessionInflightByKey,
 } from "./sync-session-inflight"
@@ -40,8 +39,6 @@ type SeenDirectoryEntry = {
   sessions: Set<string>
 }
 const seenByDirectory = new Map<string, SeenDirectoryEntry>()
-
-export { resetSyncSessionInflight }
 
 type SdkResult<T> = {
   data?: T

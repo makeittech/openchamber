@@ -1801,6 +1801,8 @@ export function SyncProvider(props: {
     })
   }
   const messageLoader = messageLoaderRef.current
+  // Render-path configure kept for sdk/runtime identity checks; the effect below
+  // also configures so Strict Mode dispose+re-run revives the same instance.
   messageLoader.configure({ sdk: props.sdk, runtimeKey })
   const routingIndexRef = useRef<EventRoutingIndex | null>(null)
   if (!routingIndexRef.current) routingIndexRef.current = createEventRoutingIndex()
@@ -2267,18 +2269,27 @@ export function SyncProvider(props: {
   }, [props.sdk, props.directory, childStores, messageLoader, routingIndex])
 
   useEffect(() => {
-    // React Strict Mode remounts SyncProvider while a module-level syncSession
-    // inflight promise still belongs to the disposed loader. Clear it so the
-    // remounted tree can fetch Claude/harness messages instead of joining the
-    // doomed empty completion.
-    resetSyncSessionInflight()
+    // Configure (and revive after Strict Mode dispose) in an effect so the
+    // cleanup+re-run cycle restores a disposed loader before chat ensure runs.
+    messageLoader.configure({ sdk: props.sdk, runtimeKey })
+    return () => {
+      messageLoader.dispose()
+    }
+  }, [messageLoader, props.sdk, runtimeKey])
+
+  useEffect(() => {
+    // Drop coalesced syncSession work when this provider's loader is disposed.
+    // Do not disposeAll here in the same tick as loader.dispose without a
+    // matching configure revive — childStores.configure() clears its disposed
+    // bit when the bootstrap effect re-runs after Strict Mode.
+    return () => {
+      resetSyncSessionInflight()
+    }
   }, [messageLoader])
 
   useEffect(() => () => {
-    messageLoader.dispose()
     childStores.disposeAll()
-    resetSyncSessionInflight()
-  }, [childStores, messageLoader])
+  }, [childStores])
 
   // Subscribe to child store for streaming state derivation
   useEffect(() => {

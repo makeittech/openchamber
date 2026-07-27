@@ -267,4 +267,23 @@ describe("SessionMessageLoader", () => {
     loader.dispose()
     childStores.disposeAll()
   })
+
+  test("configure revives a disposed loader so Strict Mode cleanup cannot stick", async () => {
+    const { childStores, loader } = createLoader(async ({ sessionID }) => response([createRecord(sessionID, "msg_live")]))
+    const target = { directory: "/repo", sessionID: "session-revive" }
+
+    loader.dispose()
+    expect(loader.getSnapshot(target).status).toBe("idle")
+
+    loader.configure({
+      sdk: { session: { messages: async ({ sessionID }: { sessionID: string }) => response([createRecord(sessionID, "msg_live")]) } } as unknown as OpencodeClient,
+      runtimeKey: "runtime-a",
+    })
+    await loader.ensure(target, { force: true, reason: "navigation" })
+
+    expect(childStores.getChild(target.directory)?.getState().message[target.sessionID]?.map((message) => message.id))
+      .toEqual(["msg_live"])
+    loader.dispose()
+    childStores.disposeAll()
+  })
 })
