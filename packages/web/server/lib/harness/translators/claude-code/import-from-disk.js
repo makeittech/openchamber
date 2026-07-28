@@ -26,13 +26,14 @@ const MAX_IMPORT_BATCH = 100;
 const MAX_JSONL_SCAN_BYTES = 512 * 1024;
 const MAX_TITLE_LENGTH = 120;
 const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const JSONL_EXT = '.jsonl';
 
 /**
  * @param {NodeJS.ProcessEnv | Record<string, string | undefined>} [env]
  * @param {string} [homeDir]
  * @returns {string[]}
  */
-export function listClaudeConfigDirCandidates(env = process.env, homeDir = os.homedir()) {
+function listClaudeConfigDirCandidates(env = process.env, homeDir = os.homedir()) {
   const candidates = [];
   const configDir = typeof env?.CLAUDE_CONFIG_DIR === 'string' ? env.CLAUDE_CONFIG_DIR.trim() : '';
   if (configDir) {
@@ -125,6 +126,9 @@ function truncateTitle(text) {
  * Scan the start of a Claude JSONL transcript for title + cwd metadata.
  * Never throws for malformed lines — skips and continues.
  *
+ * Title priority (Claude's own naming wins): custom user-set name → latest
+ * `ai-title` record → `summary` record → first user text.
+ *
  * @param {string} filePath
  * @param {object} [options]
  * @param {typeof fs} [options.fs]
@@ -132,7 +136,10 @@ function truncateTitle(text) {
  */
 export function inspectClaudeSessionJsonl(filePath, options = {}) {
   const fsLike = options.fs || fs;
-  let title = null;
+  let customName = null;
+  let aiTitle = null;
+  let summaryTitle = null;
+  let firstTextTitle = null;
   let directory = null;
   let updatedAt = null;
 
@@ -145,7 +152,7 @@ export function inspectClaudeSessionJsonl(filePath, options = {}) {
       }
       const size = Math.min(Math.max(0, Number(stat.size) || 0), MAX_JSONL_SCAN_BYTES);
       if (size === 0) {
-        return { title, directory, updatedAt };
+        return { title: null, directory, updatedAt };
       }
       const buffer = Buffer.alloc(size);
       fsLike.readSync(fd, buffer, 0, size, 0);
@@ -167,31 +174,34 @@ export function inspectClaudeSessionJsonl(filePath, options = {}) {
         }
 
         const type = typeof record.type === 'string' ? record.type : '';
-        if (!title && type === 'summary' && typeof record.summary === 'string' && record.summary.trim()) {
-          title = truncateTitle(record.summary);
+        if (type === 'ai-title' && typeof record.aiTitle === 'string' && record.aiTitle.trim()) {
+          aiTitle = truncateTitle(record.aiTitle);
         }
-        if (!title) {
-          const customName = typeof record.customTitle === 'string'
+        if (!summaryTitle && type === 'summary' && typeof record.summary === 'string' && record.summary.trim()) {
+          summaryTitle = truncateTitle(record.summary);
+        }
+        if (!customName) {
+          const name = typeof record.customTitle === 'string'
             ? record.customTitle
             : typeof record.sessionName === 'string'
               ? record.sessionName
               : typeof record.name === 'string' && type === 'session-meta'
                 ? record.name
                 : null;
-          if (customName && customName.trim()) {
-            title = truncateTitle(customName);
+          if (name && name.trim()) {
+            customName = truncateTitle(name);
           }
         }
-        if (!title && (type === 'user' || record?.message?.role === 'user')) {
+        if (!firstTextTitle && (type === 'user' || record?.message?.role === 'user')) {
           const content = record?.message?.content ?? record?.content;
           const textContent = extractTextContent(content);
           // Skip tool_result-only user turns.
           if (textContent && !textContent.startsWith('<') && textContent.length > 0) {
-            title = truncateTitle(textContent);
+            firstTextTitle = truncateTitle(textContent);
           }
         }
 
-        if (title && directory) break;
+        if (directory && (customName || (aiTitle && summaryTitle && firstTextTitle))) break;
       }
     } finally {
       fsLike.closeSync(fd);
@@ -200,6 +210,7 @@ export function inspectClaudeSessionJsonl(filePath, options = {}) {
     // unreadable file — return whatever we have
   }
 
+  const title = customName || aiTitle || summaryTitle || firstTextTitle;
   return { title, directory, updatedAt };
 }
 
@@ -210,7 +221,7 @@ export function inspectClaudeSessionJsonl(filePath, options = {}) {
  * @param {typeof fs} [options.fs]
  * @returns {Array<{ foreignSessionId: string, jsonlPath: string, title: string | null, directory: string | null, updatedAt: number | null }>}
  */
-export function listClaudeSessionsInProject(projectsRoot, projectKey, options = {}) {
+function listClaudeSessionsInProject(projectsRoot, projectKey, options = {}) {
   const fsLike = options.fs || fs;
   const projectDir = path.join(projectsRoot, projectKey);
   /** @type {string[]} */
@@ -226,10 +237,10 @@ export function listClaudeSessionsInProject(projectsRoot, projectKey, options = 
     for (const entry of entries) {
       if (!entry.isFile()) continue;
       const name = entry.name;
-      if (!name.endsWith('.jsonl')) continue;
+      if (!name.endsWith(JSONL_EXT)) continue;
       // Skip subagent / sidechain agent transcripts.
       if (name.startsWith('agent-')) continue;
-      const base = name.slice(0, -'.jsonl'.length);
+      const base = name.slice(0, -JSONL_EXT.length);
       if (!SESSION_UUID_RE.test(base)) continue;
       sessionFiles.push(path.join(dirPath, name));
     }
@@ -240,7 +251,7 @@ export function listClaudeSessionsInProject(projectsRoot, projectKey, options = 
 
   const decodedFallback = decodeClaudeProjectKey(projectKey);
   const sessions = sessionFiles.map((jsonlPath) => {
-    const foreignSessionId = path.basename(jsonlPath, '.jsonl');
+    const foreignSessionId = path.basename(jsonlPath, JSONL_EXT);
     const meta = inspectClaudeSessionJsonl(jsonlPath, { fs: fsLike });
     return {
       foreignSessionId,
@@ -253,6 +264,60 @@ export function listClaudeSessionsInProject(projectsRoot, projectKey, options = 
 
   sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   return sessions;
+}
+
+/**
+ * @param {typeof fs} fsLike
+ * @param {string} directory
+ * @returns {boolean}
+ */
+function directoryExistsSync(fsLike, directory) {
+  try {
+    return fsLike.existsSync(directory) && fsLike.statSync(directory).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Every Claude session id that actually has a transcript on disk.
+ *
+ * Import requests carry client-supplied ids. Without this set the endpoint
+ * would create and permanently bind an OpenCode session for any well-formed
+ * UUID, filling the binding store with entries no transcript backs.
+ *
+ * @param {string | null} projectsRoot
+ * @param {typeof fs} fsLike
+ * @returns {Set<string>}
+ */
+function collectKnownForeignSessionIds(projectsRoot, fsLike) {
+  /** @type {Set<string>} */
+  const known = new Set();
+  if (!projectsRoot) return known;
+
+  let projectKeys;
+  try {
+    projectKeys = fsLike.readdirSync(projectsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch {
+    return known;
+  }
+
+  for (const projectKey of projectKeys) {
+    let entries;
+    try {
+      entries = fsLike.readdirSync(path.join(projectsRoot, projectKey), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(JSONL_EXT)) continue;
+      const id = entry.name.slice(0, -JSONL_EXT.length);
+      if (SESSION_UUID_RE.test(id)) known.add(id);
+    }
+  }
+  return known;
 }
 
 /**
@@ -297,13 +362,7 @@ export async function listClaudeImportCandidates(options = {}) {
     throw err;
   }
 
-  const directoryExists = options.directoryExists || ((directory) => {
-    try {
-      return fsLike.existsSync(directory) && fsLike.statSync(directory).isDirectory();
-    } catch {
-      return false;
-    }
-  });
+  const directoryExists = options.directoryExists || ((directory) => directoryExistsSync(fsLike, directory));
 
   const projects = [];
   for (const projectKey of projectKeys) {
@@ -366,6 +425,10 @@ export async function listClaudeImportCandidates(options = {}) {
  * @param {typeof flushSessionBindings} [params.flush]
  * @param {() => object[]} [params.listBindings]
  * @param {(directory: string) => boolean | Promise<boolean>} [params.directoryExists]
+ * @param {typeof fs} [params.fs]
+ * @param {NodeJS.ProcessEnv | Record<string, string | undefined>} [params.env]
+ * @param {string} [params.homeDir]
+ * @param {Set<string>} [params.knownForeignSessionIds]
  * @param {string} [params.defaultModelRef]
  * @returns {Promise<{ results: object[], summary: { imported: number, skipped: number, failed: number } }>}
  */
@@ -389,16 +452,17 @@ export async function importClaudeSessions(params) {
     throw error;
   }
 
+  const fsLike = params.fs || fs;
   const bind = params.bind || bindSession;
   const flush = params.flush || flushSessionBindings;
   const listBindings = params.listBindings || listSessionBindings;
-  const directoryExists = params.directoryExists || ((directory) => {
-    try {
-      return fs.existsSync(directory) && fs.statSync(directory).isDirectory();
-    } catch {
-      return false;
-    }
-  });
+  const directoryExists = params.directoryExists || ((directory) => directoryExistsSync(fsLike, directory));
+  const knownForeignSessionIds = params.knownForeignSessionIds instanceof Set
+    ? params.knownForeignSessionIds
+    : collectKnownForeignSessionIds(
+      resolveClaudeProjectsRoot({ fs: fsLike, env: params.env, homeDir: params.homeDir }),
+      fsLike,
+    );
   const defaultModelRef = typeof params.defaultModelRef === 'string' && params.defaultModelRef.trim()
     ? params.defaultModelRef.trim()
     : 'sonnet';
@@ -457,6 +521,18 @@ export async function importClaudeSessions(params) {
         directory,
         status: 'skipped',
         reason: 'already-bound',
+      });
+      continue;
+    }
+
+    if (!knownForeignSessionIds.has(foreignSessionId)) {
+      failed += 1;
+      results.push({
+        ok: false,
+        foreignSessionId,
+        directory,
+        error: 'No Claude transcript exists for this session id',
+        code: 'SESSION_NOT_FOUND',
       });
       continue;
     }

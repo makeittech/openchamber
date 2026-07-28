@@ -1,9 +1,14 @@
 // Session title: Claude harness turns bypass OpenCode session.promptAsync, so
 // upstream ensureTitle never runs. This event-driven helper names a Claude-bound
-// session once after the first user turn, using the harness transcript snapshot.
+// session once after the first user turn. Claude's own `ai-title` transcript
+// record is preferred (the name the user sees in Claude); the small-model
+// helper is the fallback for transcripts/CLI versions without one.
+
+import { readClaudeTranscriptTitle } from '../harness/translators/claude-code/transcript-messages.js';
 
 const FETCH_TIMEOUT_MS = 5_000;
 const TITLE_QUIET_MS = 750;
+const AI_TITLE_RETRY_MS = [3_000, 8_000];
 const USER_TEXT_CHAR_LIMIT = 4_000;
 const TITLE_CHAR_LIMIT = 80;
 
@@ -99,6 +104,7 @@ export const createSessionTitleRuntime = ({
   const timers = new Map();
   const inflight = new Set();
   const attempted = new Set();
+  const aiTitleRetries = new Map();
   const sessionsWithUserMessage = new Set();
   const workingSessions = new Set();
   let stopped = false;
@@ -148,8 +154,57 @@ export const createSessionTitleRuntime = ({
     return !isDefaultSessionTitle(session.title);
   };
 
+  const applyTitle = async (sessionId, directory, title, source) => {
+    const freshSession = await fetchSession(sessionId, directory).catch((error) => {
+      console.warn('[session-title] fresh session fetch failed:', error?.message || error);
+      return null;
+    });
+    if (shouldSkipSession(freshSession)) return false;
+    if (stopped) return false;
+
+    await openCodeFetch(`/session/${encodeURIComponent(sessionId)}`, {
+      directory,
+      method: 'PATCH',
+      body: { title },
+    });
+    console.log(`[session-title] generated for ${sessionId} (${source})`);
+    return true;
+  };
+
+  const readNativeClaudeTitle = (sessionId) => {
+    try {
+      const foreignSessionId = getSessionBinding?.(sessionId)?.foreignSessionId;
+      if (typeof foreignSessionId !== 'string' || !foreignSessionId) return '';
+      return sanitizeTitle(readClaudeTranscriptTitle(foreignSessionId));
+    } catch {
+      return '';
+    }
+  };
+
+  const scheduleAiTitleRetry = (sessionId, directory) => {
+    const count = aiTitleRetries.get(sessionId) || 0;
+    if (count >= AI_TITLE_RETRY_MS.length) return;
+    aiTitleRetries.set(sessionId, count + 1);
+    const delay = AI_TITLE_RETRY_MS[count];
+    clearTimer(sessionId);
+    const timer = setTimeout(() => {
+      timers.delete(sessionId);
+      if (stopped || inflight.has(sessionId)) return;
+      inflight.add(sessionId);
+      generateTitle(sessionId, directory)
+        .catch((error) => {
+          console.warn('[session-title] failed:', error?.message || error);
+        })
+        .finally(() => {
+          inflight.delete(sessionId);
+        });
+    }, delay);
+    if (typeof timer?.unref === 'function') timer.unref();
+    timers.set(sessionId, { timer });
+  };
+
   const generateTitle = async (sessionId, directory) => {
-    if (stopped || attempted.has(sessionId) || !isClaudeBoundSession(sessionId)) return;
+    if (stopped || !isClaudeBoundSession(sessionId)) return;
     if (!sessionsWithUserMessage.has(sessionId)) return;
 
     const session = await fetchSession(sessionId, directory).catch((error) => {
@@ -157,6 +212,17 @@ export const createSessionTitleRuntime = ({
       return null;
     });
     if (shouldSkipSession(session)) return;
+
+    // Claude names its own sessions (`ai-title` transcript records); inherit
+    // that name instead of generating a divergent one.
+    const nativeTitle = readNativeClaudeTitle(sessionId);
+    if (nativeTitle) {
+      attempted.add(sessionId);
+      await applyTitle(sessionId, directory, nativeTitle, 'claude ai-title');
+      return;
+    }
+
+    if (attempted.has(sessionId)) return;
 
     const userText = extractHarnessUserText(
       typeof getHarnessRecentMessages === 'function' ? getHarnessRecentMessages(sessionId) : null,
@@ -177,30 +243,24 @@ export const createSessionTitleRuntime = ({
       if (Number(error?.statusCode) !== 404) {
         console.warn('[session-title] generation failed:', error?.message || error);
       }
+      // The CLI can write ai-title slightly after the idle event; retry it
+      // before giving up on a native name.
+      scheduleAiTitleRetry(sessionId, directory);
       return;
     }
     if (stopped) return;
 
     const title = sanitizeTitle(generated?.text);
-    if (!title) return;
+    if (!title) {
+      scheduleAiTitleRetry(sessionId, directory);
+      return;
+    }
 
-    const freshSession = await fetchSession(sessionId, directory).catch((error) => {
-      console.warn('[session-title] fresh session fetch failed:', error?.message || error);
-      return null;
-    });
-    if (shouldSkipSession(freshSession)) return;
-    if (stopped) return;
-
-    await openCodeFetch(`/session/${encodeURIComponent(sessionId)}`, {
-      directory,
-      method: 'PATCH',
-      body: { title },
-    });
-    console.log(`[session-title] generated for ${sessionId} via ${generated?.providerID ?? 'unknown'}/${generated?.modelID ?? 'unknown'}`);
+    await applyTitle(sessionId, directory, title, `${generated?.providerID ?? 'unknown'}/${generated?.modelID ?? 'unknown'}`);
   };
 
   const armTimer = (sessionId, directory) => {
-    if (stopped || attempted.has(sessionId) || inflight.has(sessionId)) return;
+    if (stopped || inflight.has(sessionId)) return;
     if (!isClaudeBoundSession(sessionId)) return;
     clearTimer(sessionId);
     const timer = setTimeout(() => {
@@ -254,6 +314,7 @@ export const createSessionTitleRuntime = ({
     timers.clear();
     inflight.clear();
     attempted.clear();
+    aiTitleRetries.clear();
     sessionsWithUserMessage.clear();
     workingSessions.clear();
   };

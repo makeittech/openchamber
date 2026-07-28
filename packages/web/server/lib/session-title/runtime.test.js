@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { createSessionTitleRuntime } from './runtime.js';
+import { resetClaudeTranscriptCaches } from '../harness/translators/claude-code/transcript-messages.js';
 
 const SESSION_ID = 'ses_claude';
 const DIRECTORY = '/workspace';
@@ -138,6 +142,42 @@ describe('session title runtime', () => {
     expect(patch.url.searchParams.get('directory')).toBe(DIRECTORY);
     expect(JSON.parse(patch.body)).toEqual({ title: 'OAuth Callback Handling' });
     runtime.stop();
+  });
+
+  it('prefers Claude ai-title from the transcript over small-model generation', async () => {
+    const foreignId = '123e4567-e89b-42d3-a456-426614174000';
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'session-title-test-'));
+    const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = tmpRoot;
+    resetClaudeTranscriptCaches();
+    try {
+      const projectDir = path.join(tmpRoot, 'projects', '-workspace');
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, `${foreignId}.jsonl`), [
+        JSON.stringify({ type: 'ai-title', aiTitle: 'Claude native session name', sessionId: foreignId }),
+      ].join('\n'));
+
+      const { runtime, requests, service, getHarnessRecentMessages } = createRuntimeHarness({
+        binding: { harnessId: 'claude-code', foreignSessionId: foreignId },
+      });
+
+      runtime.processHarnessPayload(userMessageEvent(), DIRECTORY);
+      runtime.processHarnessPayload(busyEvent(), DIRECTORY);
+      runtime.processHarnessPayload(idleEvent(), DIRECTORY);
+      await waitForRuntime();
+
+      expect(service.generateSmallModelText).not.toHaveBeenCalled();
+      expect(getHarnessRecentMessages).not.toHaveBeenCalled();
+      const patch = requests.find((request) => request.method === 'PATCH');
+      expect(patch).toBeDefined();
+      expect(JSON.parse(patch.body)).toEqual({ title: 'Claude native session name' });
+      runtime.stop();
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
+      resetClaudeTranscriptCaches();
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 
   it('does not double-title same session', async () => {

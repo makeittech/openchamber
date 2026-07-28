@@ -1,13 +1,13 @@
-# Harness (Engines) Module
+# Harness Module
 
 ## Purpose
 
-Server-side **Engines** / harness adapter layer. OpenChamber keeps a single
+Server-side **harness** adapter layer. OpenChamber keeps a single
 session list (OpenCode session IDs as the UI shell) and routes non-OpenCode
 execution through translators that emit **OpenCode-shaped** events into the
 existing global UI event stream.
 
-User-facing copy uses **Engine**. Internal IDs use `harnessId`.
+User-facing copy uses **Harness**. Internal IDs use `harnessId`.
 
 Parent specs:
 
@@ -29,6 +29,7 @@ Parent specs:
 | Claude permissions bridge | `translators/claude-code/permissions.js` |
 | Claude prompt orchestration | `translators/claude-code/index.js` |
 | Claude local project/chat import | `translators/claude-code/import-from-disk.js` |
+| Claude transcript JSONL → message replay | `translators/claude-code/transcript-messages.js` |
 | OpenCode stub (SDK path stays in UI) | `translators/opencode/index.js` |
 | Claude → canonical events | `events/from-claude.js` |
 | Broadcaster wrapper | `events/emit.js` |
@@ -40,10 +41,10 @@ generic OpenCode proxy. JSON body parsing for `/api/harness` is enabled in
 
 ## Boundary (ui-api-decoupling)
 
-- OpenCode engine traffic stays on `@opencode-ai/sdk/v2` from the UI.
-- Claude Code engine traffic uses OpenChamber routes `/api/harness/*` via
+- OpenCode harness traffic stays on `@opencode-ai/sdk/v2` from the UI.
+- Claude Code harness traffic uses OpenChamber routes `/api/harness/*` via
   `runtimeFetch` (`packages/ui/src/lib/harness/client.ts`).
-- Never call Anthropic HTTP from the UI for this engine.
+- Never call Anthropic HTTP from the UI for this harness.
 - Never put Claude OAuth into `RuntimeAPIs` or OpenChamber settings JSON.
 - Child Claude processes use subscription-only env (API keys stripped).
 
@@ -82,8 +83,38 @@ Constraints:
 - Attachments are validated before any optimistic user-message event is
   broadcast, so a rejected attachment cannot leave a sent-and-busy turn on
   screen that never receives a reply.
-- `harnessId` on a binding is sticky; engine switch requires a new session
+- `harnessId` on a binding is sticky; harness switch requires a new session
   (handoff).
+
+## Harness switch (UI flow)
+
+Switching harness on a session with messages goes through
+`useHarnessSwitchStore.requestHarnessSwitch` (model picker, favorite-target
+shortcuts):
+
+- Empty session or same harness: target persists in place — no dialog.
+- Warn disabled (`harnessWarnOnSwitch: false`): legacy silent pending handoff;
+  the destination session is created on the next sent message with a hidden
+  synthetic seed.
+- Warn enabled (default): `HarnessSwitchDialog` opens immediately and explains
+  that switching starts a new session. On confirm,
+  `performHarnessHandoff` (`packages/ui/src/lib/harness/perform-handoff.ts`)
+  creates the destination session right away, navigates to it, and posts the
+  transferred context as a **visible** first user message
+  (`lib/harness/handoff-context.ts` markers render as a collapsible card):
+  - `duplicate` — budgeted transcript of the source session.
+  - `summarize` — OpenCode `session.summarize` for OpenCode sources or
+    Claude-native `/compact` for Claude Code sources; the summary text is
+    extracted via `extractCompactionSummary` (compaction part →
+    parentID-linked/first assistant summary).
+
+OpenCode destinations receive the context via `session.prompt_async` with
+`noReply: true` (no model turn); Claude Code destinations receive it as a
+normal harness prompt that asks for a one-line acknowledgment.
+
+Catalog JSON (`GET /api/harness`, `/api/harness/:id`) uses
+`{ descriptor, status, statusDetail?, version?, sections }`; the list payload
+is `{ catalogs }`.
 
 ## Durable session bindings
 
@@ -107,8 +138,8 @@ in responses. Never log tokens, OAuth material, or attachment bytes.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/api/harness` | List engines + runtime status |
-| GET | `/api/harness/:id` | Engine detail + catalog |
+| GET | `/api/harness` | List harness catalogs + runtime status (`{ catalogs }`) |
+| GET | `/api/harness/:id` | Harness detail + catalog |
 | POST | `/api/harness/:id/detect` | Force refresh detect |
 | POST | `/api/harness/prompt` | Start Claude turn |
 | POST | `/api/harness/abort` | Abort active Claude turn |
@@ -122,15 +153,40 @@ in responses. Never log tokens, OAuth material, or attachment bytes.
 
 Reads transcripts under `$CLAUDE_CONFIG_DIR/projects` (fallback `~/.claude/projects`
 then `~/.config/claude/projects`). Listing never treats a missing config dir as
-an authoritative empty failure of the engine — the response is
+an authoritative empty failure of the harness — the response is
 `{ projects: [] }` with null roots.
 
 Import creates an OpenCode session per selected Claude chat, then
 `bindSession` with `foreignSessionId` so the next Claude prompt resumes the
-native transcript. JSONL is **not** replayed into OpenCode message stores
-(format is Anthropic-internal and unstable). One failed chat does not roll
+native transcript. JSONL is **not** written into OpenCode message stores
+(format is Anthropic-internal and unstable); instead the transcript is replayed
+read-only into `GET /api/session/:id/message` responses (see below), so
+imported sessions show their full text history. One failed chat does not roll
 back others; already-bound `foreignSessionId` values are skipped. Batch limit:
 100 sessions.
+
+Import candidate titles inherit Claude's own naming: custom user-set name →
+latest `ai-title` record → `summary` record → first user text.
+
+### Transcript replay (message overlay)
+
+`translators/claude-code/transcript-messages.js` parses the bound session's
+Claude JSONL into OpenCode-shaped `{ info, parts }` messages (text, reasoning
+from thinking blocks, tool parts settled by matching `tool_result`; tools left
+running at transcript end become `error`). Ids are deterministic and ascending
+from record timestamps, and results are cached per transcript mtime+size.
+`session-messages.js` merges, in ascending precedence: transcript replay →
+OpenCode shell messages → live turn snapshot. The live snapshot wins the tail
+turn it already covers (role+text match within a 15-minute window) so a turn
+flushed to disk mid-stream never renders twice. Replay is read-only — nothing
+is written to OpenCode storage — and a missing/malformed transcript degrades
+to the previous behavior instead of failing the route.
+
+Import ids are client-supplied, so a well-formed UUID is not enough: each
+`foreignSessionId` must match a `<uuid>.jsonl` transcript actually present
+under the resolved projects root, otherwise the row fails with
+`SESSION_NOT_FOUND`. Without that check the endpoint would create and
+permanently bind sessions no transcript backs.
 
 Owning module: `translators/claude-code/import-from-disk.js`.
 
@@ -228,9 +284,9 @@ Capability: `permissions: full`.
 UI: `harnessPermissionReply` → `respondToPermission` / `dismissPermission` branch
 when `getSessionTarget(sessionId)?.harnessId === 'claude-code'`.
 
-### Agents mode (`enginesClaudeCodeAgentsMode`)
+### Agents mode (`harnessClaudeCodeAgentsMode`)
 
-Settings → Engines → Claude Code → **Agents to use**:
+Settings → Harnesses → Claude Code → **Agents to use**:
 
 | Mode | Behavior |
 | --- | --- |
@@ -270,10 +326,17 @@ Injected `mcp__openchamber__*` tool asks are auto-allowed in
 settings flag and a fixed action allowlist, matching OpenCode's managed
 plugin (which has no equivalent second prompt).
 
+Each turn owns an `AbortController` whose signal is handed to
+`createOpenChamberMcpServers` and reaches `executeAction` → `waitForIdle`.
+The turn aborts it on user abort, on stream end, and when `startQuery` fails.
+Without that, a control action started with `wait: true` keeps polling for its
+whole `timeout` (up to 24h) after the turn is gone; the control service
+rejects with `499` once the signal fires.
+
 ## MultiRun on Claude
 
 Capability `multirun: full`. The MultiRun launcher model picker includes
-Claude Code engines/models. Each run persists an `ExecutionTarget` and
+Claude Code harnesses/models. Each run persists an `ExecutionTarget` and
 `routeMessage` sends Claude runs through `/api/harness/prompt`.
 
 ## Slash commands / MCP / subagents
@@ -285,6 +348,27 @@ Capabilities: `slash-commands: full`, `mcp: full`, `subagents: full`.
 | Slash | Claude-native `/command` (from `system/init.slash_commands` + built-ins) is sent as harness prompt text. UI autocomplete switches to Claude commands on Claude sessions. OpenCode-only slash/skills still reject with `CLAUDE_SLASH_UNSUPPORTED`. `/compact` uses Claude compaction, not OpenCode summarize. |
 | MCP | OpenChamber MCP configs (`opencode` mcp entries) convert to Claude `mcpServers` (`stdio` / `http`). Project `.mcp.json` still loads via `settingSources`. Status from `system/init.mcp_servers` is stored in `session-capabilities.js`. |
 | Subagents | `Agent` is allowed; nested `parent_tool_use_id` streams map into synthetic child sessions (`session.created` with `parentID`) so the sidebar shows subagent work. |
+
+Invariants that are easy to break here:
+
+- `openchamber` is a **reserved** `mcpServers` key. `permissions.js` auto-allows
+  every `mcp__openchamber__*` tool by name, and `.opencode/opencode.json` lives
+  inside the opened repository — so a bridged config claiming that name is
+  dropped in `mcp-config.js`. Merge order is not a guard: the in-process control
+  server is absent whenever `agentControlToolEnabled` is off or its construction
+  throws.
+- Subagent tool parts and text segments live in `ctx.subagentByToolUseId`, not
+  `ctx.toolParts`. Both abort and the terminal `result` message close every
+  child context first (`buildSubagentClosureEvents`), or a nested transcript
+  spins forever.
+- Subagent errors surface on their own `message.updated`; only the parent turn
+  emits session `busy`/`idle`.
+- Subagent session ids (`ses_claude_sub_*`) are transcript-only and are excluded
+  from `turn-snapshot.js` — they never report status, so snapshotting them would
+  evict real sessions once the bounded budget fills.
+- `session-capabilities.js` bounds its per-session map the same way
+  `turn-snapshot.js` does; dropping an entry is safe because the next
+  `system/init` repopulates it and lookups fall back to built-in defaults.
 
 `GET /api/harness/sessions/:sessionId/capabilities` returns the latest snapshot
 (built-in slash defaults before the first init). UI:
@@ -302,15 +386,18 @@ Harness events stamp `properties.directory` and SSE fan-out preserves the
 directory envelope so UI directory stores receive busy/idle (Stop + queue
 auto-send). `GET /api/session/status` overlays active Claude busy entries so
 OpenCode status polls cannot clear harness turns. `GET /api/session/:id/message`
-overlays the turn-snapshot last user/assistant so OpenCode's empty message list
-cannot wipe Claude chat on materialization/refetch.
+overlays the transcript replay and the live turn snapshot so OpenCode's empty
+message list cannot wipe Claude chat on materialization/refetch.
 
 ## Session titles on Claude
 
 Claude prompts bypass OpenCode `session.promptAsync`, so upstream
 `ensureTitle` never runs. `session-title/runtime.js` listens to harness idle
-events, generates a title once via the small-model helper from harness turn
-text, and PATCHes the OpenCode shell session. Manual rename still uses
+events and names the session once: it first inherits Claude's own `ai-title`
+transcript record (`readClaudeTranscriptTitle`, with bounded retries because
+the CLI can write the record slightly after idle), and falls back to the
+small-model helper from harness turn text when no native title exists. The
+title is PATCHed onto the OpenCode shell session. Manual rename still uses
 `session.update`.
 
 ## Claude auth-env policy
@@ -394,16 +481,21 @@ optimistic reconcile.
 ## UI send path (shared UI)
 
 - `packages/ui/src/lib/harness/client.ts` — `harnessPrompt` / `harnessAbort` /
-  `harnessPermissionReply` via `runtimeFetch`
+  `harnessPermissionReply` / `harnessSessionBinding` via `runtimeFetch`
 - `packages/ui/src/lib/harness/resolve-execution-target.ts` — sticky `ExecutionTarget` resolution
 - `packages/ui/src/sync/session-ui-store.ts` — `routeMessage` branches `claude-code` → harness prompt (not OpenCode SDK)
 - `packages/ui/src/sync/session-actions.ts` — permission reply/dismiss branches for Claude targets
 - `packages/ui/src/lib/harness/composer-attachment-model.ts` — composer attachment modality warnings use the active `ExecutionTarget` (Claude catalog), not leftover OpenCode `currentModel`
-- Model picker Engines section lives in `ModelControls` / `ModelPickerList`
+- Model picker Harnesses section lives in `ModelControls` / `ModelPickerList`
+- `ModelControls` derives the displayed Claude effort from the persisted
+  `ExecutionTarget` (single source of truth — a local copy would drift from
+  what the next prompt sends) and hydrates a missing session target from
+  `GET /api/harness/sessions/:sessionId`, so imported sessions and fresh
+  browsers keep the Claude harness/effort instead of being stamped OpenCode.
 
 ## Out of scope (later slices)
 
-- Codex CLI / Gemini CLI engines
+- Codex CLI / Gemini CLI harnesses
 - Reverse handoff billing notice (Claude → OpenCode)
 - MCP settings editor for Claude
 
@@ -418,6 +510,7 @@ bun test packages/web/server/lib/harness/events/from-claude.test.js
 bun test packages/web/server/lib/harness/translators/claude-code/auth-env.test.js
 bun test packages/web/server/lib/harness/translators/claude-code/attachments.test.js
 bun test packages/web/server/lib/harness/translators/claude-code/permissions.test.js
+bun test packages/web/server/lib/harness/translators/claude-code/transcript-messages.test.js
 bun test packages/ui/src/lib/harness/client.test.js
 ```
 

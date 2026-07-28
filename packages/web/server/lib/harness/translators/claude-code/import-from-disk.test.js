@@ -66,6 +66,39 @@ describe('inspectClaudeSessionJsonl', () => {
 
     fs.rmSync(dir, { recursive: true, force: true });
   });
+
+  it('prefers Claude ai-title over summary and first user text', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-import-title-'));
+    const filePath = path.join(dir, '33333333-3333-4333-8333-333333333333.jsonl');
+    fs.writeFileSync(filePath, [
+      JSON.stringify({ type: 'summary', summary: 'Summary name', cwd: '/repo' }),
+      JSON.stringify({
+        type: 'user',
+        cwd: '/repo',
+        message: { role: 'user', content: [{ type: 'text', text: 'first user text' }] },
+      }),
+      JSON.stringify({ type: 'ai-title', aiTitle: 'Claude native name' }),
+    ].join('\n'));
+
+    const meta = inspectClaudeSessionJsonl(filePath);
+    expect(meta.title).toBe('Claude native name');
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('prefers a custom user-set name over ai-title', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-import-custom-'));
+    const filePath = path.join(dir, '44444444-4444-4444-8444-444444444444.jsonl');
+    fs.writeFileSync(filePath, [
+      JSON.stringify({ type: 'ai-title', aiTitle: 'Claude native name', cwd: '/repo' }),
+      JSON.stringify({ type: 'session-meta', name: 'My custom name', cwd: '/repo' }),
+    ].join('\n'));
+
+    const meta = inspectClaudeSessionJsonl(filePath);
+    expect(meta.title).toBe('My custom name');
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
 });
 
 describe('listClaudeImportCandidates', () => {
@@ -155,6 +188,14 @@ describe('importClaudeSessions', () => {
     const missingDirId = '22222222-2222-4222-8222-222222222222';
     const createFailId = '33333333-3333-4333-8333-333333333333';
     const okId = '44444444-4444-4444-8444-444444444444';
+    const phantomId = '55555555-5555-4555-8555-555555555555';
+
+    // Import validates ids against real transcripts, so lay them down on disk.
+    const projectDir = path.join(root, '.claude', 'projects', '-good');
+    fs.mkdirSync(projectDir, { recursive: true });
+    for (const id of [alreadyId, missingDirId, createFailId, okId]) {
+      fs.writeFileSync(path.join(projectDir, `${id}.jsonl`), '');
+    }
 
     const { bindSession } = await import('../../session-bindings.js');
     bindSession({
@@ -172,6 +213,7 @@ describe('importClaudeSessions', () => {
         { foreignSessionId: missingDirId, directory: path.join(root, 'missing'), title: 'Missing' },
         { foreignSessionId: createFailId, directory: goodDir, title: 'Boom' },
         { foreignSessionId: okId, directory: goodDir, title: 'New chat' },
+        { foreignSessionId: phantomId, directory: goodDir, title: 'Never existed' },
       ],
       createSession: async (_directory, title) => {
         createCalls += 1;
@@ -181,14 +223,18 @@ describe('importClaudeSessions', () => {
         return `ses_${createCalls}`;
       },
       flush: () => {},
+      fs,
+      env: {},
+      homeDir: root,
     });
 
-    expect(result.summary).toEqual({ imported: 1, skipped: 1, failed: 2 });
+    expect(result.summary).toEqual({ imported: 1, skipped: 1, failed: 3 });
     expect(result.results.map((row) => row.status || row.code)).toEqual([
       'skipped',
       'DIRECTORY_MISSING',
       'SESSION_CREATE_FAILED',
       'imported',
+      'SESSION_NOT_FOUND',
     ]);
     expect(getSessionBinding('ses_2')?.foreignSessionId).toBe(okId);
     expect(listSessionBindings().some((b) => b.foreignSessionId === okId)).toBe(true);
