@@ -12,7 +12,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { MobileOverlayPanel } from '@/components/ui/MobileOverlayPanel';
-import { EngineLogo } from '@/components/ui/EngineLogo';
+import { HarnessLogo } from '@/components/ui/HarnessLogo';
 import { ProviderLogo } from '@/components/ui/ProviderLogo';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -30,6 +30,7 @@ import { cn, fuzzyMatch } from '@/lib/utils';
 import { useContextStore } from '@/stores/contextStore';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useHarnessStore } from '@/stores/useHarnessStore';
+import { useHarnessSwitchStore } from '@/stores/useHarnessSwitchStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useSessionMessages, useSessionRenderable } from '@/sync/sync-context';
@@ -41,15 +42,14 @@ import { formatEffortLabel, getCycledPrimaryAgentName, isPrimaryMode, type Mobil
 import { ClaudeEffortMobilePanel, ClaudeEffortSelector } from './model-controls/ClaudeEffortControl';
 import { MobileInfoCard } from './model-controls/MobileInfoCard';
 import { useModelPickerData } from './model-controls/useModelPickerData';
-import { ENGINE_STATUS_LABEL_KEYS } from './model-controls/modelPickerData';
+import { HARNESS_STATUS_LABEL_KEYS } from './model-controls/modelPickerData';
 import { getCurrentIntlLocale, useI18n } from '@/lib/i18n';
 import { useOpenCodeReadiness } from '@/hooks/useOpenCodeReadiness';
 import { eventMatchesShortcut, getEffectiveShortcutCombo, normalizeCombo } from '@/lib/shortcuts';
 import { markStartupTrace } from '@/lib/startupTrace';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { withEnginesSettingsDefaults, setCachedClaudeAgentsMode, getCachedClaudeAgentsMode, type ClaudeAgentsMode } from '@/lib/harness/settings';
+import { withHarnessSettingsDefaults, setCachedClaudeAgentsMode, getCachedClaudeAgentsMode, type ClaudeAgentsMode } from '@/lib/harness/settings';
 import { buildOpenCodeExecutionTarget, persistSessionExecutionTarget } from '@/lib/harness/resolve-execution-target';
-import { applySessionExecutionTargetSelection } from '@/lib/harness/session-handoff';
 import { CLAUDE_FAVORITE_PROVIDER_ID } from '@/lib/harness/favorite-targets';
 import {
     buildClaudeModelMetadata,
@@ -60,7 +60,8 @@ import {
 import { claudePermissionModeFromEditPermission } from '@/lib/harness/claude-models';
 import { getAgentDefaultEditPermission } from '@/stores/utils/permissionUtils';
 import type { ExecutionTarget, HarnessId } from '@/types/harness';
-import { isClaudeEffort } from '@/types/harness';
+import { isClaudeEffort, isClaudePermissionMode } from '@/types/harness';
+import { harnessSessionBinding } from '@/lib/harness/client';
 import { useShallow } from 'zustand/react/shallow';
 
 const CLAUDE_PICKER_PROVIDER_ID = CLAUDE_FAVORITE_PROVIDER_ID;
@@ -380,11 +381,19 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         refreshHarnessCatalog: s.refresh,
     })));
     const claudeCatalog = harnessCatalogsById['claude-code'];
-    const [enginesClaudeCodeEnabled, setEnginesClaudeCodeEnabled] = React.useState(true);
+    const [harnessClaudeCodeEnabled, setHarnessClaudeCodeEnabled] = React.useState(true);
     const [claudeAgentsMode, setClaudeAgentsMode] = React.useState<ClaudeAgentsMode>(getCachedClaudeAgentsMode());
     const [pickerHarnessId, setPickerHarnessId] = React.useState<HarnessId>('opencode');
     const [claudeModelRef, setClaudeModelRef] = React.useState('sonnet');
-    const [claudeEffort, setClaudeEffort] = React.useState<ClaudeEffort | undefined>(undefined);
+    // Displayed effort is derived from the persisted ExecutionTarget (below) —
+    // a local copy would drift from what the next prompt actually sends.
+    const claudeEffortSource = pendingHandoffTarget
+        ?? sessionTarget
+        ?? (currentSessionId ? null : lastUsedTarget);
+    const claudeEffort: ClaudeEffort | undefined = claudeEffortSource?.harnessId === 'claude-code'
+        && isClaudeEffort(claudeEffortSource.effort)
+        ? claudeEffortSource.effort
+        : undefined;
 
     const contextHydrated = useContextStore((state) => state.hasHydrated);
 
@@ -475,8 +484,8 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         setAgentMenuOpen(false);
         closeMobilePanel();
     }, [setSelectedProvider, setSettingsPage, setSettingsDialogOpen, setAgentMenuOpen, closeMobilePanel]);
-    const openEnginesSettings = React.useCallback(() => {
-        setSettingsPage('engines');
+    const openHarnessSettings = React.useCallback(() => {
+        setSettingsPage('harness');
         setSettingsDialogOpen(true);
         setAgentMenuOpen(false);
         closeMobilePanel();
@@ -497,19 +506,19 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                 if (!response.ok || cancelled) return;
                 const data = await response.json().catch(() => null) as Record<string, unknown> | null;
                 if (!data || cancelled) return;
-                const resolved = withEnginesSettingsDefaults({
-                    enginesClaudeCodeEnabled: typeof data.enginesClaudeCodeEnabled === 'boolean'
-                        ? data.enginesClaudeCodeEnabled
+                const resolved = withHarnessSettingsDefaults({
+                    harnessClaudeCodeEnabled: typeof data.harnessClaudeCodeEnabled === 'boolean'
+                        ? data.harnessClaudeCodeEnabled
                         : undefined,
-                    enginesClaudeCodeAgentsMode:
-                        data.enginesClaudeCodeAgentsMode === 'claude'
-                        || data.enginesClaudeCodeAgentsMode === 'opencode'
-                            ? data.enginesClaudeCodeAgentsMode
+                    harnessClaudeCodeAgentsMode:
+                        data.harnessClaudeCodeAgentsMode === 'claude'
+                        || data.harnessClaudeCodeAgentsMode === 'opencode'
+                            ? data.harnessClaudeCodeAgentsMode
                             : undefined,
                 });
-                setEnginesClaudeCodeEnabled(resolved.enginesClaudeCodeEnabled);
-                setClaudeAgentsMode(resolved.enginesClaudeCodeAgentsMode);
-                setCachedClaudeAgentsMode(resolved.enginesClaudeCodeAgentsMode);
+                setHarnessClaudeCodeEnabled(resolved.harnessClaudeCodeEnabled);
+                setClaudeAgentsMode(resolved.harnessClaudeCodeAgentsMode);
+                setCachedClaudeAgentsMode(resolved.harnessClaudeCodeAgentsMode);
             } catch {
                 // keep default
             }
@@ -518,6 +527,34 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             cancelled = true;
         };
     }, []);
+
+    // Hydrate the sticky target from the server-side harness binding when the
+    // local selection store has none (fresh browser, imported session, evicted
+    // persistence). Without this a Claude-bound session is treated as OpenCode:
+    // the effort control never reflects the binding and sends misroute.
+    const [bindingCheckedSessionId, setBindingCheckedSessionId] = React.useState<string | null>(null);
+    React.useEffect(() => {
+        if (!currentSessionId || sessionTarget || pendingHandoffTarget) return;
+        let cancelled = false;
+        void (async () => {
+            const binding = await harnessSessionBinding(currentSessionId);
+            if (cancelled) return;
+            if (binding?.harnessId === 'claude-code' && binding.target?.harnessId === 'claude-code') {
+                useSelectionStore.getState().saveSessionTarget(currentSessionId, {
+                    harnessId: 'claude-code',
+                    modelRef: binding.target.modelRef,
+                    ...(isClaudePermissionMode(binding.target.permissionMode)
+                        ? { permissionMode: binding.target.permissionMode }
+                        : {}),
+                    ...(isClaudeEffort(binding.target.effort) ? { effort: binding.target.effort } : {}),
+                });
+            }
+            setBindingCheckedSessionId(currentSessionId);
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [currentSessionId, sessionTarget, pendingHandoffTarget]);
 
     // Rehydrate picker engine from pending handoff / sticky / last-used; hydrate OpenCode sessions missing a target.
     React.useEffect(() => {
@@ -528,14 +565,17 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         if (sticky?.harnessId === 'claude-code') {
             setPickerHarnessId('claude-code');
             setClaudeModelRef(sticky.modelRef || 'sonnet');
-            setClaudeEffort(isClaudeEffort(sticky.effort) ? sticky.effort : undefined);
             return;
         }
         if (sticky?.harnessId === 'opencode') {
             setPickerHarnessId('opencode');
             return;
         }
-        if (currentSessionId && currentProviderId && currentModelId && !sessionTarget && !pendingHandoffTarget) {
+        // Do not stamp an OpenCode target before the binding lookup answered —
+        // a Claude-bound session would otherwise be mislabeled (and misrouted)
+        // on every fresh browser.
+        const bindingUnknown = Boolean(currentSessionId) && bindingCheckedSessionId !== currentSessionId;
+        if (!bindingUnknown && currentSessionId && currentProviderId && currentModelId && !sessionTarget && !pendingHandoffTarget) {
             const opencodeTarget = buildOpenCodeExecutionTarget({
                 providerID: currentProviderId,
                 modelID: currentModelId,
@@ -551,13 +591,17 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         pendingHandoffTarget,
         lastUsedTarget,
         getLastUsedTarget,
+        bindingCheckedSessionId,
     ]);
 
     const persistTarget = React.useCallback((target: ExecutionTarget) => {
         const directory = currentSessionId
             ? getDirectoryForSession(currentSessionId)
             : null;
-        applySessionExecutionTargetSelection(currentSessionId, target, { directory });
+        const outcome = useHarnessSwitchStore.getState().requestHarnessSwitch(currentSessionId, target, { directory });
+        // Dialog path: picker UI stays on the source harness until the user
+        // confirms (new session) or cancels (nothing changes).
+        return outcome;
     }, [currentSessionId, getDirectoryForSession]);
 
     const resolveDefaultClaudeModelRef = React.useCallback(() => {
@@ -601,24 +645,26 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         };
     }, [claudeAgentsMode, claudeEffort, uiAgentName]);
 
-    const handleSelectEngine = React.useCallback((engineId: string) => {
-        if (engineId === 'claude-code') {
-            if (!enginesClaudeCodeEnabled) return;
+    const handleSelectHarness = React.useCallback((harnessId: string) => {
+        if (harnessId === 'claude-code') {
+            if (!harnessClaudeCodeEnabled) return;
             const modelRef = resolveDefaultClaudeModelRef();
+            const outcome = persistTarget(buildClaudeTarget(modelRef));
+            if (outcome === 'dialog') return;
             setPickerHarnessId('claude-code');
             setClaudeModelRef(modelRef);
-            persistTarget(buildClaudeTarget(modelRef));
             return;
         }
-        setPickerHarnessId('opencode');
-        if (currentProviderId && currentModelId) {
-            persistTarget(buildOpenCodeExecutionTarget({
+        const outcome = currentProviderId && currentModelId
+            ? persistTarget(buildOpenCodeExecutionTarget({
                 providerID: currentProviderId,
                 modelID: currentModelId,
-            }));
-        }
+            }))
+            : undefined;
+        if (outcome === 'dialog') return;
+        setPickerHarnessId('opencode');
     }, [
-        enginesClaudeCodeEnabled,
+        harnessClaudeCodeEnabled,
         resolveDefaultClaudeModelRef,
         persistTarget,
         buildClaudeTarget,
@@ -627,7 +673,6 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     ]);
 
     const handleClaudeEffortChange = React.useCallback((effort?: ClaudeEffort) => {
-        setClaudeEffort(effort);
         persistTarget(buildClaudeTarget(claudeModelRef, { effort: effort ?? null }));
     }, [buildClaudeTarget, claudeModelRef, persistTarget]);
     const [desktopModelQuery, setDesktopModelQuery] = React.useState('');
@@ -805,7 +850,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
 
     const {
         labels: modelPickerLabels,
-        engineOptions,
+        harnessOptions,
         pickerProviders,
         pickerFavoriteModels,
         pickerRecentModels,
@@ -814,7 +859,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         t,
         claudePickerProviderId: CLAUDE_PICKER_PROVIDER_ID,
         pickerHarnessId,
-        enginesClaudeCodeEnabled,
+        harnessClaudeCodeEnabled,
         claudeCatalog,
         claudeCatalogModels,
         claudeModelRef,
@@ -1546,7 +1591,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
 
     const getProviderDisplayName = () => {
         if (pickerHarnessId === 'claude-code') {
-            return t('chat.engines.claudeCode');
+            return t('chat.harness.claudeCode');
         }
         const provider = providers.find(p => p.id === currentProviderId);
         return provider?.name || currentProviderId;
@@ -1560,7 +1605,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
 
     const getCurrentModelDisplayName = () => {
         if (pickerHarnessId === 'claude-code') {
-            return t('chat.engines.chip.claude', { model: getClaudeModelDisplayName(claudeModelRef) });
+            return t('chat.harness.chip.claude', { model: getClaudeModelDisplayName(claudeModelRef) });
         }
         if (!currentModelId) return t('chat.modelControls.selectModel');
         const currentModel = models.find((m: ProviderModel) => m.id === currentModelId);
@@ -1995,7 +2040,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                                 <div className="flex min-w-0 items-center gap-1.5">
                                     {isClaudeRow ? (
-                                        <EngineLogo harnessId="claude-code" className="size-3.5 flex-shrink-0" />
+                                        <HarnessLogo harnessId="claude-code" className="size-3.5 flex-shrink-0" />
                                     ) : showProviderLogo ? (
                                         <ProviderLogo providerId={providerId} className="size-3.5 flex-shrink-0" />
                                     ) : null}
@@ -2161,26 +2206,26 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                             variant="chip"
                             size="xs"
                             aria-pressed={pickerHarnessId === 'opencode'}
-                            onClick={() => handleSelectEngine('opencode')}
+                            onClick={() => handleSelectHarness('opencode')}
                             className="gap-1.5"
                         >
-                            <EngineLogo harnessId="opencode" className="size-3.5" />
-                            {t('chat.engines.opencode')}
+                            <HarnessLogo harnessId="opencode" className="size-3.5" />
+                            {t('chat.harness.opencode')}
                         </Button>
-                        {enginesClaudeCodeEnabled ? (
+                        {harnessClaudeCodeEnabled ? (
                             <Button
                                 type="button"
                                 variant="chip"
                                 size="xs"
                                 aria-pressed={pickerHarnessId === 'claude-code'}
-                                onClick={() => handleSelectEngine('claude-code')}
+                                onClick={() => handleSelectHarness('claude-code')}
                                 className="gap-1.5"
                             >
-                                <EngineLogo harnessId="claude-code" className="size-3.5" />
-                                {t('chat.engines.claudeCode')}
+                                <HarnessLogo harnessId="claude-code" className="size-3.5" />
+                                {t('chat.harness.claudeCode')}
                                 {claudeCatalog ? (
                                     <span className="typography-micro text-muted-foreground ml-1">
-                                        {t(ENGINE_STATUS_LABEL_KEYS[claudeCatalog.status])}
+                                        {t(HARNESS_STATUS_LABEL_KEYS[claudeCatalog.status])}
                                     </span>
                                 ) : null}
                             </Button>
@@ -2232,8 +2277,8 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                     {pickerHarnessId === 'claude-code' && claudeMobileModels.length > 0 && (
                         <div className="rounded-xl border border-border/40 bg-[var(--surface-elevated)] overflow-hidden">
                             <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-                                <EngineLogo harnessId="claude-code" className="size-3" />
-                                {t('chat.engines.claudeCode')}
+                                <HarnessLogo harnessId="claude-code" className="size-3" />
+                                {t('chat.harness.claudeCode')}
                             </div>
                             <div className="flex flex-col border-t border-border/30">
                                 {claudeMobileModels.map((model) => renderMobileModelRow({
@@ -2303,11 +2348,11 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                     <div className="flex flex-col gap-1 pt-1">
                         <button
                             type="button"
-                            onClick={openEnginesSettings}
+                            onClick={openHarnessSettings}
                             className="typography-meta flex w-full items-center gap-2 rounded-xl border border-border/40 bg-[var(--surface-elevated)] px-3 py-2 text-left hover:bg-interactive-hover/50"
                         >
                             <Icon name="settings-3" className="size-4 text-muted-foreground" />
-                            <span className="font-medium text-foreground">{t('chat.engines.manageEngines')}</span>
+                            <span className="font-medium text-foreground">{t('chat.harness.manageHarnesses')}</span>
                         </button>
                         {pickerHarnessId === 'opencode' ? (
                             <button
@@ -2646,13 +2691,13 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             <>
                 <button
                     type="button"
-                    onClick={openEnginesSettings}
+                    onClick={openHarnessSettings}
                     className="typography-meta group flex w-full items-center gap-1 rounded-md px-2 py-1.5 cursor-pointer hover:bg-interactive-hover/50"
                 >
                     <span className="flex size-4 items-center justify-center text-muted-foreground">
                         <Icon name="settings-3" className="size-4" />
                     </span>
-                    <span className="font-medium text-foreground">{t('chat.engines.manageEngines')}</span>
+                    <span className="font-medium text-foreground">{t('chat.harness.manageHarnesses')}</span>
                 </button>
                 {pickerHarnessId === 'opencode' ? (
                     <button
@@ -2680,7 +2725,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             const effectiveVariant = hasPendingVariant ? pendingVariant : (isSelected ? currentVariant : undefined);
             const displayLabel = effectiveVariant
                 ? effectiveVariant.charAt(0).toUpperCase() + effectiveVariant.slice(1)
-                : t('chat.engines.effort.default');
+                : t('chat.harness.effort.default');
 
             return (
                 <span className={cn('typography-micro whitespace-nowrap', wasAdjusted ? 'text-foreground' : 'text-muted-foreground')}>
@@ -2713,7 +2758,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                             </span>
                                         </>
                                     ) : pickerHarnessId === 'claude-code' ? (
-                                        <EngineLogo harnessId="claude-code" className={cn(controlIconSize, 'flex-shrink-0 text-muted-foreground')} />
+                                        <HarnessLogo harnessId="claude-code" className={cn(controlIconSize, 'flex-shrink-0 text-muted-foreground')} />
                                     ) : currentProviderId ? (
                                         <>
                                             <ProviderLogo
@@ -2781,8 +2826,8 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                 providerOrder={pickerHarnessId === 'opencode' ? providerOrder : undefined}
                                 onReorderProvider={pickerHarnessId === 'opencode' ? setProviderOrder : undefined}
                                 reorderProviderTitle={t('chat.modelControls.reorderProviderTitle')}
-                                engines={engineOptions}
-                                onSelectEngine={handleSelectEngine}
+                                harnesses={harnessOptions}
+                                onSelectHarness={handleSelectHarness}
                                 actionsFooter={pickerActionsFooter}
                                 footerContent={(activeEntry) => {
                                     const activeHasThinkingVariants = pickerHarnessId === 'opencode' && activeEntry
@@ -2828,7 +2873,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                         ) : (
                             <>
                                 {pickerHarnessId === 'claude-code' ? (
-                                    <EngineLogo harnessId="claude-code" className={cn(controlIconSize, 'flex-shrink-0 text-muted-foreground')} />
+                                    <HarnessLogo harnessId="claude-code" className={cn(controlIconSize, 'flex-shrink-0 text-muted-foreground')} />
                                 ) : currentProviderId ? (
                                     <ProviderLogo
                                         providerId={currentProviderId}

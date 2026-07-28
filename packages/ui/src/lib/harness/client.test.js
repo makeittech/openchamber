@@ -13,6 +13,7 @@ const {
   harnessPrompt,
   listClaudeImportCandidates,
   importClaudeSessions,
+  harnessSessionBinding,
   HarnessClientError,
 } = await import(`./client?cache-test=${Date.now()}`);
 
@@ -220,5 +221,52 @@ describe('claude import client', () => {
     expect(runtimeFetchMock.mock.calls[0][0]).toBe('/api/harness/claude-code/import');
     expect(result.summary.imported).toBe(1);
     expect(result.results[0].sessionId).toBe('ses_1');
+  });
+});
+
+describe('harnessSessionBinding', () => {
+  test('parses a Claude binding with effort target', async () => {
+    runtimeFetchMock.mockImplementation(async () => new Response(JSON.stringify({
+      binding: {
+        sessionId: 'ses_1',
+        harnessId: 'claude-code',
+        directory: '/tmp/app',
+        target: { harnessId: 'claude-code', modelRef: 'opus', permissionMode: 'acceptEdits', effort: 'high' },
+        foreignSessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    const binding = await harnessSessionBinding('ses_1');
+    expect(runtimeFetchMock.mock.calls[0][0]).toBe('/api/harness/sessions/ses_1');
+    expect(binding?.harnessId).toBe('claude-code');
+    expect(binding?.target).toEqual({
+      harnessId: 'claude-code',
+      modelRef: 'opus',
+      permissionMode: 'acceptEdits',
+      effort: 'high',
+    });
+  });
+
+  test('returns null for 404 and network failures', async () => {
+    runtimeFetchMock.mockImplementation(async () => new Response('{}', { status: 404 }));
+    expect(await harnessSessionBinding('ses_plain')).toBeNull();
+
+    runtimeFetchMock.mockImplementation(async () => {
+      throw new Error('offline');
+    });
+    expect(await harnessSessionBinding('ses_plain')).toBeNull();
+  });
+
+  test('drops invalid binding payloads', async () => {
+    runtimeFetchMock.mockImplementation(async () => new Response(JSON.stringify({
+      binding: { sessionId: 'ses_1' },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    expect(await harnessSessionBinding('ses_1')).toBeNull();
   });
 });

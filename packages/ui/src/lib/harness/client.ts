@@ -7,7 +7,7 @@ import { runtimeFetch } from '@/lib/runtime-fetch';
 import type { ExecutionTarget } from '@/types/harness';
 import { isExecutionTarget } from '@/types/harness';
 
-export type HarnessAttachmentFile = {
+type HarnessAttachmentFile = {
   mime: string;
   url: string;
   filename: string;
@@ -50,7 +50,7 @@ export type HarnessAbortResult = {
   reason?: string;
 };
 
-export type HarnessPermissionReply = 'once' | 'always' | 'reject';
+type HarnessPermissionReply = 'once' | 'always' | 'reject';
 
 export type HarnessPermissionReplyParams = {
   sessionId: string;
@@ -395,6 +395,48 @@ export async function harnessSessionCapabilities(
   };
 }
 
+export type HarnessSessionBinding = {
+  sessionId: string;
+  harnessId: string;
+  directory?: string;
+  target?: ExecutionTarget;
+  foreignSessionId?: string;
+};
+
+/**
+ * Fetch the server-side sticky harness binding for a session.
+ * Returns null when no binding exists (plain OpenCode session) or the lookup
+ * fails — callers must treat null as "unknown", not as "definitely OpenCode".
+ */
+export async function harnessSessionBinding(sessionId: string): Promise<HarnessSessionBinding | null> {
+  const id = sessionId.trim();
+  if (!id) return null;
+
+  let response: Response;
+  try {
+    response = await runtimeFetch(`/api/harness/sessions/${encodeURIComponent(id)}`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+  } catch {
+    return null;
+  }
+  if (!response.ok) return null;
+
+  const payload = await response.json().catch(() => null);
+  const binding = isRecord(payload) && isRecord(payload.binding) ? payload.binding : null;
+  if (!binding || typeof binding.sessionId !== 'string' || typeof binding.harnessId !== 'string') {
+    return null;
+  }
+  return {
+    sessionId: binding.sessionId,
+    harnessId: binding.harnessId,
+    ...(typeof binding.directory === 'string' ? { directory: binding.directory } : {}),
+    ...(isExecutionTarget(binding.target) ? { target: binding.target } : {}),
+    ...(typeof binding.foreignSessionId === 'string' ? { foreignSessionId: binding.foreignSessionId } : {}),
+  };
+}
+
 export type ClaudeImportSessionCandidate = {
   foreignSessionId: string;
   title: string | null;
@@ -424,7 +466,7 @@ export type ClaudeImportSessionRequest = {
   title?: string | null;
 };
 
-export type ClaudeImportResultRow = {
+type ClaudeImportResultRow = {
   ok: boolean;
   foreignSessionId: string | null;
   sessionId?: string;
