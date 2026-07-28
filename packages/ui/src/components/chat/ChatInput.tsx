@@ -54,7 +54,6 @@ import { MobileModelButton } from './MobileModelButton';
 import { MobileSessionStatusBar } from './MobileSessionStatusBar';
 import { useCurrentSessionActivity } from '@/hooks/useSessionActivity';
 import { toast } from '@/components/ui';
-import { Button } from '@/components/ui/button';
 import { HarnessClientError } from '@/lib/harness/client';
 import {
     setCachedWarnOnHarnessSwitch,
