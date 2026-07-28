@@ -29,6 +29,28 @@ function invalidatePrContextCache(directory, number) {
 // pulls/context. Keeps `pending` as queued+in_progress+unconcluded for
 // existing consumers while exposing the split and the earliest start time so
 // the UI can show live "running for N minutes" state.
+// A re-run leaves the previous completed check run in the listForRef payload
+// alongside the new in-progress one. GitHub's UI shows only the latest run
+// per (app, name); mirror that so counts match what users see on github.com.
+function dedupeCheckRuns(checkRuns) {
+  const byName = new Map();
+  for (const run of checkRuns) {
+    const key = `${run?.app?.id ?? run?.app?.slug ?? ''}::${run?.name ?? ''}`;
+    const previous = byName.get(key);
+    if (!previous) {
+      byName.set(key, run);
+      continue;
+    }
+    const previousStartedAt = Date.parse(previous?.started_at || '') || 0;
+    const startedAt = Date.parse(run?.started_at || '') || 0;
+    if (startedAt > previousStartedAt
+      || (startedAt === previousStartedAt && (run?.id ?? 0) > (previous?.id ?? 0))) {
+      byName.set(key, run);
+    }
+  }
+  return Array.from(byName.values());
+}
+
 function summarizeCheckRuns(checkRuns) {
   const counts = { success: 0, failure: 0, pending: 0, inProgress: 0, queued: 0 };
   let startedAt = null;
@@ -563,7 +585,7 @@ export function registerGitHubRoutes(app) {
             ref: sha,
             per_page: 100,
           });
-          const checkRuns = Array.isArray(runs?.data?.check_runs) ? runs.data.check_runs : [];
+          const checkRuns = dedupeCheckRuns(Array.isArray(runs?.data?.check_runs) ? runs.data.check_runs : []);
           if (checkRuns.length > 0) {
             checks = summarizeCheckRuns(checkRuns);
           }
@@ -1672,7 +1694,7 @@ export function registerGitHubRoutes(app) {
       if (sha) {
         try {
           const runs = await octokit.rest.checks.listForRef({ owner: repo.owner, repo: repo.repo, ref: sha, per_page: 100 });
-          const checkRuns = Array.isArray(runs?.data?.check_runs) ? runs.data.check_runs : [];
+          const checkRuns = dedupeCheckRuns(Array.isArray(runs?.data?.check_runs) ? runs.data.check_runs : []);
           if (checkRuns.length > 0) {
             const parsedJobs = new Map();
             const parsedAnnotations = new Map();

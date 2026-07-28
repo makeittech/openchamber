@@ -8,6 +8,7 @@ import { useSessionWorktreeStore } from '@/sync/session-worktree-store';
 import { useGitStatus, useGitBranches, useGitStore } from '@/stores/useGitStore';
 import { useShallow } from 'zustand/react/shallow';
 import { getRootBranch } from '@/lib/worktrees/worktreeStatus';
+import { getRuntimeKey } from '@/lib/runtime-switch';
 import type { GitRemote } from '@/lib/api/types';
 import { useI18n } from '@/lib/i18n';
 import { ScrollShadow } from '@/components/ui/ScrollShadow';
@@ -21,8 +22,10 @@ const normalizePath = (value?: string | null): string =>
 // Remotes rarely change; remembering the last fetched list per directory lets
 // a remount pick the same PR-status key immediately instead of flashing
 // through the remote-less "checking status" state while remotes reload.
+// Runtime-scoped so a backend switch never serves another runtime's remotes.
 const remotesCacheByDirectory = new Map<string, GitRemote[]>();
 const remoteUrlCacheByDirectory = new Map<string, string | null>();
+const remoteCacheKey = (directory: string): string => `${getRuntimeKey()}::${directory}`;
 
 /**
  * Standalone pull-request surface: resolves the same repository context
@@ -119,10 +122,10 @@ export const PullRequestView: React.FC = () => {
   }, [authoritativeProjectRoot, worktreeMetadata?.projectDirectory]);
 
   const [remotes, setRemotes] = React.useState<GitRemote[]>(() =>
-    (currentDirectory ? remotesCacheByDirectory.get(currentDirectory) : undefined) ?? []
+    (currentDirectory ? remotesCacheByDirectory.get(remoteCacheKey(currentDirectory)) : undefined) ?? []
   );
   const [remoteUrl, setRemoteUrl] = React.useState<string | null>(() =>
-    (currentDirectory ? remoteUrlCacheByDirectory.get(currentDirectory) : undefined) ?? null
+    (currentDirectory ? remoteUrlCacheByDirectory.get(remoteCacheKey(currentDirectory)) : undefined) ?? null
   );
   React.useEffect(() => {
     if (!currentDirectory || !git?.getRemotes) {
@@ -130,15 +133,15 @@ export const PullRequestView: React.FC = () => {
       return;
     }
 
-    setRemotes(remotesCacheByDirectory.get(currentDirectory) ?? []);
+    setRemotes(remotesCacheByDirectory.get(remoteCacheKey(currentDirectory)) ?? []);
     let cancelled = false;
     void git.getRemotes(currentDirectory)
       .then((remoteList) => {
         if (cancelled) return;
-        remotesCacheByDirectory.set(currentDirectory, remoteList ?? []);
+        remotesCacheByDirectory.set(remoteCacheKey(currentDirectory), remoteList ?? []);
         setRemotes(remoteList ?? []);
       })
-      .catch(() => { if (!cancelled) setRemotes(remotesCacheByDirectory.get(currentDirectory) ?? []); });
+      .catch(() => { if (!cancelled) setRemotes(remotesCacheByDirectory.get(remoteCacheKey(currentDirectory)) ?? []); });
 
     return () => {
       cancelled = true;
@@ -151,15 +154,15 @@ export const PullRequestView: React.FC = () => {
       return;
     }
 
-    setRemoteUrl(remoteUrlCacheByDirectory.get(currentDirectory) ?? null);
+    setRemoteUrl(remoteUrlCacheByDirectory.get(remoteCacheKey(currentDirectory)) ?? null);
     let cancelled = false;
     void git.getRemoteUrl(currentDirectory)
       .then((url) => {
         if (cancelled) return;
-        remoteUrlCacheByDirectory.set(currentDirectory, url);
+        remoteUrlCacheByDirectory.set(remoteCacheKey(currentDirectory), url);
         setRemoteUrl(url);
       })
-      .catch(() => { if (!cancelled) setRemoteUrl(remoteUrlCacheByDirectory.get(currentDirectory) ?? null); });
+      .catch(() => { if (!cancelled) setRemoteUrl(remoteUrlCacheByDirectory.get(remoteCacheKey(currentDirectory)) ?? null); });
 
     return () => {
       cancelled = true;

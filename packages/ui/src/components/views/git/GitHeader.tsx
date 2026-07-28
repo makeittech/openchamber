@@ -1,6 +1,5 @@
 import React from 'react';
 import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -329,6 +328,21 @@ export const GitHeader: React.FC<GitHeaderProps> = ({
         : 'var(--status-warning)'
     : null;
 
+  const prVisualState = pullRequest
+    ? pullRequest.state === 'merged'
+      ? 'merged'
+      : pullRequest.state === 'closed'
+        ? 'closed'
+        : pullRequest.draft
+          ? 'draft'
+          : prChecks?.state === 'failure'
+            || pullRequest.mergeable === false
+            || pullRequest.mergeableState === 'blocked'
+            || pullRequest.mergeableState === 'dirty'
+            ? 'blocked'
+            : 'open'
+    : null;
+
   const prChip = pullRequest && onOpenPullRequest ? (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -340,12 +354,8 @@ export const GitHeader: React.FC<GitHeaderProps> = ({
         >
           <Icon
             name="git-pull-request"
-            className={cn(
-              'size-3.5',
-              pullRequest.state === 'merged' && 'text-[var(--syntax-keyword)]',
-              pullRequest.state === 'closed' && 'text-[var(--status-error)]',
-              pullRequest.state === 'open' && (pullRequest.draft ? 'text-muted-foreground' : 'text-[var(--status-success)]')
-            )}
+            className="size-3.5"
+            style={{ color: `var(--pr-${prVisualState})` }}
           />
           <span className="tabular-nums text-foreground/80">{t('gitView.pr.numberLabel', { number: pullRequest.number })}</span>
           {prChecksColor ? (

@@ -10,9 +10,10 @@ edge (`components/layout/ContextPanelRail.tsx`) and rendered by
 ## Model
 
 - A surface maps 1:1 to a `ContextPanelMode` tab mode in `useUIStore`.
-- Surfaces are always present on the rail. `availability: 'has-content'`
-  surfaces (preview, chat) render disabled until a tab of their mode exists;
-  they must not disappear while in use.
+- `availability: 'always'` surfaces are always present on the rail.
+  `availability: 'has-content'` surfaces (preview, chat) are hidden from the
+  rail until a tab of their mode exists, and stay visible for as long as one
+  does — they must not disappear while in use.
 - `defaultWidthFraction` is the panel width as a fraction of the content area,
   used until the user manually resizes that surface (manual widths are stored
   per mode in `useUIStore.contextPanelByDirectory[dir].widthByMode`).
@@ -36,7 +37,11 @@ the `openContext*` actions in `useUIStore`.
 
 - Opening a surface must never require a control outside the rail, the
   command palette, or an in-content link.
-- Switching surfaces must not reset per-surface state (keep-alive panes,
-  editor tabs, scroll positions).
+- Multi-instance and session-holding surfaces (file/editor, chat, diff,
+  browser, terminal) are keep-alive panes in `ContextPanel.tsx`: switching
+  surfaces must not reset their state (open tabs, xterm session, scroll
+  positions). Singleton surfaces (git, pr, notes, plan, context) and preview
+  tabs intentionally remount on switch and must restore themselves from
+  their stores/snapshots instead.
 - Runtime scope: desktop/web `MainLayout` only. VS Code and the dedicated
   mobile shell have their own layouts and do not consume this registry.

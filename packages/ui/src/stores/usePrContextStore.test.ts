@@ -70,6 +70,18 @@ describe('usePrContextStore', () => {
     expect(callCount()).toBe(2);
   });
 
+  test('invalidate matches the directory exactly, not by prefix', async () => {
+    const { github } = makeGithub(RESULT);
+    const { ensure, invalidate } = usePrContextStore.getState();
+
+    await ensure(github, '/repo', 1);
+    await ensure(github, '/repo-beta', 1);
+    invalidate('/repo');
+
+    expect(usePrContextStore.getState().entries[getPrContextKey('/repo', 1)] ?? null).toBe(null);
+    expect(usePrContextStore.getState().entries[getPrContextKey('/repo-beta', 1)]?.result).toEqual(RESULT);
+  });
+
   test('failed fetch records the error and returns null', async () => {
     const github = { prContext: async () => { throw new Error('boom'); } } as unknown as GitHubAPI;
     const { ensure } = usePrContextStore.getState();

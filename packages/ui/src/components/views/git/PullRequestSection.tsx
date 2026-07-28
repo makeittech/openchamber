@@ -813,12 +813,12 @@ export const PullRequestSection: React.FC<{
           <div className="typography-micro text-foreground">{run.output.title}</div>
         ) : null}
         {run.output?.summary ? (
-          <div className="typography-micro text-muted-foreground whitespace-pre-wrap">
+          <div className="typography-micro text-muted-foreground whitespace-pre-wrap break-words">
             {run.output.summary}
           </div>
         ) : null}
         {run.output?.text ? (
-          <div className="rounded border border-border/40 bg-transparent px-2 py-2 typography-micro text-muted-foreground whitespace-pre-wrap max-h-48 overflow-y-auto">
+          <div className="rounded border border-border/40 bg-transparent px-2 py-2 typography-micro text-muted-foreground whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
             {run.output.text}
           </div>
         ) : null}
@@ -831,17 +831,17 @@ export const PullRequestSection: React.FC<{
             <div className="space-y-1">
               {run.annotations.slice(0, 20).map((annotation, idx) => (
                 <div key={`${annotation.path || 'file'}:${annotation.startLine || idx}:${idx}`} className="rounded border border-[var(--status-error-border)] bg-[var(--status-error-background)]/40 px-2 py-2">
-                  <div className="typography-micro text-[var(--status-error)]">
+                  <div className="typography-micro break-words text-[var(--status-error)]">
                     {annotation.title || annotation.level || 'Issue'}
                     {annotation.path ? ` · ${annotation.path}` : ''}
                     {typeof annotation.startLine === 'number' ? `:${annotation.startLine}` : ''}
                     {typeof annotation.endLine === 'number' && annotation.endLine !== annotation.startLine ? `-${annotation.endLine}` : ''}
                   </div>
-                  <div className="typography-micro text-foreground whitespace-pre-wrap mt-1">
+                  <div className="typography-micro text-foreground whitespace-pre-wrap break-words mt-1">
                     {annotation.message}
                   </div>
                   {annotation.rawDetails ? (
-                    <div className="typography-micro text-muted-foreground whitespace-pre-wrap mt-1">
+                    <div className="typography-micro text-muted-foreground whitespace-pre-wrap break-words mt-1">
                       {annotation.rawDetails}
                     </div>
                   ) : null}
@@ -914,6 +914,9 @@ export const PullRequestSection: React.FC<{
     );
   }, [expandedCheckStepKeys, formatTimestamp, t]);
 
+  const [isAttachingChecks, setIsAttachingChecks] = React.useState(false);
+  const [isAttachingComments, setIsAttachingComments] = React.useState(false);
+
   const sendFailedChecksToChat = React.useCallback(async () => {
     if (!github?.prContext) {
       toast.error(t('gitView.pr.toast.githubApiUnavailable'));
@@ -925,6 +928,7 @@ export const PullRequestSection: React.FC<{
       return;
     }
 
+    setIsAttachingChecks(true);
     try {
       const context = await ensurePrContext(github, directory, pr.number, { includeCheckDetails: true, sourceRepo: status?.repo ?? null });
       if (!context) {
@@ -973,6 +977,8 @@ export const PullRequestSection: React.FC<{
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       toast.error(t('gitView.pr.toast.loadChecksFailed'), { description: message });
+    } finally {
+      setIsAttachingChecks(false);
     }
   }, [directory, ensurePrContext, github, pr, resolveDraftTarget, setActiveMainTab, status?.repo, t]);
 
@@ -987,6 +993,7 @@ export const PullRequestSection: React.FC<{
       return;
     }
 
+    setIsAttachingComments(true);
     try {
       const context = await ensurePrContext(github, directory, pr.number, { sourceRepo: status?.repo ?? null });
       if (!context) {
@@ -1005,6 +1012,8 @@ export const PullRequestSection: React.FC<{
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       toast.error(t('gitView.pr.toast.loadPrCommentsFailed'), { description: message });
+    } finally {
+      setIsAttachingComments(false);
     }
   }, [attachCommentDraft, directory, ensurePrContext, github, pr, resolveDraftTarget, setActiveMainTab, status?.repo, t, timelineComments]);
 
@@ -1755,9 +1764,12 @@ export const PullRequestSection: React.FC<{
                         size="sm"
                         className="w-fit gap-1.5 border-[var(--status-success-border)] bg-[var(--status-success-background)] text-[var(--status-success)]"
                         onClick={sendFailedChecksToChat}
+                        disabled={isAttachingChecks}
                         aria-label={t('gitView.pr.actions.resolveFailedChecksAria')}
                       >
-                        <Icon name="ai-generate-2" className="size-4" />
+                        {isAttachingChecks
+                          ? <Icon name="loader-4" className="size-4 animate-spin" />
+                          : <Icon name="ai-generate-2" className="size-4" />}
                         {t('gitView.pr.actions.resolveFailedChecks')}
                       </Button>
                     ) : null}
@@ -1818,7 +1830,7 @@ export const PullRequestSection: React.FC<{
                                 ) : null}
                               </button>
                               {expanded && hasDetails ? (
-                                <div className="border-t border-border/40 p-2.5">
+                                <div className="min-w-0 overflow-hidden border-t border-border/40 p-2.5">
                                   {renderCheckRunSummary(run, { hideHeader: true })}
                                 </div>
                               ) : null}
@@ -1846,9 +1858,12 @@ export const PullRequestSection: React.FC<{
                           size="sm"
                           className="h-7 gap-1.5 text-[var(--status-success)] hover:bg-[var(--status-success-background)] hover:text-[var(--status-success)]"
                           onClick={sendCommentsToChat}
+                          disabled={isAttachingComments}
                           aria-label={t('gitView.pr.actions.shareCommentsAria')}
                         >
-                          <Icon name="ai-generate-2" className="size-3.5" />
+                          {isAttachingComments
+                            ? <Icon name="loader-4" className="size-3.5 animate-spin" />
+                            : <Icon name="ai-generate-2" className="size-3.5" />}
                           {t('gitView.pr.comments.addAll')}
                         </Button>
                       </div>

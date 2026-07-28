@@ -583,10 +583,6 @@ interface UIStore {
   contextRailOrder: string[];
   contextEditorTreeVisible: boolean;
   contextEditorTreeWidth: number;
-  isBottomTerminalOpen: boolean;
-  isBottomTerminalExpanded: boolean;
-  bottomTerminalHeight: number;
-  hasManuallyResizedBottomTerminal: boolean;
   notesPanelHeight: number;
   todoPanelHeight: number;
   isSessionSwitcherOpen: boolean;
@@ -608,6 +604,8 @@ interface UIStore {
   openCodeStatusText: string;
   isSessionCreateDialogOpen: boolean;
   isScheduledTasksDialogOpen: boolean;
+  isArchivePageOpen: boolean;
+  worktreesPageProjectId: string | null;
   isSettingsDialogOpen: boolean;
   isNewWorktreeDialogOpen: boolean;
   isModelSelectorOpen: boolean;
@@ -749,10 +747,6 @@ interface UIStore {
   closeContextPanel: (directory: string) => void;
   toggleContextPanelExpanded: (directory: string) => void;
   setContextPanelWidth: (directory: string, mode: ContextPanelMode, width: number) => void;
-  toggleBottomTerminal: () => void;
-  setBottomTerminalOpen: (open: boolean) => void;
-  setBottomTerminalExpanded: (expanded: boolean) => void;
-  setBottomTerminalHeight: (height: number) => void;
   setNotesPanelHeight: (height: number) => void;
   setTodoPanelHeight: (height: number) => void;
   setSessionSwitcherOpen: (open: boolean) => void;
@@ -779,6 +773,10 @@ interface UIStore {
   setOpenCodeStatusText: (text: string) => void;
   setSessionCreateDialogOpen: (open: boolean) => void;
   setScheduledTasksDialogOpen: (open: boolean) => void;
+  setArchivePageOpen: (open: boolean) => void;
+  setWorktreesPageProjectId: (projectId: string | null) => void;
+  /** Close every full-page surface (Scheduled, Archive, Worktrees, Multi-run). */
+  closeMainSurfaces: () => void;
   setSettingsDialogOpen: (open: boolean) => void;
   setNewWorktreeDialogOpen: (open: boolean) => void;
   setModelSelectorOpen: (open: boolean) => void;
@@ -818,7 +816,6 @@ interface UIStore {
   setMobileKeyboardMode: (mode: MobileKeyboardMode) => void;
   applyTypography: () => void;
   applyPadding: () => void;
-  updateProportionalSidebarWidths: () => void;
   toggleFavoriteModel: (providerID: string, modelID: string) => void;
   toggleFavoriteTarget: (target: ExecutionTarget) => void;
   reorderFavoriteModel: (
@@ -916,10 +913,6 @@ export const useUIStore = create<UIStore>()(
         contextRailOrder: [],
         contextEditorTreeVisible: true,
         contextEditorTreeWidth: 240,
-        isBottomTerminalOpen: false,
-        isBottomTerminalExpanded: false,
-        bottomTerminalHeight: 300,
-        hasManuallyResizedBottomTerminal: false,
         notesPanelHeight: 112,
         todoPanelHeight: 259,
         isSessionSwitcherOpen: false,
@@ -941,6 +934,8 @@ export const useUIStore = create<UIStore>()(
         openCodeStatusText: '',
         isSessionCreateDialogOpen: false,
         isScheduledTasksDialogOpen: false,
+        isArchivePageOpen: false,
+        worktreesPageProjectId: null,
         isSettingsDialogOpen: false,
         isNewWorktreeDialogOpen: false,
         isModelSelectorOpen: false,
@@ -1450,64 +1445,6 @@ export const useUIStore = create<UIStore>()(
           });
         },
 
-        toggleBottomTerminal: () => {
-          set((state) => {
-            const newOpen = !state.isBottomTerminalOpen;
-
-            if (newOpen && typeof window !== 'undefined') {
-              const proportionalHeight = Math.floor(window.innerHeight * 0.32);
-              return {
-                isBottomTerminalOpen: newOpen,
-                bottomTerminalHeight: proportionalHeight,
-                hasManuallyResizedBottomTerminal: false,
-              };
-            }
-
-            return { isBottomTerminalOpen: newOpen };
-          });
-        },
-
-        setBottomTerminalOpen: (open) => {
-          set((state) => {
-            if (state.isBottomTerminalOpen === open) {
-              if (!open) {
-                return state;
-              }
-              if (!state.hasManuallyResizedBottomTerminal && typeof window !== 'undefined') {
-                const proportionalHeight = Math.floor(window.innerHeight * 0.32);
-                if (state.bottomTerminalHeight === proportionalHeight && state.hasManuallyResizedBottomTerminal === false) {
-                  return state;
-                }
-                return {
-                  isBottomTerminalOpen: open,
-                  bottomTerminalHeight: proportionalHeight,
-                  hasManuallyResizedBottomTerminal: false,
-                };
-              }
-              return state;
-            }
-
-            if (open && typeof window !== 'undefined') {
-              const proportionalHeight = Math.floor(window.innerHeight * 0.32);
-              return {
-                isBottomTerminalOpen: open,
-                bottomTerminalHeight: proportionalHeight,
-                hasManuallyResizedBottomTerminal: false,
-              };
-            }
-
-            return { isBottomTerminalOpen: open };
-          });
-        },
-
-        setBottomTerminalExpanded: (expanded) => {
-          set({ isBottomTerminalExpanded: expanded });
-        },
-
-        setBottomTerminalHeight: (height) => {
-          set({ bottomTerminalHeight: height, hasManuallyResizedBottomTerminal: true });
-        },
-
         setNotesPanelHeight: (height) => {
           set({ notesPanelHeight: height });
         },
@@ -1644,7 +1581,35 @@ export const useUIStore = create<UIStore>()(
         },
 
         setScheduledTasksDialogOpen: (open) => {
-          set({ isScheduledTasksDialogOpen: open });
+          set(open
+            ? { isScheduledTasksDialogOpen: true, isArchivePageOpen: false, worktreesPageProjectId: null, isMultiRunLauncherOpen: false }
+            : { isScheduledTasksDialogOpen: false });
+        },
+
+        setArchivePageOpen: (open) => {
+          set(open
+            ? { isArchivePageOpen: true, isScheduledTasksDialogOpen: false, worktreesPageProjectId: null, isMultiRunLauncherOpen: false }
+            : { isArchivePageOpen: false });
+        },
+
+        setWorktreesPageProjectId: (projectId) => {
+          set(projectId
+            ? { worktreesPageProjectId: projectId, isScheduledTasksDialogOpen: false, isArchivePageOpen: false, isMultiRunLauncherOpen: false }
+            : { worktreesPageProjectId: null });
+        },
+
+        closeMainSurfaces: () => {
+          const state = get();
+          if (!state.isScheduledTasksDialogOpen && !state.isArchivePageOpen && !state.worktreesPageProjectId && !state.isMultiRunLauncherOpen) {
+            return;
+          }
+          set({
+            isScheduledTasksDialogOpen: false,
+            isArchivePageOpen: false,
+            worktreesPageProjectId: null,
+            isMultiRunLauncherOpen: false,
+            multiRunLauncherPrefillPrompt: '',
+          });
         },
 
         setSettingsDialogOpen: (open) => {
@@ -2126,25 +2091,6 @@ export const useUIStore = create<UIStore>()(
           });
         },
 
-        updateProportionalSidebarWidths: () => {
-          if (typeof window === 'undefined') {
-            return;
-          }
-
-          set((state) => {
-            const updates: Partial<UIStore> = {};
-
-            if (state.isBottomTerminalOpen && !state.hasManuallyResizedBottomTerminal) {
-              const nextHeight = Math.floor(window.innerHeight * 0.32);
-              if (state.bottomTerminalHeight !== nextHeight) {
-                updates.bottomTerminalHeight = nextHeight;
-              }
-            }
-
-            return Object.keys(updates).length > 0 ? updates : state;
-          });
-        },
-
         applyTheme: () => {
           const { theme } = get();
           const root = document.documentElement;
@@ -2159,10 +2105,13 @@ export const useUIStore = create<UIStore>()(
           }
         },
 
+        // Multi-run is one of the mutually exclusive full-page surfaces:
+        // opening it closes the other surfaces and vice versa.
         setMultiRunLauncherOpen: (open) => {
           set((state) => ({
             isMultiRunLauncherOpen: open,
             multiRunLauncherPrefillPrompt: open ? state.multiRunLauncherPrefillPrompt : '',
+            ...(open ? { isScheduledTasksDialogOpen: false, isArchivePageOpen: false, worktreesPageProjectId: null } : {}),
           }));
         },
 
@@ -2171,6 +2120,9 @@ export const useUIStore = create<UIStore>()(
             isMultiRunLauncherOpen: true,
             multiRunLauncherPrefillPrompt: '',
             isSessionSwitcherOpen: false,
+            isScheduledTasksDialogOpen: false,
+            isArchivePageOpen: false,
+            worktreesPageProjectId: null,
           });
         },
 
@@ -2179,6 +2131,9 @@ export const useUIStore = create<UIStore>()(
             isMultiRunLauncherOpen: true,
             multiRunLauncherPrefillPrompt: prompt,
             isSessionSwitcherOpen: false,
+            isScheduledTasksDialogOpen: false,
+            isArchivePageOpen: false,
+            worktreesPageProjectId: null,
           });
         },
 
@@ -2512,9 +2467,6 @@ export const useUIStore = create<UIStore>()(
           contextRailOrder: state.contextRailOrder,
           contextEditorTreeVisible: state.contextEditorTreeVisible,
           contextEditorTreeWidth: state.contextEditorTreeWidth,
-          isBottomTerminalOpen: state.isBottomTerminalOpen,
-          isBottomTerminalExpanded: state.isBottomTerminalExpanded,
-          bottomTerminalHeight: state.bottomTerminalHeight,
           notesPanelHeight: state.notesPanelHeight,
           todoPanelHeight: state.todoPanelHeight,
           isSessionSwitcherOpen: state.isSessionSwitcherOpen,

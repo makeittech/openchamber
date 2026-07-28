@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getRuntimeKey } from '@/lib/runtime-switch';
 import type {
   GitHubAPI,
   GitHubPullRequestContextResult,
@@ -8,8 +9,27 @@ import type {
 const PR_CONTEXT_TTL_MS = 30_000;
 const PR_CONTEXT_MAX_ENTRIES = 20;
 
+// JSON tuple key: runtime-scoped (a runtime switch must never serve another
+// backend's data) and parseable, so invalidation can compare the directory
+// exactly instead of by string prefix.
 export const getPrContextKey = (directory: string, number: number): string =>
-  `${directory}#${number}`;
+  JSON.stringify([getRuntimeKey(), directory, number]);
+
+const parsePrContextKey = (key: string): { runtimeKey: string; directory: string; number: number } | null => {
+  try {
+    const parsed: unknown = JSON.parse(key);
+    if (!Array.isArray(parsed) || parsed.length !== 3) {
+      return null;
+    }
+    const [runtimeKey, directory, number] = parsed;
+    if (typeof runtimeKey !== 'string' || typeof directory !== 'string' || typeof number !== 'number') {
+      return null;
+    }
+    return { runtimeKey, directory, number };
+  } catch {
+    return null;
+  }
+};
 
 type PrContextEntry = {
   result: GitHubPullRequestContextResult | null;
@@ -132,11 +152,13 @@ export const usePrContextStore = create<PrContextStoreState>()((set, get) => ({
   invalidate: (directory, number) => {
     set((state) => {
       const next: Record<string, PrContextEntry> = {};
-      const prefix = `${directory}#`;
       for (const [key, entry] of Object.entries(state.entries)) {
-        const matches = number == null
-          ? key.startsWith(prefix)
-          : key === getPrContextKey(directory, number);
+        const parsed = parsePrContextKey(key);
+        const matches = Boolean(
+          parsed
+          && parsed.directory === directory
+          && (number == null || parsed.number === number),
+        );
         if (!matches) {
           next[key] = entry;
         }
