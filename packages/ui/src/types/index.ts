@@ -15,9 +15,9 @@ export type {
   HarnessRuntimeStatus,
   HarnessAuthMode,
   HarnessDescriptor,
-  EngineCatalog,
-  EngineCatalogModel,
-  EngineCatalogSection,
+  HarnessCatalog,
+  HarnessCatalogModel,
+  HarnessCatalogSection,
 } from './harness';
 
 export {

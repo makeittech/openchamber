@@ -57,21 +57,11 @@ import { toast } from '@/components/ui';
 import { Button } from '@/components/ui/button';
 import { HarnessClientError } from '@/lib/harness/client';
 import {
-    clearPendingHandoffTarget,
-    getPendingHandoffTarget,
-    resolveSourceHarnessId,
-    shouldPersistHandoffWarnDismissal,
-    shouldShowHandoffBillingNotice,
-} from '@/lib/harness/session-handoff';
-import {
-    getCachedWarnOnOpenCodeHandoff,
-    setCachedWarnOnOpenCodeHandoff,
+    setCachedWarnOnHarnessSwitch,
     setCachedClaudeAgentsMode,
-    withEnginesSettingsDefaults,
+    withHarnessSettingsDefaults,
 } from '@/lib/harness/settings';
-import { updateDesktopSettings } from '@/lib/persistence';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { HandoffConfirmDialog } from '@/components/harness/HandoffConfirmDialog';
 // useMessageStore removed — messages now come from sync system
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { isIMECompositionEvent } from '@/lib/ime';
@@ -694,9 +684,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     // Issue linking state
     const [issuePickerOpen, setIssuePickerOpen] = React.useState(false);
     const [prPickerOpen, setPrPickerOpen] = React.useState(false);
-    const [handoffConfirmOpen, setHandoffConfirmOpen] = React.useState(false);
-    const handoffConfirmPassedRef = React.useRef(false);
-    const handoffSubmitOptionsRef = React.useRef<SubmitOptions | undefined>(undefined);
 
     React.useEffect(() => {
         let cancelled = false;
@@ -709,19 +696,19 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 if (!response.ok || cancelled) return;
                 const data = await response.json().catch(() => null) as Record<string, unknown> | null;
                 if (!data || cancelled) return;
-                const resolved = withEnginesSettingsDefaults({
-                    enginesClaudeCodeWarnOnOpenCodeHandoff:
-                        typeof data.enginesClaudeCodeWarnOnOpenCodeHandoff === 'boolean'
-                            ? data.enginesClaudeCodeWarnOnOpenCodeHandoff
+                const resolved = withHarnessSettingsDefaults({
+                    harnessWarnOnSwitch:
+                        typeof data.harnessWarnOnSwitch === 'boolean'
+                            ? data.harnessWarnOnSwitch
                             : undefined,
-                    enginesClaudeCodeAgentsMode:
-                        data.enginesClaudeCodeAgentsMode === 'claude'
-                        || data.enginesClaudeCodeAgentsMode === 'opencode'
-                            ? data.enginesClaudeCodeAgentsMode
+                    harnessClaudeCodeAgentsMode:
+                        data.harnessClaudeCodeAgentsMode === 'claude'
+                        || data.harnessClaudeCodeAgentsMode === 'opencode'
+                            ? data.harnessClaudeCodeAgentsMode
                             : undefined,
                 });
-                setCachedWarnOnOpenCodeHandoff(resolved.enginesClaudeCodeWarnOnOpenCodeHandoff);
-                setCachedClaudeAgentsMode(resolved.enginesClaudeCodeAgentsMode);
+                setCachedWarnOnHarnessSwitch(resolved.harnessWarnOnSwitch);
+                setCachedClaudeAgentsMode(resolved.harnessClaudeCodeAgentsMode);
             } catch {
                 // keep cached default
             }
@@ -1153,27 +1140,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
 
         if (outgoing.isEmpty) return;
 
-        // OpenCode → Claude Code billing notice before handoff Send.
-        if (currentSessionId && !queuedOnly && !handoffConfirmPassedRef.current) {
-            const pendingHandoff = getPendingHandoffTarget(currentSessionId);
-            if (pendingHandoff) {
-                const sourceHarnessId = resolveSourceHarnessId(currentSessionId);
-                if (
-                    pendingHandoff.harnessId !== sourceHarnessId
-                    && shouldShowHandoffBillingNotice({
-                        sourceHarnessId,
-                        targetHarnessId: pendingHandoff.harnessId,
-                        warnOnOpenCodeHandoff: getCachedWarnOnOpenCodeHandoff(),
-                    })
-                ) {
-                    handoffSubmitOptionsRef.current = options;
-                    setHandoffConfirmOpen(true);
-                    return;
-                }
-            }
-        }
-        handoffConfirmPassedRef.current = false;
-
         // Clear queue and input
         if (messageQueueTarget && queuedMessageId) {
             removeFromQueue(messageQueueTarget, queuedMessageId);
@@ -1259,11 +1225,11 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
             });
             if (command && commandIsAvailable) {
                 if (command.name === 'craft-goal' && !sessionSupports(currentSessionId, 'goal')) {
-                    toast.error(t('chat.engines.capability.goalUnsupported'));
+                    toast.error(t('chat.harness.capability.goalUnsupported'));
                     return;
                 }
                 if (command.name === 'schedule-task' && !sessionSupports(currentSessionId, 'openchamber-tool')) {
-                    toast.error(t('chat.engines.capability.openchamberToolUnsupported'));
+                    toast.error(t('chat.harness.capability.openchamberToolUnsupported'));
                     return;
                 }
                 const variables = buildCommandVariables(command, argument);
@@ -1413,18 +1379,18 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 const harnessMessage = error.code === 'CLAUDE_NOT_READY'
                     || error.code === 'CLAUDE_MISSING_CLI'
                     || error.code === 'CLAUDE_NEEDS_LOGIN'
-                    ? t('chat.engines.notReady')
+                    ? t('chat.harness.notReady')
                     : error.code === 'CLAUDE_SLASH_UNSUPPORTED'
-                        ? t('chat.engines.slashUnsupported')
+                        ? t('chat.harness.slashUnsupported')
                         : (rawMessage || t('chat.chatInput.toast.messageSendFailed'));
                 if (allAttachments.length > 0) {
                     useInputStore.getState().setAttachedFiles(allAttachments);
                 }
                 toast.error(harnessMessage, {
                     action: {
-                        label: t('chat.engines.manageEngines'),
+                        label: t('chat.harness.manageHarnesses'),
                         onClick: () => {
-                            setSettingsPage('engines');
+                            setSettingsPage('harness');
                             setSettingsDialogOpen(true);
                         },
                     },
@@ -2944,27 +2910,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
             projectDirectory={currentSessionDirectoryForSync ?? currentDirectory ?? null}
             submitting={reviewFlowSubmitting}
             onConfirm={handleStartReviewFlow}
-        />
-        <HandoffConfirmDialog
-            open={handoffConfirmOpen}
-            onOpenChange={setHandoffConfirmOpen}
-            onCancel={() => {
-                if (currentSessionId) {
-                    clearPendingHandoffTarget(currentSessionId);
-                }
-                handoffConfirmPassedRef.current = false;
-                handoffSubmitOptionsRef.current = undefined;
-            }}
-            onContinue={async (dontShowAgain) => {
-                if (shouldPersistHandoffWarnDismissal({ confirmed: true, dontShowAgain })) {
-                    setCachedWarnOnOpenCodeHandoff(false);
-                    void updateDesktopSettings({ enginesClaudeCodeWarnOnOpenCodeHandoff: false });
-                }
-                handoffConfirmPassedRef.current = true;
-                const resumeOptions = handoffSubmitOptionsRef.current;
-                handoffSubmitOptionsRef.current = undefined;
-                await handleSubmit(resumeOptions);
-            }}
         />
         <ToolOutputDialog
             popup={attachmentPreview}

@@ -20,8 +20,6 @@ export const CLAUDE_BUILTIN_SLASH_COMMANDS = Object.freeze([
 
 type ClaudeCapabilitiesStore = {
   bySessionId: Record<string, ClaudeSessionCapabilities>;
-  loadingBySessionId: Record<string, boolean>;
-  errorBySessionId: Record<string, string | null>;
   getCapabilities: (sessionId: string | null | undefined) => ClaudeSessionCapabilities | null;
   getSlashCommands: (sessionId: string | null | undefined) => readonly string[];
   refresh: (sessionId: string) => Promise<ClaudeSessionCapabilities | null>;
@@ -58,8 +56,6 @@ export function selectClaudeSlashCommands(
 
 export const useClaudeSessionCapabilitiesStore = create<ClaudeCapabilitiesStore>((set, get) => ({
   bySessionId: {},
-  loadingBySessionId: {},
-  errorBySessionId: {},
 
   getCapabilities: (sessionId) => {
     const id = typeof sessionId === 'string' ? sessionId.trim() : '';
@@ -72,10 +68,6 @@ export const useClaudeSessionCapabilitiesStore = create<ClaudeCapabilitiesStore>
   refresh: async (sessionId) => {
     const id = sessionId.trim();
     if (!id) return null;
-    set((state) => ({
-      loadingBySessionId: { ...state.loadingBySessionId, [id]: true },
-      errorBySessionId: { ...state.errorBySessionId, [id]: null },
-    }));
     try {
       const result = await harnessSessionCapabilities(id);
       const capabilities = result.capabilities;
@@ -84,34 +76,29 @@ export const useClaudeSessionCapabilitiesStore = create<ClaudeCapabilitiesStore>
       const slashCommands = capabilities.slashCommands.length > 0
         ? capabilities.slashCommands
         : (CLAUDE_BUILTIN_SLASH_COMMANDS as string[]);
-      set((state) => ({
-        bySessionId: {
-          ...state.bySessionId,
-          [id]: { ...capabilities, slashCommands },
-        },
-        loadingBySessionId: { ...state.loadingBySessionId, [id]: false },
-      }));
+      set((state) => {
+        // Overlapping refreshes can resolve out of order; `updatedAt` is the
+        // server's authoritative stamp, so an older answer never wins.
+        const prev = state.bySessionId[id];
+        if (prev && prev.updatedAt > capabilities.updatedAt) return state;
+        return {
+          bySessionId: {
+            ...state.bySessionId,
+            [id]: { ...capabilities, slashCommands },
+          },
+        };
+      });
       return get().bySessionId[id] ?? null;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to load Claude capabilities';
+    } catch {
       // Keep built-in slash defaults available on failure — do not clear prior success.
-      set((state) => ({
-        bySessionId: {
-          ...state.bySessionId,
-          [id]: state.bySessionId[id] ?? emptyCapabilities(id),
-        },
-        loadingBySessionId: { ...state.loadingBySessionId, [id]: false },
-        errorBySessionId: { ...state.errorBySessionId, [id]: message },
+      set((state) => (state.bySessionId[id] ? state : {
+        bySessionId: { ...state.bySessionId, [id]: emptyCapabilities(id) },
       }));
       return get().bySessionId[id] ?? null;
     }
   },
 
   reset: () => {
-    set({
-      bySessionId: {},
-      loadingBySessionId: {},
-      errorBySessionId: {},
-    });
+    set({ bySessionId: {} });
   },
 }));

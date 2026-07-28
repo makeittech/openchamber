@@ -18,6 +18,24 @@
 const bySessionId = new Map();
 
 /**
+ * Sessions are never explicitly unbound here, so the map is capped the same way
+ * `turn-snapshot.js` caps its own: an unbounded per-session Map would grow for
+ * the whole life of a long-running server process. Dropping an entry is safe —
+ * `getOrCreateSessionCapabilities` falls back to the built-in defaults and the
+ * next `system/init` repopulates it.
+ */
+const SESSION_LIMIT = 500;
+
+function evictOldest() {
+  /** @type {SessionCapabilities | null} */
+  let oldest = null;
+  for (const caps of bySessionId.values()) {
+    if (!oldest || caps.updatedAt < oldest.updatedAt) oldest = caps;
+  }
+  if (oldest) bySessionId.delete(oldest.sessionId);
+}
+
+/**
  * Built-in Claude Code slash commands that work without a TTY and are safe to
  * offer before the first system/init arrives.
  * @type {readonly string[]}
@@ -79,7 +97,7 @@ function sanitizeMcpServers(value) {
  * @param {string} sessionId
  * @returns {SessionCapabilities | null}
  */
-export function getSessionCapabilities(sessionId) {
+function getSessionCapabilities(sessionId) {
   if (typeof sessionId !== 'string' || !sessionId.trim()) return null;
   return bySessionId.get(sessionId.trim()) || null;
 }
@@ -155,6 +173,7 @@ export function updateSessionCapabilities(sessionId, input = {}) {
   if (foreignSessionId) next.foreignSessionId = foreignSessionId;
 
   bySessionId.set(id, next);
+  if (bySessionId.size > SESSION_LIMIT) evictOldest();
   return next;
 }
 

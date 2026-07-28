@@ -62,6 +62,32 @@ function storeOf(overrides: Partial<State>) {
 }
 
 describe("applyStaleToolPartSettlements", () => {
+  test("does not settle on a missing status before the status snapshot lands", () => {
+    const store = storeOf({
+      session_status: {},
+      part: { msg_a: [runningBash()] },
+    })
+
+    expect(applyStaleToolPartSettlements(store, 2_000)).toBe(0)
+    const part = store.getState().part.msg_a![0]
+    if (part.type !== "tool") throw new Error("expected a tool part")
+    expect(part.state.status).toBe("running")
+  })
+
+  test("settles on a missing status once the status snapshot has landed", () => {
+    // OpenCode's snapshot omits idle sessions, so absence is idle after load.
+    const store = storeOf({
+      session_status: {},
+      sessionStatusLoaded: true,
+      part: { msg_a: [runningBash()] },
+    })
+
+    expect(applyStaleToolPartSettlements(store, 2_000)).toBe(1)
+    const part = store.getState().part.msg_a![0]
+    if (part.type !== "tool") throw new Error("expected a tool part")
+    expect(part.state.status).toBe("error")
+  })
+
   test("settles running tools when the session is idle", () => {
     const store = storeOf({
       session_status: { ses_1: { type: "idle" } },

@@ -6,8 +6,8 @@ import type { ModelMetadata } from '@/types';
 import type {
   ClaudeEffort,
   ClaudePermissionMode,
-  EngineCatalog,
-  EngineCatalogModel,
+  HarnessCatalog,
+  HarnessCatalogModel,
   ExecutionTarget,
 } from '@/types/harness';
 import { CLAUDE_EFFORT_LEVELS, isClaudeEffort } from '@/types/harness';
@@ -43,7 +43,7 @@ const DEFAULT_CLAUDE_LIMIT = {
 } as const;
 
 export function buildClaudeModelMetadata(
-  model: Pick<EngineCatalogModel, 'id' | 'name' | 'supportsImages' | 'supportsDocuments' | 'reasoning' | 'toolCall' | 'limit' | 'modalities'>,
+  model: Pick<HarnessCatalogModel, 'id' | 'name' | 'supportsImages' | 'supportsDocuments' | 'reasoning' | 'toolCall' | 'limit' | 'modalities'>,
 ): ModelMetadata {
   const supportsImages = model.supportsImages !== false;
   const inputModalities = model.modalities?.input?.length
@@ -75,7 +75,7 @@ export function buildClaudeModelMetadata(
 }
 
 export function buildClaudeModelMetadataMap(
-  models: readonly EngineCatalogModel[] | undefined,
+  models: readonly HarnessCatalogModel[] | undefined,
 ): Map<string, ModelMetadata> {
   const map = new Map<string, ModelMetadata>();
   for (const model of models ?? []) {
@@ -85,9 +85,9 @@ export function buildClaudeModelMetadataMap(
 }
 
 export function resolveClaudeCatalogModel(
-  models: readonly EngineCatalogModel[] | undefined,
+  models: readonly HarnessCatalogModel[] | undefined,
   modelRef: string,
-): EngineCatalogModel {
+): HarnessCatalogModel {
   const match = models?.find((entry) => entry.id === modelRef);
   if (match) return match;
   return {
@@ -111,7 +111,7 @@ export function resolveClaudeCatalogModel(
  */
 export function resolveActiveClaudeModel(
   target: Extract<ExecutionTarget, { harnessId: 'claude-code' }>,
-  catalog: EngineCatalog | null | undefined,
+  catalog: HarnessCatalog | null | undefined,
 ): { modelRef: string; metadata: ModelMetadata } {
   const modelRef = typeof target.modelRef === 'string' && target.modelRef.trim()
     ? target.modelRef.trim()

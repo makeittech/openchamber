@@ -1,6 +1,6 @@
 /**
- * Harness / engine contracts for OpenChamber execution backends.
- * UI copy uses "Engine"; code identifiers use harnessId.
+ * Harness contracts for OpenChamber execution backends.
+ * UI copy uses "Harness"; code identifiers use harnessId.
  */
 
 export type HarnessId = 'opencode' | 'claude-code';
@@ -77,7 +77,7 @@ export type HarnessDescriptor = {
   };
 };
 
-export type EngineCatalogModel = {
+export type HarnessCatalogModel = {
   id: string;
   name: string;
   supportsImages?: boolean;
@@ -94,20 +94,20 @@ export type EngineCatalogModel = {
   };
 };
 
-export type EngineCatalogSection = {
+export type HarnessCatalogSection = {
   id: string;
   name: string;
   kind: 'provider' | 'profile' | 'models';
-  models: EngineCatalogModel[];
+  models: HarnessCatalogModel[];
 };
 
 /** Server JSON shape for GET /api/harness and GET /api/harness/:id */
-export type EngineCatalog = {
-  engine: HarnessDescriptor;
+export type HarnessCatalog = {
+  descriptor: HarnessDescriptor;
   status: HarnessRuntimeStatus;
   statusDetail?: string;
   version?: string;
-  sections: EngineCatalogSection[];
+  sections: HarnessCatalogSection[];
 };
 
 export const HARNESS_IDS: readonly HarnessId[] = ['opencode', 'claude-code'] as const;

@@ -2300,7 +2300,7 @@ export const useUIStore = create<UIStore>()(
       {
         name: 'ui-store',
         storage: createDeferredSafeJSONStorage(),
-        version: 12,
+        version: 13,
         migrate: (persistedState, version) => {
           if (!persistedState || typeof persistedState !== 'object') {
             return persistedState;
@@ -2312,6 +2312,11 @@ export const useUIStore = create<UIStore>()(
             if (state.desktopWindowControlsPosition === 'auto' || state.desktopWindowControlsPosition == null) {
               state.desktopWindowControlsPosition = 'right';
             }
+          }
+
+          // v12 -> v13: settings slug 'engines' was renamed to 'harness'.
+          if (version < 13 && state.settingsPage === 'engines') {
+            state.settingsPage = 'harness';
           }
 
           // v10 -> v11: move the previous terminal font default forward.

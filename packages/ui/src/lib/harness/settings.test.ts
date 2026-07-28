@@ -1,70 +1,103 @@
 import { describe, expect, test } from 'bun:test';
 
 import {
-  ENGINES_SETTINGS_DEFAULTS,
-  sanitizeEnginesSettings,
-  withEnginesSettingsDefaults,
+  HARNESS_SETTINGS_DEFAULTS,
+  sanitizeHarnessSettings,
+  withHarnessSettingsDefaults,
 } from './settings';
 
-describe('sanitizeEnginesSettings', () => {
+describe('sanitizeHarnessSettings', () => {
   test('keeps valid harness id, booleans, and agents mode', () => {
-    expect(sanitizeEnginesSettings({
-      enginesDefaultHarnessId: 'claude-code',
-      enginesClaudeCodeWarnOnOpenCodeHandoff: false,
-      enginesClaudeCodeEnabled: true,
-      enginesClaudeCodeAgentsMode: 'claude',
+    expect(sanitizeHarnessSettings({
+      harnessDefaultId: 'claude-code',
+      harnessWarnOnSwitch: false,
+      harnessClaudeCodeEnabled: true,
+      harnessClaudeCodeAgentsMode: 'claude',
     })).toEqual({
-      enginesDefaultHarnessId: 'claude-code',
-      enginesClaudeCodeWarnOnOpenCodeHandoff: false,
-      enginesClaudeCodeEnabled: true,
-      enginesClaudeCodeAgentsMode: 'claude',
+      harnessDefaultId: 'claude-code',
+      harnessWarnOnSwitch: false,
+      harnessClaudeCodeEnabled: true,
+      harnessClaudeCodeAgentsMode: 'claude',
     });
   });
 
   test('invalid harness id falls back to opencode', () => {
-    expect(sanitizeEnginesSettings({
-      enginesDefaultHarnessId: 'codex-cli',
+    expect(sanitizeHarnessSettings({
+      harnessDefaultId: 'codex-cli',
     })).toEqual({
-      enginesDefaultHarnessId: 'opencode',
+      harnessDefaultId: 'opencode',
     });
   });
 
   test('invalid agents mode falls back to opencode', () => {
-    expect(sanitizeEnginesSettings({
-      enginesClaudeCodeAgentsMode: 'cursor',
+    expect(sanitizeHarnessSettings({
+      harnessClaudeCodeAgentsMode: 'cursor',
     })).toEqual({
-      enginesClaudeCodeAgentsMode: 'opencode',
+      harnessClaudeCodeAgentsMode: 'opencode',
     });
   });
 
   test('omits wrong-typed boolean fields', () => {
-    expect(sanitizeEnginesSettings({
-      enginesClaudeCodeWarnOnOpenCodeHandoff: 'yes',
-      enginesClaudeCodeEnabled: 1,
+    expect(sanitizeHarnessSettings({
+      harnessWarnOnSwitch: 'yes',
+      harnessClaudeCodeEnabled: 1,
     })).toEqual({});
   });
 
   test('omits missing fields', () => {
-    expect(sanitizeEnginesSettings({})).toEqual({});
+    expect(sanitizeHarnessSettings({})).toEqual({});
+  });
+
+  test('migrates legacy engines* keys when new keys are absent', () => {
+    expect(sanitizeHarnessSettings({
+      enginesDefaultHarnessId: 'claude-code',
+      enginesClaudeCodeWarnOnOpenCodeHandoff: false,
+      enginesClaudeCodeEnabled: false,
+      enginesClaudeCodeAgentsMode: 'claude',
+    })).toEqual({
+      harnessDefaultId: 'claude-code',
+      harnessWarnOnSwitch: false,
+      harnessClaudeCodeEnabled: false,
+      harnessClaudeCodeAgentsMode: 'claude',
+    });
+  });
+
+  test('new keys win over legacy engines* keys', () => {
+    expect(sanitizeHarnessSettings({
+      harnessWarnOnSwitch: true,
+      enginesClaudeCodeWarnOnOpenCodeHandoff: false,
+    })).toEqual({
+      harnessWarnOnSwitch: true,
+    });
+  });
+
+  test('legacy invalid values fall back like new ones', () => {
+    expect(sanitizeHarnessSettings({
+      enginesDefaultHarnessId: 'codex-cli',
+      enginesClaudeCodeAgentsMode: 'cursor',
+    })).toEqual({
+      harnessDefaultId: 'opencode',
+      harnessClaudeCodeAgentsMode: 'opencode',
+    });
   });
 });
 
-describe('withEnginesSettingsDefaults', () => {
+describe('withHarnessSettingsDefaults', () => {
   test('applies product defaults when empty', () => {
-    expect(withEnginesSettingsDefaults(undefined)).toEqual(ENGINES_SETTINGS_DEFAULTS);
-    expect(withEnginesSettingsDefaults({})).toEqual(ENGINES_SETTINGS_DEFAULTS);
+    expect(withHarnessSettingsDefaults(undefined)).toEqual(HARNESS_SETTINGS_DEFAULTS);
+    expect(withHarnessSettingsDefaults({})).toEqual(HARNESS_SETTINGS_DEFAULTS);
   });
 
   test('preserves sanitized overrides', () => {
-    expect(withEnginesSettingsDefaults({
-      enginesDefaultHarnessId: 'claude-code',
-      enginesClaudeCodeWarnOnOpenCodeHandoff: false,
-      enginesClaudeCodeAgentsMode: 'claude',
+    expect(withHarnessSettingsDefaults({
+      harnessDefaultId: 'claude-code',
+      harnessWarnOnSwitch: false,
+      harnessClaudeCodeAgentsMode: 'claude',
     })).toEqual({
-      enginesDefaultHarnessId: 'claude-code',
-      enginesClaudeCodeWarnOnOpenCodeHandoff: false,
-      enginesClaudeCodeEnabled: true,
-      enginesClaudeCodeAgentsMode: 'claude',
+      harnessDefaultId: 'claude-code',
+      harnessWarnOnSwitch: false,
+      harnessClaudeCodeEnabled: true,
+      harnessClaudeCodeAgentsMode: 'claude',
     });
   });
 });

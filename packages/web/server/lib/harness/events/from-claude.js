@@ -162,15 +162,29 @@ export function createClaudeMapperContext(input) {
   };
 }
 
+const SUBAGENT_SESSION_PREFIX = 'ses_claude_sub_';
+
 /**
  * Deterministic child session id for a Claude Agent tool_use call.
  * @param {string} parentSessionId
  * @param {string} toolUseId
  * @returns {string}
  */
-export function claudeSubagentSessionId(parentSessionId, toolUseId) {
+function claudeSubagentSessionId(parentSessionId, toolUseId) {
   const safeTool = String(toolUseId || 'agent').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24) || 'agent';
-  return `ses_claude_sub_${parentSessionId.slice(-12)}_${safeTool}`;
+  return `${SUBAGENT_SESSION_PREFIX}${parentSessionId.slice(-12)}_${safeTool}`;
+}
+
+/**
+ * Subagent sessions exist only in the transcript: no `session.status` is ever
+ * emitted for them, so a turn snapshot keyed by one would sit `idle` forever
+ * and consume the bounded snapshot budget that real sessions need.
+ *
+ * @param {string} sessionId
+ * @returns {boolean}
+ */
+export function isClaudeSubagentSessionId(sessionId) {
+  return typeof sessionId === 'string' && sessionId.startsWith(SUBAGENT_SESSION_PREFIX);
 }
 
 /**
@@ -383,7 +397,7 @@ export function buildUserMessageEvents(ctx, text, files) {
  * @param {unknown} usage
  * @returns {{ input: number, output: number, reasoning: number, cache: { read: number, write: number } }}
  */
-export function mapClaudeUsageToTokens(usage) {
+function mapClaudeUsageToTokens(usage) {
   const source = usage && typeof usage === 'object' ? usage : {};
   const num = (value) => {
     const n = Number(value);
@@ -768,18 +782,18 @@ function finalizeOpenSegments(ctx) {
 }
 
 /**
- * Terminal events for a turn cut short by abort.
+ * Terminal events for one mapper context — the parent turn, or a subagent
+ * projected onto it by `withSubagentContext`.
  *
  * Without these, every tool part left `running` and the open text/reasoning
- * segment keep their spinner in the transcript forever — the abort marker lands
- * on a fresh message and never closes the parts already on screen.
+ * segment keep their spinner in the transcript forever — the closing marker
+ * lands on a fresh message and never closes the parts already on screen.
  *
  * @param {ClaudeMapperContext} ctx
- * @param {string} [reason]
+ * @param {string} reason
  * @returns {object[]}
  */
-export function buildTurnAbortEvents(ctx, reason = 'Aborted by user') {
-  if (!ctx || typeof ctx !== 'object') return [];
+function buildContextClosureEvents(ctx, reason) {
   const events = finalizeOpenSegments(ctx);
   const now = Date.now();
 
@@ -812,6 +826,43 @@ export function buildTurnAbortEvents(ctx, reason = 'Aborted by user') {
   }
 
   return events;
+}
+
+/**
+ * Close every live subagent context.
+ *
+ * Subagent tool calls and text segments live in `ctx.subagentByToolUseId`, not
+ * in `ctx.toolParts`, so walking the parent alone leaves a nested transcript
+ * spinning forever once the turn stops.
+ *
+ * @param {ClaudeMapperContext} ctx
+ * @param {string} reason
+ * @returns {object[]}
+ */
+function buildSubagentClosureEvents(ctx, reason) {
+  const events = [];
+  for (const child of ctx.subagentByToolUseId?.values() ?? []) {
+    events.push(...withSubagentContext(ctx, child, () => [
+      ...buildContextClosureEvents(ctx, reason),
+      { type: 'message.updated', properties: { info: assistantInfo(ctx, true) } },
+    ]));
+  }
+  return events;
+}
+
+/**
+ * Terminal events for a turn cut short by abort, subagents first.
+ *
+ * @param {ClaudeMapperContext} ctx
+ * @param {string} [reason]
+ * @returns {object[]}
+ */
+export function buildTurnAbortEvents(ctx, reason = 'Aborted by user') {
+  if (!ctx || typeof ctx !== 'object') return [];
+  return [
+    ...buildSubagentClosureEvents(ctx, reason),
+    ...buildContextClosureEvents(ctx, reason),
+  ];
 }
 
 /**
@@ -938,14 +989,18 @@ export function mapClaudeMessageToEvents(ctx, message) {
             nested.push(...mapContentBlock(ctx, block));
           }
         }
-        if (message.error && !parentToolUseId) {
-          nested.push({
-            type: 'session.status',
-            properties: {
-              sessionID: ctx.sessionId,
-              status: { type: 'idle' },
-            },
-          });
+        if (message.error) {
+          // Only the parent turn owns session busy/idle. A subagent error still
+          // has to land on its own message instead of vanishing silently.
+          if (!parentToolUseId) {
+            nested.push({
+              type: 'session.status',
+              properties: {
+                sessionID: ctx.sessionId,
+                status: { type: 'idle' },
+              },
+            });
+          }
           nested.push({
             type: 'message.updated',
             properties: {
@@ -994,7 +1049,10 @@ export function mapClaudeMessageToEvents(ctx, message) {
       if (!ctx.textPartStarted && resultText) {
         events.push(...segmentDeltaEvents(ctx, 'text', resultText));
       }
-      events.push(...finalizeOpenSegments(ctx));
+      // `result` is terminal: anything still open can never settle afterwards.
+      // Close nested subagent transcripts before the parent's own parts.
+      events.push(...buildSubagentClosureEvents(ctx, 'Turn ended'));
+      events.push(...buildContextClosureEvents(ctx, 'Turn ended'));
       if (hasContent) {
         events.push({
           type: 'message.updated',

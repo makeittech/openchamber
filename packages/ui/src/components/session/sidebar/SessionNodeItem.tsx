@@ -20,7 +20,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { isSessionPinned, type SessionPinnedTarget } from '@/stores/useSessionPinnedStore';
 import { Icon } from "@/components/icon/Icon";
-import { EngineLogo } from '@/components/ui/EngineLogo';
+import { HarnessLogo } from '@/components/ui/HarnessLogo';
 import { buildExportFilename, downloadAsMarkdown, formatSessionAsMarkdown, getExportRevealLabelKey, revealExportedMarkdown, saveAsMarkdownDesktop } from '@/lib/exportSession';
 import type { ChildSessionExport } from '@/lib/exportSession';
 import { buildSessionMessageRecordsSnapshot, useDirectoryStore, useGlobalSessionStatus, useSessionPermissions } from '@/sync/sync-context';
@@ -459,10 +459,10 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   const claudeEngineGlyph = isClaudeCodeSession ? (
     <span
       className="inline-flex flex-shrink-0 items-center text-muted-foreground"
-      title={t('sessions.sidebar.session.engine.claudeCodeTooltip')}
-      aria-label={t('sessions.sidebar.session.engine.claudeCodeAria')}
+      title={t('sessions.sidebar.session.harness.claudeCodeTooltip')}
+      aria-label={t('sessions.sidebar.session.harness.claudeCodeAria')}
     >
-      <EngineLogo harnessId="claude-code" className="h-3 w-3" />
+      <HarnessLogo harnessId="claude-code" className="h-3 w-3" />
     </span>
   ) : null;
   const hasChildren = node.children.length > 0;
@@ -1212,7 +1212,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                         : revealPaddingClass,
                     )}
                   >
-                    <div className={cn('flex w-full items-center min-w-0 flex-1 overflow-hidden', isMinimalMode ? 'gap-1' : 'gap-1')}>
+                    <div className="flex w-full items-center min-w-0 flex-1 gap-1 overflow-hidden">
                       <div className={cn('flex min-w-0 flex-1 items-center gap-1 overflow-hidden', isActive ? 'text-primary' : 'text-foreground')}>
                         {claudeEngineGlyph}
                         {/* Unread emphasis is color-only: a font-weight change

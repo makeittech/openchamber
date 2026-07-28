@@ -11,41 +11,42 @@ export function isClaudeAgentsMode(value: unknown): value is ClaudeAgentsMode {
     && (CLAUDE_AGENTS_MODES as readonly string[]).includes(value);
 }
 
-export type EnginesSettingsFields = {
-  enginesDefaultHarnessId: HarnessId;
-  enginesClaudeCodeWarnOnOpenCodeHandoff: boolean;
-  enginesClaudeCodeEnabled: boolean;
+export type HarnessSettingsFields = {
+  harnessDefaultId: HarnessId;
+  /** Confirm dialog when switching harness on a session with messages. Default true. */
+  harnessWarnOnSwitch: boolean;
+  harnessClaudeCodeEnabled: boolean;
   /**
    * Claude Code agent source:
    * - `opencode` — OpenChamber/OpenCode agents drive permissionMode + system prompt append
    * - `claude` — native Claude Code agents / prompts / permission settings
    */
-  enginesClaudeCodeAgentsMode: ClaudeAgentsMode;
+  harnessClaudeCodeAgentsMode: ClaudeAgentsMode;
 };
 
-export const ENGINES_SETTINGS_DEFAULTS: EnginesSettingsFields = {
-  enginesDefaultHarnessId: 'opencode',
-  enginesClaudeCodeWarnOnOpenCodeHandoff: true,
-  enginesClaudeCodeEnabled: true,
+export const HARNESS_SETTINGS_DEFAULTS: HarnessSettingsFields = {
+  harnessDefaultId: 'opencode',
+  harnessWarnOnSwitch: true,
+  harnessClaudeCodeEnabled: true,
   // Preserve documented v1 behavior: OpenCode agents derive Claude permissionMode.
-  enginesClaudeCodeAgentsMode: 'opencode',
+  harnessClaudeCodeAgentsMode: 'opencode',
 };
 
-/** In-memory mirror of the handoff billing warn toggle for send-path gates. */
-let cachedWarnOnOpenCodeHandoff: boolean =
-  ENGINES_SETTINGS_DEFAULTS.enginesClaudeCodeWarnOnOpenCodeHandoff;
+/** In-memory mirror of the harness-switch confirm toggle for picker/send gates. */
+let cachedWarnOnHarnessSwitch: boolean =
+  HARNESS_SETTINGS_DEFAULTS.harnessWarnOnSwitch;
 
-export function getCachedWarnOnOpenCodeHandoff(): boolean {
-  return cachedWarnOnOpenCodeHandoff;
+export function getCachedWarnOnHarnessSwitch(): boolean {
+  return cachedWarnOnHarnessSwitch;
 }
 
-export function setCachedWarnOnOpenCodeHandoff(enabled: boolean): void {
-  cachedWarnOnOpenCodeHandoff = enabled;
+export function setCachedWarnOnHarnessSwitch(enabled: boolean): void {
+  cachedWarnOnHarnessSwitch = enabled;
 }
 
 /** In-memory mirror for Claude send-path agent inheritance (no per-send settings fetch). */
 let cachedClaudeAgentsMode: ClaudeAgentsMode =
-  ENGINES_SETTINGS_DEFAULTS.enginesClaudeCodeAgentsMode;
+  HARNESS_SETTINGS_DEFAULTS.harnessClaudeCodeAgentsMode;
 
 export function getCachedClaudeAgentsMode(): ClaudeAgentsMode {
   return cachedClaudeAgentsMode;
@@ -55,52 +56,57 @@ export function setCachedClaudeAgentsMode(mode: ClaudeAgentsMode): void {
   cachedClaudeAgentsMode = mode;
 }
 
-export type SanitizedEnginesSettings = Partial<EnginesSettingsFields>;
+export type SanitizedHarnessSettings = Partial<HarnessSettingsFields>;
 
 /**
- * Sanitize persisted engines settings fields.
+ * Sanitize persisted harness settings fields.
  * Invalid harness ids fall back to `opencode`. Wrong-typed fields are omitted.
+ * Legacy `engines*` keys are accepted (read migration); output uses new keys only.
  */
-export function sanitizeEnginesSettings(candidate: Record<string, unknown>): SanitizedEnginesSettings {
-  const result: SanitizedEnginesSettings = {};
+export function sanitizeHarnessSettings(candidate: Record<string, unknown>): SanitizedHarnessSettings {
+  const result: SanitizedHarnessSettings = {};
 
-  if (candidate.enginesDefaultHarnessId !== undefined) {
-    result.enginesDefaultHarnessId = isHarnessId(candidate.enginesDefaultHarnessId)
-      ? candidate.enginesDefaultHarnessId
-      : ENGINES_SETTINGS_DEFAULTS.enginesDefaultHarnessId;
+  const defaultId = candidate.harnessDefaultId ?? candidate.enginesDefaultHarnessId;
+  if (defaultId !== undefined) {
+    result.harnessDefaultId = isHarnessId(defaultId)
+      ? defaultId
+      : HARNESS_SETTINGS_DEFAULTS.harnessDefaultId;
   }
 
-  if (typeof candidate.enginesClaudeCodeWarnOnOpenCodeHandoff === 'boolean') {
-    result.enginesClaudeCodeWarnOnOpenCodeHandoff = candidate.enginesClaudeCodeWarnOnOpenCodeHandoff;
+  const warnOnSwitch = candidate.harnessWarnOnSwitch ?? candidate.enginesClaudeCodeWarnOnOpenCodeHandoff;
+  if (typeof warnOnSwitch === 'boolean') {
+    result.harnessWarnOnSwitch = warnOnSwitch;
   }
 
-  if (typeof candidate.enginesClaudeCodeEnabled === 'boolean') {
-    result.enginesClaudeCodeEnabled = candidate.enginesClaudeCodeEnabled;
+  const claudeCodeEnabled = candidate.harnessClaudeCodeEnabled ?? candidate.enginesClaudeCodeEnabled;
+  if (typeof claudeCodeEnabled === 'boolean') {
+    result.harnessClaudeCodeEnabled = claudeCodeEnabled;
   }
 
-  if (candidate.enginesClaudeCodeAgentsMode !== undefined) {
-    if (isClaudeAgentsMode(candidate.enginesClaudeCodeAgentsMode)) {
-      result.enginesClaudeCodeAgentsMode = candidate.enginesClaudeCodeAgentsMode;
+  const agentsMode = candidate.harnessClaudeCodeAgentsMode ?? candidate.enginesClaudeCodeAgentsMode;
+  if (agentsMode !== undefined) {
+    if (isClaudeAgentsMode(agentsMode)) {
+      result.harnessClaudeCodeAgentsMode = agentsMode;
     } else {
-      result.enginesClaudeCodeAgentsMode = ENGINES_SETTINGS_DEFAULTS.enginesClaudeCodeAgentsMode;
+      result.harnessClaudeCodeAgentsMode = HARNESS_SETTINGS_DEFAULTS.harnessClaudeCodeAgentsMode;
     }
   }
 
   return result;
 }
 
-/** Fill missing engines settings with product defaults. */
-export function withEnginesSettingsDefaults(
-  partial: SanitizedEnginesSettings | null | undefined,
-): EnginesSettingsFields {
+/** Fill missing harness settings with product defaults. */
+export function withHarnessSettingsDefaults(
+  partial: SanitizedHarnessSettings | null | undefined,
+): HarnessSettingsFields {
   return {
-    enginesDefaultHarnessId: partial?.enginesDefaultHarnessId ?? ENGINES_SETTINGS_DEFAULTS.enginesDefaultHarnessId,
-    enginesClaudeCodeWarnOnOpenCodeHandoff:
-      partial?.enginesClaudeCodeWarnOnOpenCodeHandoff
-      ?? ENGINES_SETTINGS_DEFAULTS.enginesClaudeCodeWarnOnOpenCodeHandoff,
-    enginesClaudeCodeEnabled:
-      partial?.enginesClaudeCodeEnabled ?? ENGINES_SETTINGS_DEFAULTS.enginesClaudeCodeEnabled,
-    enginesClaudeCodeAgentsMode:
-      partial?.enginesClaudeCodeAgentsMode ?? ENGINES_SETTINGS_DEFAULTS.enginesClaudeCodeAgentsMode,
+    harnessDefaultId: partial?.harnessDefaultId ?? HARNESS_SETTINGS_DEFAULTS.harnessDefaultId,
+    harnessWarnOnSwitch:
+      partial?.harnessWarnOnSwitch
+      ?? HARNESS_SETTINGS_DEFAULTS.harnessWarnOnSwitch,
+    harnessClaudeCodeEnabled:
+      partial?.harnessClaudeCodeEnabled ?? HARNESS_SETTINGS_DEFAULTS.harnessClaudeCodeEnabled,
+    harnessClaudeCodeAgentsMode:
+      partial?.harnessClaudeCodeAgentsMode ?? HARNESS_SETTINGS_DEFAULTS.harnessClaudeCodeAgentsMode,
   };
 }

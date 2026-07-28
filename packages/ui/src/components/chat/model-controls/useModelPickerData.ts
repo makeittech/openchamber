@@ -8,14 +8,14 @@
 
 import React from 'react';
 import type {
-    ModelPickerEngineOption,
+    ModelPickerHarnessOption,
     ModelPickerLabels,
     ModelPickerProvider,
 } from '@/components/model-picker/ModelPickerList';
-import type { EngineCatalog, EngineCatalogModel, HarnessId } from '@/types/harness';
+import type { HarnessCatalog, HarnessCatalogModel, HarnessId } from '@/types/harness';
 import type { I18nContextValue } from '@/lib/i18n/react-context';
 import {
-    buildEngineOptions,
+    buildHarnessOptions,
     buildModelPickerLabels,
     buildPickerProviders,
     selectPickerModel,
@@ -26,7 +26,7 @@ type TargetListEntry = { target: { harnessId: HarnessId } };
 
 export type ModelPickerData<TEntry extends TargetListEntry> = {
     labels: ModelPickerLabels;
-    engineOptions: ModelPickerEngineOption[];
+    harnessOptions: ModelPickerHarnessOption[];
     pickerProviders: ModelPickerProvider[];
     pickerFavoriteModels: TEntry[];
     pickerRecentModels: TEntry[];
@@ -37,9 +37,9 @@ export type UseModelPickerDataArgs<TEntry extends TargetListEntry> = {
     t: I18nContextValue['t'];
     claudePickerProviderId: string;
     pickerHarnessId: HarnessId;
-    enginesClaudeCodeEnabled: boolean;
-    claudeCatalog: EngineCatalog | null | undefined;
-    claudeCatalogModels: readonly EngineCatalogModel[];
+    harnessClaudeCodeEnabled: boolean;
+    claudeCatalog: HarnessCatalog | null | undefined;
+    claudeCatalogModels: readonly HarnessCatalogModel[];
     claudeModelRef: string;
     providers: unknown[];
     favoriteModelsList: TEntry[];
@@ -55,7 +55,7 @@ export function useModelPickerData<TEntry extends TargetListEntry>(
         t,
         claudePickerProviderId,
         pickerHarnessId,
-        enginesClaudeCodeEnabled,
+        harnessClaudeCodeEnabled,
         claudeCatalog,
         claudeCatalogModels,
         claudeModelRef,
@@ -68,9 +68,9 @@ export function useModelPickerData<TEntry extends TargetListEntry>(
 
     const labels = React.useMemo(() => buildModelPickerLabels(t), [t]);
 
-    const engineOptions = React.useMemo(
-        () => buildEngineOptions({ t, pickerHarnessId, enginesClaudeCodeEnabled, claudeCatalog }),
-        [claudeCatalog, enginesClaudeCodeEnabled, pickerHarnessId, t],
+    const harnessOptions = React.useMemo(
+        () => buildHarnessOptions({ t, pickerHarnessId, harnessClaudeCodeEnabled, claudeCatalog }),
+        [claudeCatalog, harnessClaudeCodeEnabled, pickerHarnessId, t],
     );
 
     const pickerProviders = React.useMemo(
@@ -106,7 +106,7 @@ export function useModelPickerData<TEntry extends TargetListEntry>(
 
     return {
         labels,
-        engineOptions,
+        harnessOptions,
         pickerProviders,
         pickerFavoriteModels,
         pickerRecentModels,

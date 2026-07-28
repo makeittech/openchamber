@@ -64,7 +64,7 @@ export const SessionGoalButton: React.FC<SessionGoalButtonProps> = React.memo(({
   }
 
   if (!supportsGoal) {
-    const unsupportedLabel = t('chat.engines.capability.goalUnsupported');
+    const unsupportedLabel = t('chat.harness.capability.goalUnsupported');
     const disabledButton = (
       <button
         type="button"

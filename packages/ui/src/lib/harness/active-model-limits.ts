@@ -3,11 +3,11 @@
  * When Claude Code is selected, OpenCode getCurrentModel() limits must not be used.
  */
 
-import type { EngineCatalog } from '@/types/harness';
+import type { HarnessCatalog } from '@/types/harness';
 import { resolveActiveClaudeModel } from '@/lib/harness/claude-models';
 import {
-  resolveActiveEngineTarget,
-  type ActiveEngineTargetArgs,
+  resolveActiveHarnessTarget,
+  type ActiveHarnessTargetArgs,
 } from '@/lib/harness/resolve-execution-target';
 
 export type ActiveModelLimits = {
@@ -17,14 +17,14 @@ export type ActiveModelLimits = {
   source: 'claude-code' | 'opencode';
 };
 
-export function resolveActiveModelLimits(args: ActiveEngineTargetArgs & {
-  claudeCatalog?: EngineCatalog | null;
-  /** OpenCode live/current model limits when engine is OpenCode. */
+export function resolveActiveModelLimits(args: ActiveHarnessTargetArgs & {
+  claudeCatalog?: HarnessCatalog | null;
+  /** OpenCode live/current model limits when harness is OpenCode. */
   openCodeContext?: number | null;
   openCodeOutput?: number | null;
   openCodeModelName?: string | null;
 }): ActiveModelLimits {
-  const target = resolveActiveEngineTarget(args);
+  const target = resolveActiveHarnessTarget(args);
 
   if (target?.harnessId === 'claude-code') {
     const { modelRef, metadata } = resolveActiveClaudeModel(target, args.claudeCatalog);

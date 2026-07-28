@@ -1,36 +1,36 @@
 import { describe, expect, test } from 'bun:test';
 import {
-    buildEngineOptions,
+    buildHarnessOptions,
     buildPickerProviders,
     selectPickerModel,
 } from './modelPickerData';
-import type { EngineCatalog, EngineCatalogModel } from '@/types/harness';
+import type { HarnessCatalog, HarnessCatalogModel } from '@/types/harness';
 
 /** Echoes the key so assertions read against stable identifiers. */
 const t = ((key: string) => key) as never;
 
-const catalog = (status: EngineCatalog['status']) => ({
+const catalog = (status: HarnessCatalog['status']) => ({
     engine: { id: 'claude-code' },
     status,
     sections: [],
-} as unknown as EngineCatalog);
+} as unknown as HarnessCatalog);
 
-describe('buildEngineOptions', () => {
+describe('buildHarnessOptions', () => {
     test('omits Claude entirely when the engine is disabled', () => {
-        const options = buildEngineOptions({
+        const options = buildHarnessOptions({
             t,
             pickerHarnessId: 'opencode',
-            enginesClaudeCodeEnabled: false,
+            harnessClaudeCodeEnabled: false,
             claudeCatalog: catalog('ready'),
         });
         expect(options.map((o) => o.id)).toEqual(['opencode']);
     });
 
     test('marks the active engine as selected', () => {
-        const options = buildEngineOptions({
+        const options = buildHarnessOptions({
             t,
             pickerHarnessId: 'claude-code',
-            enginesClaudeCodeEnabled: true,
+            harnessClaudeCodeEnabled: true,
             claudeCatalog: catalog('ready'),
         });
         expect(options.find((o) => o.id === 'claude-code')?.selected).toBe(true);
@@ -38,23 +38,23 @@ describe('buildEngineOptions', () => {
     });
 
     test('shows loading rather than a ready status before detection answers', () => {
-        const options = buildEngineOptions({
+        const options = buildHarnessOptions({
             t,
             pickerHarnessId: 'opencode',
-            enginesClaudeCodeEnabled: true,
+            harnessClaudeCodeEnabled: true,
             claudeCatalog: null,
         });
-        expect(options[1]?.statusLabel).toBe('settings.engines.sidebar.status.loading');
+        expect(options[1]?.statusLabel).toBe('settings.harness.sidebar.status.loading');
     });
 
     test('maps a failed detect status through to the label', () => {
-        const options = buildEngineOptions({
+        const options = buildHarnessOptions({
             t,
             pickerHarnessId: 'opencode',
-            enginesClaudeCodeEnabled: true,
+            harnessClaudeCodeEnabled: true,
             claudeCatalog: catalog('missing-cli'),
         });
-        expect(options[1]?.statusLabel).toBe('settings.engines.sidebar.status.missingCli');
+        expect(options[1]?.statusLabel).toBe('settings.harness.sidebar.status.missingCli');
     });
 });
 
@@ -66,7 +66,7 @@ describe('buildPickerProviders', () => {
         modalities: { input: ['text'], output: ['text'] },
         reasoning: true,
         toolCall: true,
-    }] as unknown as EngineCatalogModel[];
+    }] as unknown as HarnessCatalogModel[];
 
     test('passes OpenCode providers through untouched', () => {
         const providers = [{ id: 'anthropic', name: 'Anthropic', models: [] }];

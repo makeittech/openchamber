@@ -301,7 +301,7 @@ OpenChamber tool injection.
 - `createFeatureRoutesRuntime(dependencies)`: creates runtime for main feature route registration orchestration.
 - Returned API:
   - `registerRoutes(app, routeDependencies)`
-- Registers OpenChamber feature route families (quota, small-model, **harness/engines**, session-goal, git, fs, …) before the generic OpenCode proxy. Harness routes own `/api/harness/*` and receive `getBroadcastGlobalUiEvent` + `getOpenCodeReady` from the server index for Claude event fan-out; see `packages/web/server/lib/harness/DOCUMENTATION.md`.
+- Registers OpenChamber feature route families (quota, small-model, **harness**, session-goal, git, fs, …) before the generic OpenCode proxy. Harness routes own `/api/harness/*` and receive `getBroadcastGlobalUiEvent` + `getOpenCodeReady` from the server index for Claude event fan-out; see `packages/web/server/lib/harness/DOCUMENTATION.md`.
 
 ## Public exports (opencode-resolution-runtime.js)
 - `createOpenCodeResolutionRuntime(dependencies)`: creates runtime for OpenCode binary/source snapshot resolution.

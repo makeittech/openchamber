@@ -1,6 +1,6 @@
 /**
- * Harness (engine) descriptors and capability matrix.
- * User-facing copy uses "Engine"; internal IDs use harnessId.
+ * Harness descriptors and capability matrix.
+ * User-facing copy uses "Harness"; internal IDs use harnessId.
  */
 
 /** @typedef {'opencode' | 'claude-code'} HarnessId */

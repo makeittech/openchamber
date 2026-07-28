@@ -67,7 +67,7 @@ export function getHarnessCapabilityLevel(
   capability: HarnessCapability,
 ): CapabilityLevel {
   const catalog = useHarnessStore.getState().getCatalog(harnessId);
-  const fromCatalog = catalog?.engine.capabilities?.[capability];
+  const fromCatalog = catalog?.descriptor.capabilities?.[capability];
   if (fromCatalog === 'full' || fromCatalog === 'partial' || fromCatalog === 'none') {
     return fromCatalog;
   }
@@ -91,10 +91,10 @@ export function sessionSupports(
  * Claude Code rejects concurrent prompts with TURN_IN_PROGRESS — follow-ups
  * must use the OpenChamber message queue and wait for idle auto-send.
  */
-export function engineSupportsSteerDelivery(harnessId: HarnessId): boolean {
+export function harnessSupportsSteerDelivery(harnessId: HarnessId): boolean {
   return harnessId === 'opencode';
 }
 
 export function sessionSupportsSteerDelivery(sessionId: string | null | undefined): boolean {
-  return engineSupportsSteerDelivery(resolveSessionHarnessId(sessionId));
+  return harnessSupportsSteerDelivery(resolveSessionHarnessId(sessionId));
 }

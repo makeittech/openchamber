@@ -1,12 +1,12 @@
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { applySessionExecutionTargetSelection } from '@/lib/harness/session-handoff';
+import { useHarnessSwitchStore } from '@/stores/useHarnessSwitchStore';
 import type { ExecutionTarget } from '@/types/harness';
 
 /**
  * Apply a favorite/recent ExecutionTarget to the current session (or draft).
- * Claude targets switch the engine; OpenCode targets update provider/model.
+ * Claude targets switch the harness; OpenCode targets update provider/model.
  */
 export function applyFavoriteExecutionTarget(target: ExecutionTarget): void {
   const sessionId = useSessionUIStore.getState().currentSessionId;
@@ -14,7 +14,7 @@ export function applyFavoriteExecutionTarget(target: ExecutionTarget): void {
     ? useSessionUIStore.getState().getDirectoryForSession(sessionId)
     : null;
 
-  applySessionExecutionTargetSelection(sessionId, target, { directory });
+  useHarnessSwitchStore.getState().requestHarnessSwitch(sessionId, target, { directory });
 
   if (target.harnessId === 'opencode') {
     const { setProvider, setModel } = useConfigStore.getState();

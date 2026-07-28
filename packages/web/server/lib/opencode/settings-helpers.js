@@ -438,22 +438,27 @@ export const createSettingsHelpers = (dependencies) => {
       result.smallModelOverride = trimmed.length > 0 ? trimmed : undefined;
     }
 
-    // Engines / Claude Code (must round-trip through GET+PUT settings)
-    if (typeof candidate.enginesDefaultHarnessId === 'string') {
-      const id = candidate.enginesDefaultHarnessId.trim();
-      result.enginesDefaultHarnessId = (id === 'opencode' || id === 'claude-code')
+    // Harness / Claude Code (must round-trip through GET+PUT settings).
+    // Legacy `engines*` keys are accepted (read migration); output uses new keys only.
+    const defaultHarnessId = candidate.harnessDefaultId ?? candidate.enginesDefaultHarnessId;
+    if (typeof defaultHarnessId === 'string') {
+      const id = defaultHarnessId.trim();
+      result.harnessDefaultId = (id === 'opencode' || id === 'claude-code')
         ? id
         : 'opencode';
     }
-    if (typeof candidate.enginesClaudeCodeWarnOnOpenCodeHandoff === 'boolean') {
-      result.enginesClaudeCodeWarnOnOpenCodeHandoff = candidate.enginesClaudeCodeWarnOnOpenCodeHandoff;
+    const warnOnSwitch = candidate.harnessWarnOnSwitch ?? candidate.enginesClaudeCodeWarnOnOpenCodeHandoff;
+    if (typeof warnOnSwitch === 'boolean') {
+      result.harnessWarnOnSwitch = warnOnSwitch;
     }
-    if (typeof candidate.enginesClaudeCodeEnabled === 'boolean') {
-      result.enginesClaudeCodeEnabled = candidate.enginesClaudeCodeEnabled;
+    const claudeCodeEnabled = candidate.harnessClaudeCodeEnabled ?? candidate.enginesClaudeCodeEnabled;
+    if (typeof claudeCodeEnabled === 'boolean') {
+      result.harnessClaudeCodeEnabled = claudeCodeEnabled;
     }
-    if (typeof candidate.enginesClaudeCodeAgentsMode === 'string') {
-      const mode = candidate.enginesClaudeCodeAgentsMode.trim();
-      result.enginesClaudeCodeAgentsMode = (mode === 'claude' || mode === 'opencode')
+    const claudeCodeAgentsMode = candidate.harnessClaudeCodeAgentsMode ?? candidate.enginesClaudeCodeAgentsMode;
+    if (typeof claudeCodeAgentsMode === 'string') {
+      const mode = claudeCodeAgentsMode.trim();
+      result.harnessClaudeCodeAgentsMode = (mode === 'claude' || mode === 'opencode')
         ? mode
         : 'opencode';
     }
@@ -890,6 +895,12 @@ export const createSettingsHelpers = (dependencies) => {
       ),
       typographySizes: nextTypographySizes
     };
+
+    // Legacy `engines*` harness keys were renamed; drop them once migrated.
+    delete next.enginesDefaultHarnessId;
+    delete next.enginesClaudeCodeWarnOnOpenCodeHandoff;
+    delete next.enginesClaudeCodeEnabled;
+    delete next.enginesClaudeCodeAgentsMode;
 
     return next;
   };

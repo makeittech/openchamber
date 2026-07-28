@@ -155,7 +155,6 @@ export function killProcessTree(pid, options = {}) {
  * @param {boolean} [params.includePartialMessages]
  * @param {Record<string, unknown>} [params.mcpServers]
  * @param {string[]} [params.allowedTools]
- * @param {Record<string, object>} [params.agents]
  * @param {string[] | 'all'} [params.skills]
  * @param {Array<'user' | 'project' | 'local'>} [params.settingSources]
  * @param {boolean} [params.forwardSubagentText]
@@ -221,9 +220,6 @@ export async function startClaudeQuery(params) {
   if (typeof params.canUseTool === 'function') {
     options.canUseTool = params.canUseTool;
   }
-  if (params.mcpServers && typeof params.mcpServers === 'object') {
-    options.mcpServers = params.mcpServers;
-  }
   // System prompt: string custom, or Claude Code preset (+ optional OpenCode agent append).
   if (typeof params.systemPrompt === 'string' && params.systemPrompt.trim()) {
     options.systemPrompt = params.systemPrompt.trim();
@@ -246,12 +242,6 @@ export async function startClaudeQuery(params) {
   }
   if (Array.isArray(params.allowedTools) && params.allowedTools.length > 0) {
     options.allowedTools = params.allowedTools.filter((tool) => typeof tool === 'string' && tool.trim());
-  }
-  if (params.agents && typeof params.agents === 'object' && !Array.isArray(params.agents)) {
-    const names = Object.keys(params.agents);
-    if (names.length > 0) {
-      options.agents = params.agents;
-    }
   }
   if (params.skills === 'all' || (Array.isArray(params.skills) && params.skills.length > 0)) {
     options.skills = params.skills;

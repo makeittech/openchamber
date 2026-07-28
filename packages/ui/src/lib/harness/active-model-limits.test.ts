@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { resolveActiveModelLimits } from './active-model-limits';
-import type { EngineCatalog } from '@/types/harness';
+import type { HarnessCatalog } from '@/types/harness';
 
-const claudeCatalog: EngineCatalog = {
-  engine: {
+const claudeCatalog: HarnessCatalog = {
+  descriptor: {
     id: 'claude-code',
     displayName: 'Claude Code',
     shortName: 'Claude',

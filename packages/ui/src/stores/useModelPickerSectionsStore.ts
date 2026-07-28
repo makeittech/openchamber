@@ -30,7 +30,19 @@ export const useModelPickerSectionsStore = create<ModelPickerSectionsStore>()(
     }),
     {
       name: 'model-picker-collapsed-sections',
-      version: 1,
+      version: 2,
+      migrate: (persistedState, version) => {
+        if (!persistedState || typeof persistedState !== 'object') {
+          return persistedState;
+        }
+        const state = persistedState as { collapsedSections?: Record<string, boolean> };
+        // v1 -> v2: picker section key 'engines' was renamed to 'harnesses'.
+        if (version < 2 && state.collapsedSections && 'engines' in state.collapsedSections) {
+          const { engines, ...rest } = state.collapsedSections;
+          state.collapsedSections = engines ? { ...rest, harnesses: true } : rest;
+        }
+        return state;
+      },
     },
   ),
 );

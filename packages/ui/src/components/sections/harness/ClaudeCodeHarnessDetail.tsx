@@ -13,9 +13,9 @@ import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { updateDesktopSettings } from '@/lib/persistence';
 import {
-  setCachedWarnOnOpenCodeHandoff,
+  setCachedWarnOnHarnessSwitch,
   setCachedClaudeAgentsMode,
-  withEnginesSettingsDefaults,
+  withHarnessSettingsDefaults,
   type ClaudeAgentsMode,
 } from '@/lib/harness/settings';
 import { openExternalUrl } from '@/lib/url';
@@ -24,55 +24,55 @@ import { useUIStore } from '@/stores/useUIStore';
 import type { CapabilityLevel, HarnessCapability, HarnessRuntimeStatus } from '@/types/harness';
 import { HARNESS_CAPABILITIES } from '@/types/harness';
 import { useShallow } from 'zustand/react/shallow';
-import { ClaudeImportDialog } from '@/components/sections/engines/ClaudeImportDialog';
+import { ClaudeImportDialog } from '@/components/sections/harness/ClaudeImportDialog';
 
 const STATUS_LABEL_KEYS: Record<
   HarnessRuntimeStatus,
-  | 'settings.engines.sidebar.status.ready'
-  | 'settings.engines.sidebar.status.needsLogin'
-  | 'settings.engines.sidebar.status.missingCli'
-  | 'settings.engines.sidebar.status.unsupportedHost'
-  | 'settings.engines.sidebar.status.error'
+  | 'settings.harness.sidebar.status.ready'
+  | 'settings.harness.sidebar.status.needsLogin'
+  | 'settings.harness.sidebar.status.missingCli'
+  | 'settings.harness.sidebar.status.unsupportedHost'
+  | 'settings.harness.sidebar.status.error'
 > = {
-  ready: 'settings.engines.sidebar.status.ready',
-  'needs-login': 'settings.engines.sidebar.status.needsLogin',
-  'missing-cli': 'settings.engines.sidebar.status.missingCli',
-  'unsupported-host': 'settings.engines.sidebar.status.unsupportedHost',
-  error: 'settings.engines.sidebar.status.error',
+  ready: 'settings.harness.sidebar.status.ready',
+  'needs-login': 'settings.harness.sidebar.status.needsLogin',
+  'missing-cli': 'settings.harness.sidebar.status.missingCli',
+  'unsupported-host': 'settings.harness.sidebar.status.unsupportedHost',
+  error: 'settings.harness.sidebar.status.error',
 };
 
-const CAPABILITY_LABEL_KEYS: Record<HarnessCapability, `settings.engines.capability.${HarnessCapability}`> = {
-  prompt: 'settings.engines.capability.prompt',
-  abort: 'settings.engines.capability.abort',
-  resume: 'settings.engines.capability.resume',
-  'streaming-text': 'settings.engines.capability.streaming-text',
-  'streaming-tools': 'settings.engines.capability.streaming-tools',
-  permissions: 'settings.engines.capability.permissions',
-  images: 'settings.engines.capability.images',
-  'file-attachments': 'settings.engines.capability.file-attachments',
-  shell: 'settings.engines.capability.shell',
-  'slash-commands': 'settings.engines.capability.slash-commands',
-  mcp: 'settings.engines.capability.mcp',
-  subagents: 'settings.engines.capability.subagents',
-  multirun: 'settings.engines.capability.multirun',
-  goal: 'settings.engines.capability.goal',
-  'openchamber-tool': 'settings.engines.capability.openchamber-tool',
+const CAPABILITY_LABEL_KEYS: Record<HarnessCapability, `settings.harness.capability.${HarnessCapability}`> = {
+  prompt: 'settings.harness.capability.prompt',
+  abort: 'settings.harness.capability.abort',
+  resume: 'settings.harness.capability.resume',
+  'streaming-text': 'settings.harness.capability.streaming-text',
+  'streaming-tools': 'settings.harness.capability.streaming-tools',
+  permissions: 'settings.harness.capability.permissions',
+  images: 'settings.harness.capability.images',
+  'file-attachments': 'settings.harness.capability.file-attachments',
+  shell: 'settings.harness.capability.shell',
+  'slash-commands': 'settings.harness.capability.slash-commands',
+  mcp: 'settings.harness.capability.mcp',
+  subagents: 'settings.harness.capability.subagents',
+  multirun: 'settings.harness.capability.multirun',
+  goal: 'settings.harness.capability.goal',
+  'openchamber-tool': 'settings.harness.capability.openchamber-tool',
 };
 
 const LEVEL_LABEL_KEYS: Record<
   CapabilityLevel,
-  | 'settings.engines.claudeCode.capability.full'
-  | 'settings.engines.claudeCode.capability.partial'
-  | 'settings.engines.claudeCode.capability.none'
+  | 'settings.harness.claudeCode.capability.full'
+  | 'settings.harness.claudeCode.capability.partial'
+  | 'settings.harness.claudeCode.capability.none'
 > = {
-  full: 'settings.engines.claudeCode.capability.full',
-  partial: 'settings.engines.claudeCode.capability.partial',
-  none: 'settings.engines.claudeCode.capability.none',
+  full: 'settings.harness.claudeCode.capability.full',
+  partial: 'settings.harness.claudeCode.capability.partial',
+  none: 'settings.harness.claudeCode.capability.none',
 };
 
 const CLAUDE_DOCS_FALLBACK = 'https://docs.anthropic.com/en/docs/claude-code';
 
-export const ClaudeCodeEngineDetail: React.FC = () => {
+export const ClaudeCodeHarnessDetail: React.FC = () => {
   const { t } = useI18n();
   const setSettingsPage = useUIStore((state) => state.setSettingsPage);
   const { catalog, isDetecting, detect, error, loadState } = useHarnessStore(useShallow((s) => ({
@@ -103,20 +103,20 @@ export const ClaudeCodeEngineDetail: React.FC = () => {
         if (cancelled || !data) {
           return;
         }
-        const resolved = withEnginesSettingsDefaults({
-          enginesClaudeCodeWarnOnOpenCodeHandoff:
-            typeof data.enginesClaudeCodeWarnOnOpenCodeHandoff === 'boolean'
-              ? data.enginesClaudeCodeWarnOnOpenCodeHandoff
+        const resolved = withHarnessSettingsDefaults({
+          harnessWarnOnSwitch:
+            typeof data.harnessWarnOnSwitch === 'boolean'
+              ? data.harnessWarnOnSwitch
               : undefined,
-          enginesClaudeCodeAgentsMode:
-            data.enginesClaudeCodeAgentsMode === 'claude' || data.enginesClaudeCodeAgentsMode === 'opencode'
-              ? data.enginesClaudeCodeAgentsMode
+          harnessClaudeCodeAgentsMode:
+            data.harnessClaudeCodeAgentsMode === 'claude' || data.harnessClaudeCodeAgentsMode === 'opencode'
+              ? data.harnessClaudeCodeAgentsMode
               : undefined,
         });
-        setWarnOnHandoff(resolved.enginesClaudeCodeWarnOnOpenCodeHandoff);
-        setCachedWarnOnOpenCodeHandoff(resolved.enginesClaudeCodeWarnOnOpenCodeHandoff);
-        setAgentsMode(resolved.enginesClaudeCodeAgentsMode);
-        setCachedClaudeAgentsMode(resolved.enginesClaudeCodeAgentsMode);
+        setWarnOnHandoff(resolved.harnessWarnOnSwitch);
+        setCachedWarnOnHarnessSwitch(resolved.harnessWarnOnSwitch);
+        setAgentsMode(resolved.harnessClaudeCodeAgentsMode);
+        setCachedClaudeAgentsMode(resolved.harnessClaudeCodeAgentsMode);
       } catch {
         // keep default
       } finally {
@@ -132,50 +132,50 @@ export const ClaudeCodeEngineDetail: React.FC = () => {
 
   const handleWarnChange = React.useCallback((enabled: boolean) => {
     setWarnOnHandoff(enabled);
-    setCachedWarnOnOpenCodeHandoff(enabled);
-    void updateDesktopSettings({ enginesClaudeCodeWarnOnOpenCodeHandoff: enabled });
+    setCachedWarnOnHarnessSwitch(enabled);
+    void updateDesktopSettings({ harnessWarnOnSwitch: enabled });
   }, []);
 
   const handleAgentsModeChange = React.useCallback((mode: ClaudeAgentsMode) => {
     setAgentsMode(mode);
     setCachedClaudeAgentsMode(mode);
-    void updateDesktopSettings({ enginesClaudeCodeAgentsMode: mode });
+    void updateDesktopSettings({ harnessClaudeCodeAgentsMode: mode });
   }, []);
 
   const handleRedetect = React.useCallback(() => {
     void detect('claude-code');
   }, [detect]);
 
-  const docsUrl = catalog?.engine.install.docsUrl || CLAUDE_DOCS_FALLBACK;
+  const docsUrl = catalog?.descriptor.install.docsUrl || CLAUDE_DOCS_FALLBACK;
   const status = catalog?.status;
-  const capabilities = catalog?.engine.capabilities;
+  const capabilities = catalog?.descriptor.capabilities;
 
   return (
     <SettingsPageLayout
-      title={t('settings.engines.claudeCode.title')}
-      description={t('settings.engines.claudeCode.description')}
+      title={t('settings.harness.claudeCode.title')}
+      description={t('settings.harness.claudeCode.description')}
       showSaveStatus
     >
       <SettingsSection
-        title={t('settings.engines.claudeCode.section.status')}
+        title={t('settings.harness.claudeCode.section.status')}
         divider={false}
-        settingsItem="engines.claude-code"
+        settingsItem="harness.claude-code"
         contentClassName={SETTINGS_FIELDS_STACK_CLASS}
       >
-        <SettingsFieldRow label={t('settings.engines.claudeCode.field.status')}>
+        <SettingsFieldRow label={t('settings.harness.claudeCode.field.status')}>
           <span className="typography-ui text-foreground">
             {status
               ? t(STATUS_LABEL_KEYS[status])
               : loadState === 'loading'
-                ? t('settings.engines.sidebar.status.loading')
-                : t('settings.engines.sidebar.status.unknown')}
+                ? t('settings.harness.sidebar.status.loading')
+                : t('settings.harness.sidebar.status.unknown')}
           </span>
         </SettingsFieldRow>
-        <SettingsFieldRow label={t('settings.engines.claudeCode.field.version')}>
+        <SettingsFieldRow label={t('settings.harness.claudeCode.field.version')}>
           <span className="typography-ui text-foreground">
             {catalog?.version
-              ? t('settings.engines.claudeCode.status.version', { version: catalog.version })
-              : t('settings.engines.claudeCode.status.versionUnknown')}
+              ? t('settings.harness.claudeCode.status.version', { version: catalog.version })
+              : t('settings.harness.claudeCode.status.versionUnknown')}
           </span>
         </SettingsFieldRow>
         {catalog?.statusDetail || error ? (
@@ -188,33 +188,33 @@ export const ClaudeCodeEngineDetail: React.FC = () => {
             variant="outline"
             disabled={isDetecting}
             onClick={handleRedetect}
-            aria-label={t('settings.engines.claudeCode.actions.redetectAria')}
+            aria-label={t('settings.harness.claudeCode.actions.redetectAria')}
           >
             {isDetecting
-              ? t('settings.engines.sidebar.status.loading')
-              : t('settings.engines.claudeCode.actions.redetect')}
+              ? t('settings.harness.sidebar.status.loading')
+              : t('settings.harness.claudeCode.actions.redetect')}
           </Button>
           <Button
             type="button"
             size="sm"
             variant="ghost"
             onClick={() => void openExternalUrl(docsUrl)}
-            aria-label={t('settings.engines.claudeCode.actions.openDocsAria')}
+            aria-label={t('settings.harness.claudeCode.actions.openDocsAria')}
           >
-            {t('settings.engines.claudeCode.actions.openDocs')}
+            {t('settings.harness.claudeCode.actions.openDocs')}
           </Button>
         </div>
         {status === 'needs-login' || status === 'missing-cli' ? (
           <div className="space-y-1">
-            <p className="typography-ui-label text-foreground">{t('settings.engines.claudeCode.login.title')}</p>
-            <p className={SETTINGS_HELPER_CLASS}>{t('settings.engines.claudeCode.login.body')}</p>
+            <p className="typography-ui-label text-foreground">{t('settings.harness.claudeCode.login.title')}</p>
+            <p className={SETTINGS_HELPER_CLASS}>{t('settings.harness.claudeCode.login.body')}</p>
           </div>
         ) : null}
       </SettingsSection>
 
       <SettingsSection
-        title={t('settings.engines.claudeCode.section.capabilities')}
-        settingsItem="engines.claude-code.capabilities"
+        title={t('settings.harness.claudeCode.section.capabilities')}
+        settingsItem="harness.claude-code.capabilities"
         contentClassName="space-y-2"
       >
         {capabilities ? (
@@ -230,32 +230,32 @@ export const ClaudeCodeEngineDetail: React.FC = () => {
             })}
           </ul>
         ) : (
-          <p className={SETTINGS_HELPER_CLASS}>{t('settings.engines.claudeCode.capabilities.empty')}</p>
+          <p className={SETTINGS_HELPER_CLASS}>{t('settings.harness.claudeCode.capabilities.empty')}</p>
         )}
       </SettingsSection>
 
       <SettingsSection
-        title={t('settings.engines.claudeCode.section.agents')}
+        title={t('settings.harness.claudeCode.section.agents')}
         contentClassName={SETTINGS_FIELDS_STACK_CLASS}
       >
         <SettingsFieldRow
-          label={t('settings.engines.claudeCode.agentsMode.label')}
-          info={t('settings.engines.claudeCode.agentsMode.info')}
-          settingsItem="engines.claude-code.agents-mode"
+          label={t('settings.harness.claudeCode.agentsMode.label')}
+          info={t('settings.harness.claudeCode.agentsMode.info')}
+          settingsItem="harness.claude-code.agents-mode"
         >
           <SettingsChipGroup
-            aria-label={t('settings.engines.claudeCode.agentsMode.aria')}
+            aria-label={t('settings.harness.claudeCode.agentsMode.aria')}
             value={agentsMode}
             onChange={handleAgentsModeChange}
             options={[
               {
                 value: 'claude',
-                label: t('settings.engines.claudeCode.agentsMode.claude'),
+                label: t('settings.harness.claudeCode.agentsMode.claude'),
                 disabled: !settingsLoaded,
               },
               {
                 value: 'opencode',
-                label: t('settings.engines.claudeCode.agentsMode.opencode'),
+                label: t('settings.harness.claudeCode.agentsMode.opencode'),
                 disabled: !settingsLoaded,
               },
             ]}
@@ -264,50 +264,50 @@ export const ClaudeCodeEngineDetail: React.FC = () => {
       </SettingsSection>
 
       <SettingsSection
-        title={t('settings.engines.claudeCode.section.warnings')}
+        title={t('settings.harness.claudeCode.section.warnings')}
         contentClassName={SETTINGS_FIELDS_STACK_CLASS}
       >
         <SettingsCheckboxRow
           checked={warnOnHandoff}
           onChange={handleWarnChange}
           disabled={!settingsLoaded}
-          label={t('settings.engines.claudeCode.warnHandoff.label')}
-          ariaLabel={t('settings.engines.claudeCode.warnHandoff.aria')}
-          info={t('settings.engines.claudeCode.warnHandoff.info')}
-          settingsItem="engines.claude-code.warn-handoff"
+          label={t('settings.harness.claudeCode.warnHandoff.label')}
+          ariaLabel={t('settings.harness.claudeCode.warnHandoff.aria')}
+          info={t('settings.harness.claudeCode.warnHandoff.info')}
+          settingsItem="harness.claude-code.warn-handoff"
         />
       </SettingsSection>
 
       <SettingsSection
-        title={t('settings.engines.claudeCode.section.import')}
-        settingsItem="engines.claude-code.import"
+        title={t('settings.harness.claudeCode.section.import')}
+        settingsItem="harness.claude-code.import"
         contentClassName="space-y-3"
       >
-        <p className={SETTINGS_HELPER_CLASS}>{t('settings.engines.claudeCode.import.note')}</p>
+        <p className={SETTINGS_HELPER_CLASS}>{t('settings.harness.claudeCode.import.note')}</p>
         <Button
           type="button"
           size="sm"
           variant="outline"
           onClick={() => setImportOpen(true)}
-          aria-label={t('settings.engines.claudeCode.import.actions.openAria')}
+          aria-label={t('settings.harness.claudeCode.import.actions.openAria')}
         >
-          {t('settings.engines.claudeCode.import.actions.open')}
+          {t('settings.harness.claudeCode.import.actions.open')}
         </Button>
       </SettingsSection>
 
       <SettingsSection
-        title={t('settings.engines.claudeCode.section.apiKeys')}
-        settingsItem="engines.claude-code.api-keys"
+        title={t('settings.harness.claudeCode.section.apiKeys')}
+        settingsItem="harness.claude-code.api-keys"
         contentClassName="space-y-3"
       >
-        <p className={SETTINGS_HELPER_CLASS}>{t('settings.engines.claudeCode.apiKeys.note')}</p>
+        <p className={SETTINGS_HELPER_CLASS}>{t('settings.harness.claudeCode.apiKeys.note')}</p>
         <Button
           type="button"
           size="sm"
           variant="outline"
           onClick={() => setSettingsPage('providers')}
         >
-          {t('settings.engines.opencode.link.providers')}
+          {t('settings.harness.opencode.link.providers')}
         </Button>
       </SettingsSection>
 

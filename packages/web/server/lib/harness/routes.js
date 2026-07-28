@@ -150,8 +150,8 @@ export function registerHarnessRoutes(app, deps = {}) {
 
   app.get('/api/harness', async (_req, res) => {
     try {
-      const engines = await detectAll({ openCodeReady: getOpenCodeReady() });
-      res.json({ engines });
+      const catalogs = await detectAll({ openCodeReady: getOpenCodeReady() });
+      res.json({ catalogs });
     } catch (error) {
       sendError(res, error);
     }
@@ -231,18 +231,18 @@ export function registerHarnessRoutes(app, deps = {}) {
   // Read and re-probe are the same operation: detection is never cached, so GET
   // and POST share one handler.
   // Detect failure must not look like ready+empty success — the `status` field
-  // on the returned engine is authoritative.
+  // on the returned catalog is authoritative.
   const handleDetectOne = async (req, res) => {
     const id = req.params.id;
     if (!isKnownHarnessId(id)) {
       return res.status(404).json({ error: 'Unknown harness', code: 'HARNESS_NOT_FOUND' });
     }
     try {
-      const engine = await detectOne(id, { openCodeReady: getOpenCodeReady() });
-      if (!engine) {
+      const catalog = await detectOne(id, { openCodeReady: getOpenCodeReady() });
+      if (!catalog) {
         return res.status(404).json({ error: 'Unknown harness', code: 'HARNESS_NOT_FOUND' });
       }
-      res.json(engine);
+      res.json(catalog);
     } catch (error) {
       sendError(res, error);
     }

@@ -1,5 +1,5 @@
 /**
- * Cross-engine session handoff helpers (OpenCode ↔ Claude Code).
+ * Cross-harness session handoff helpers (OpenCode ↔ Claude Code).
  * Pending targets live in selection-store; this module owns seed/warn/policy.
  */
 
@@ -17,7 +17,22 @@ type HandoffSeedResult = {
   includedTurns: number;
 };
 
-function sessionRequiresEngineHandoff(
+/** Latest non-empty assistant text of a session (newest last), or null. */
+export function extractLastAssistantText(
+  sessionId: string,
+  directory?: string | null,
+): string | null {
+  const messages = getSyncMessages(sessionId, directory ?? undefined);
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.role !== 'assistant') continue;
+    const text = extractMessageText(message.id, directory);
+    if (text) return text;
+  }
+  return null;
+}
+
+function sessionRequiresHarnessHandoff(
   sessionId: string,
   directory?: string | null,
 ): boolean {
@@ -25,26 +40,8 @@ function sessionRequiresEngineHandoff(
   return getSyncMessages(sessionId, directory ?? undefined).length > 0;
 }
 
-export function shouldShowHandoffBillingNotice(args: {
-  sourceHarnessId: HarnessId;
-  targetHarnessId: HarnessId;
-  warnOnOpenCodeHandoff: boolean | undefined;
-}): boolean {
-  if (args.sourceHarnessId !== 'opencode') return false;
-  if (args.targetHarnessId !== 'claude-code') return false;
-  return args.warnOnOpenCodeHandoff !== false;
-}
-
-export function resolveSourceHarnessId(
-  sessionId: string,
-  fallback: HarnessId = 'opencode',
-): HarnessId {
-  const sticky = useSelectionStore.getState().getSessionTarget(sessionId);
-  return sticky?.harnessId ?? fallback;
-}
-
 /**
- * Apply an engine/target selection for a session.
+ * Apply a harness/target selection for a session.
  * Empty/unused sessions update sticky targets in place; used sessions mark pending handoff.
  */
 export function applySessionExecutionTargetSelection(
@@ -58,7 +55,7 @@ export function applySessionExecutionTargetSelection(
     return 'last-used';
   }
 
-  const requiresHandoff = sessionRequiresEngineHandoff(sessionId, options?.directory);
+  const requiresHandoff = sessionRequiresHarnessHandoff(sessionId, options?.directory);
   if (!requiresHandoff) {
     selection.clearPendingHandoffTarget(sessionId);
     selection.saveSessionTarget(sessionId, target);
@@ -96,7 +93,7 @@ function extractMessageText(messageId: string, directory?: string | null): strin
 /**
  * Build a budgeted preamble from prior user/assistant text turns (most recent first).
  */
-function buildHandoffSeedText(
+export function buildHandoffSeedText(
   sessionId: string,
   directory?: string | null,
   budget: number = HANDOFF_SEED_CHAR_BUDGET,
@@ -154,20 +151,50 @@ function buildHandoffSeedText(
   };
 }
 
+
+/**
+ * Summary text produced by the latest compaction of a session.
+ * Works for OpenCode summarize (assistant summary after the compaction part)
+ * and Claude `/compact` (system-role summary linked via parentID).
+ * Falls back to the newest assistant text when no compaction marker exists.
+ */
+export function extractCompactionSummary(
+  sessionId: string,
+  directory?: string | null,
+): string | null {
+  const messages = getSyncMessages(sessionId, directory ?? undefined);
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const marker = messages[i];
+    const hasCompactionPart = getSyncParts(marker.id, directory ?? undefined)
+      .some((part) => part?.type === 'compaction');
+    if (!hasCompactionPart) continue;
+
+    // Prefer the summary message explicitly linked to the compaction command.
+    for (let j = i + 1; j < messages.length; j += 1) {
+      const candidate = messages[j] as unknown as { parentID?: unknown };
+      if (candidate.parentID === marker.id) {
+        const text = extractMessageText(messages[j].id, directory);
+        if (text) return text;
+      }
+    }
+    // Fallback: first assistant/system text after the marker.
+    for (let j = i + 1; j < messages.length; j += 1) {
+      const role = messages[j].role as string;
+      if (role !== 'assistant' && role !== 'system') continue;
+      const text = extractMessageText(messages[j].id, directory);
+      if (text) return text;
+    }
+    return null;
+  }
+  return extractLastAssistantText(sessionId, directory);
+}
+
 export function getPendingHandoffTarget(sessionId: string): ExecutionTarget | null {
   return useSelectionStore.getState().getPendingHandoffTarget(sessionId);
 }
 
 export function clearPendingHandoffTarget(sessionId: string): void {
   useSelectionStore.getState().clearPendingHandoffTarget(sessionId);
-}
-
-/** Don’t-show-again persists only when the user confirms Continue. */
-export function shouldPersistHandoffWarnDismissal(args: {
-  confirmed: boolean;
-  dontShowAgain: boolean;
-}): boolean {
-  return args.confirmed === true && args.dontShowAgain === true;
 }
 
 export type CreatedHandoffSession = {
@@ -177,10 +204,10 @@ export type CreatedHandoffSession = {
 };
 
 /**
- * Create the destination session for a pending engine handoff.
+ * Create the destination session for a pending harness handoff.
  * Caller persists the target, routes the pending message, and navigates.
  */
-export async function createEngineHandoffSession(args: {
+export async function createHarnessHandoffSession(args: {
   sourceSessionId: string;
   directory?: string | null;
   sourceHarnessId?: HarnessId;

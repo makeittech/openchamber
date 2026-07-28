@@ -12,7 +12,7 @@ import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } 
 import { CSS as DndCSS } from '@dnd-kit/utilities';
 import { Icon } from '@/components/icon/Icon';
 import { Input } from '@/components/ui/input';
-import { EngineLogo } from '@/components/ui/EngineLogo';
+import { HarnessLogo } from '@/components/ui/HarnessLogo';
 import { ProviderLogo } from '@/components/ui/ProviderLogo';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -100,7 +100,7 @@ export type ModelPickerLabels = {
   modalityVideo?: string;
   modalityAudio?: string;
   modalityPdf?: string;
-  engines?: string;
+  harnesses?: string;
 };
 
 const hasTooltipMetadata = (metadata?: ModelMetadata) => {
@@ -372,7 +372,7 @@ const scrollIntoView = (container: HTMLElement | null, node: HTMLElement | null)
   container.scrollTop = Math.max(0, Math.min(target, max));
 };
 
-export type ModelPickerEngineOption = {
+export type ModelPickerHarnessOption = {
   id: string;
   name: string;
   statusLabel?: string;
@@ -415,9 +415,9 @@ interface ModelPickerListProps {
   onReorderProvider?: (orderedProviderIDs: string[]) => void;
   reorderProviderTitle?: string;
   /** Engines rows rendered between Recents and provider/model lists. */
-  engines?: ModelPickerEngineOption[];
-  onSelectEngine?: (engineId: string) => void;
-  /** Actions rendered under the model list (e.g. Manage engines…, Add provider…). */
+  harnesses?: ModelPickerHarnessOption[];
+  onSelectHarness?: (harnessId: string) => void;
+  /** Actions rendered under the model list (e.g. Manage harnesses…, Add provider…). */
   actionsFooter?: React.ReactNode;
   footerContent?: React.ReactNode | ((activeEntry: ModelPickerEntry | undefined) => React.ReactNode);
   renderVersion?: number;
@@ -459,8 +459,8 @@ export const ModelPickerList: React.FC<ModelPickerListProps> = ({
   providerOrder,
   onReorderProvider,
   reorderProviderTitle,
-  engines,
-  onSelectEngine,
+  harnesses,
+  onSelectHarness,
   actionsFooter,
   footerContent,
   renderVersion,
@@ -861,39 +861,39 @@ export const ModelPickerList: React.FC<ModelPickerListProps> = ({
             </div>
           ) : null}
 
-          {engines && engines.length > 0 ? (
+          {harnesses && harnesses.length > 0 ? (
             <div>
               {(filteredFavorites.length > 0 || filteredRecents.length > 0) ? <div className="h-px bg-border/40 my-1" /> : null}
-              {renderSectionHeader('engines', <Icon name="stack" className="h-4 w-4" />, labels.engines ?? 'Engines')}
-              {!isSectionCollapsed('engines') ? (
+              {renderSectionHeader('harnesses', <Icon name="stack" className="h-4 w-4" />, labels.harnesses ?? 'Harnesses')}
+              {!isSectionCollapsed('harnesses') ? (
                 <div className="flex flex-col gap-0.5 pb-1">
-                  {engines.map((engine) => (
+                  {harnesses.map((harness) => (
                     <button
-                      key={engine.id}
+                      key={harness.id}
                       type="button"
                       disabled={disabled}
-                      onClick={() => onSelectEngine?.(engine.id)}
+                      onClick={() => onSelectHarness?.(harness.id)}
                       className={cn(
                         'w-full text-left px-2 py-1.5 rounded-md typography-meta flex items-center gap-2 cursor-pointer',
-                        !disabled && (engine.selected ? 'bg-interactive-selection' : 'hover:bg-interactive-hover/50'),
+                        !disabled && (harness.selected ? 'bg-interactive-selection' : 'hover:bg-interactive-hover/50'),
                         disabled && 'cursor-not-allowed opacity-60',
                         rowClassName,
                       )}
-                      aria-pressed={engine.selected}
+                      aria-pressed={harness.selected}
                     >
                       <span className={cn(
                         'flex size-4 flex-shrink-0 items-center justify-center',
-                        engine.selected ? 'text-foreground' : 'text-muted-foreground',
+                        harness.selected ? 'text-foreground' : 'text-muted-foreground',
                       )}>
-                        <Icon name={engine.selected ? 'checkbox-circle' : 'checkbox-blank'} className="size-4" />
+                        <Icon name={harness.selected ? 'checkbox-circle' : 'checkbox-blank'} className="size-4" />
                       </span>
-                      <EngineLogo
-                        harnessId={engine.id}
+                      <HarnessLogo
+                        harnessId={harness.id}
                         className="size-3.5 flex-shrink-0 text-muted-foreground"
                       />
-                      <span className="font-medium truncate flex-1 min-w-0">{engine.name}</span>
-                      {engine.statusLabel ? (
-                        <span className="typography-micro text-muted-foreground flex-shrink-0">{engine.statusLabel}</span>
+                      <span className="font-medium truncate flex-1 min-w-0">{harness.name}</span>
+                      {harness.statusLabel ? (
+                        <span className="typography-micro text-muted-foreground flex-shrink-0">{harness.statusLabel}</span>
                       ) : null}
                     </button>
                   ))}
@@ -902,7 +902,7 @@ export const ModelPickerList: React.FC<ModelPickerListProps> = ({
             </div>
           ) : null}
 
-          {(filteredFavorites.length > 0 || filteredRecents.length > 0 || (engines && engines.length > 0)) && filteredProviders.length > 0 ? <div className="h-px bg-border/40 my-1" /> : null}
+          {(filteredFavorites.length > 0 || filteredRecents.length > 0 || (harnesses && harnesses.length > 0)) && filteredProviders.length > 0 ? <div className="h-px bg-border/40 my-1" /> : null}
 
           {providerSortingEnabled ? (
             <DndContext sensors={providerSectionSensors} collisionDetection={closestCenter} onDragEnd={handleProviderDragEnd}>

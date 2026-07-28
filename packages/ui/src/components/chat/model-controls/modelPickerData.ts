@@ -6,28 +6,28 @@
  */
 
 import type {
-    ModelPickerEngineOption,
+    ModelPickerHarnessOption,
     ModelPickerLabels,
     ModelPickerProvider,
 } from '@/components/model-picker/ModelPickerList';
-import type { EngineCatalog, EngineCatalogModel, HarnessId, HarnessRuntimeStatus } from '@/types/harness';
+import type { HarnessCatalog, HarnessCatalogModel, HarnessId, HarnessRuntimeStatus } from '@/types/harness';
 import type { I18nContextValue } from '@/lib/i18n/react-context';
 
 type Translate = I18nContextValue['t'];
 
-export const ENGINE_STATUS_LABEL_KEYS: Record<
+export const HARNESS_STATUS_LABEL_KEYS: Record<
     HarnessRuntimeStatus,
-    | 'settings.engines.sidebar.status.ready'
-    | 'settings.engines.sidebar.status.needsLogin'
-    | 'settings.engines.sidebar.status.missingCli'
-    | 'settings.engines.sidebar.status.unsupportedHost'
-    | 'settings.engines.sidebar.status.error'
+    | 'settings.harness.sidebar.status.ready'
+    | 'settings.harness.sidebar.status.needsLogin'
+    | 'settings.harness.sidebar.status.missingCli'
+    | 'settings.harness.sidebar.status.unsupportedHost'
+    | 'settings.harness.sidebar.status.error'
 > = {
-    ready: 'settings.engines.sidebar.status.ready',
-    'needs-login': 'settings.engines.sidebar.status.needsLogin',
-    'missing-cli': 'settings.engines.sidebar.status.missingCli',
-    'unsupported-host': 'settings.engines.sidebar.status.unsupportedHost',
-    error: 'settings.engines.sidebar.status.error',
+    ready: 'settings.harness.sidebar.status.ready',
+    'needs-login': 'settings.harness.sidebar.status.needsLogin',
+    'missing-cli': 'settings.harness.sidebar.status.missingCli',
+    'unsupported-host': 'settings.harness.sidebar.status.unsupportedHost',
+    error: 'settings.harness.sidebar.status.error',
 };
 
 export function buildModelPickerLabels(t: Translate): ModelPickerLabels {
@@ -52,34 +52,34 @@ export function buildModelPickerLabels(t: Translate): ModelPickerLabels {
         modalityVideo: t('chat.modelControls.modality.video'),
         modalityAudio: t('chat.modelControls.modality.audio'),
         modalityPdf: t('chat.modelControls.modality.pdf'),
-        engines: t('chat.engines.section'),
+        harnesses: t('chat.harness.section'),
     };
 }
 
 /**
- * Claude only appears when the engine is enabled in settings; its status label
+ * Claude only appears when the harness is enabled in settings; its status label
  * falls back to "loading" until the catalog resolves, so the picker never
  * implies Claude is ready before detection has answered.
  */
-export function buildEngineOptions(args: {
+export function buildHarnessOptions(args: {
     t: Translate;
     pickerHarnessId: HarnessId;
-    enginesClaudeCodeEnabled: boolean;
-    claudeCatalog: EngineCatalog | null | undefined;
-}): ModelPickerEngineOption[] {
-    const { t, pickerHarnessId, enginesClaudeCodeEnabled, claudeCatalog } = args;
-    const options: ModelPickerEngineOption[] = [{
+    harnessClaudeCodeEnabled: boolean;
+    claudeCatalog: HarnessCatalog | null | undefined;
+}): ModelPickerHarnessOption[] {
+    const { t, pickerHarnessId, harnessClaudeCodeEnabled, claudeCatalog } = args;
+    const options: ModelPickerHarnessOption[] = [{
         id: 'opencode',
-        name: t('chat.engines.opencode'),
+        name: t('chat.harness.opencode'),
         selected: pickerHarnessId === 'opencode',
     }];
-    if (enginesClaudeCodeEnabled) {
+    if (harnessClaudeCodeEnabled) {
         options.push({
             id: 'claude-code',
-            name: t('chat.engines.claudeCode'),
+            name: t('chat.harness.claudeCode'),
             statusLabel: claudeCatalog
-                ? t(ENGINE_STATUS_LABEL_KEYS[claudeCatalog.status])
-                : t('settings.engines.sidebar.status.loading'),
+                ? t(HARNESS_STATUS_LABEL_KEYS[claudeCatalog.status])
+                : t('settings.harness.sidebar.status.loading'),
             selected: pickerHarnessId === 'claude-code',
         });
     }
@@ -90,7 +90,7 @@ export function buildPickerProviders(args: {
     t: Translate;
     pickerHarnessId: HarnessId;
     claudePickerProviderId: string;
-    claudeCatalogModels: readonly EngineCatalogModel[];
+    claudeCatalogModels: readonly HarnessCatalogModel[];
     providers: unknown[];
 }): ModelPickerProvider[] {
     const { t, pickerHarnessId, claudePickerProviderId, claudeCatalogModels, providers } = args;
@@ -99,7 +99,7 @@ export function buildPickerProviders(args: {
     }
     return [{
         id: claudePickerProviderId,
-        name: t('chat.engines.claudeCode'),
+        name: t('chat.harness.claudeCode'),
         models: claudeCatalogModels.map((model) => ({
             id: model.id,
             name: model.name,

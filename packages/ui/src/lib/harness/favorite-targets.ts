@@ -26,7 +26,7 @@ export function executionTargetsMatchIdentity(a: ExecutionTarget, b: ExecutionTa
   return executionTargetIdentityKey(a) === executionTargetIdentityKey(b);
 }
 
-/** Strip session-specific fields so favorites only key by engine + model. */
+/** Strip session-specific fields so favorites only key by harness + model. */
 export function normalizeFavoriteTarget(target: ExecutionTarget): ExecutionTarget {
   if (target.harnessId === 'claude-code') {
     return { harnessId: 'claude-code', modelRef: target.modelRef };

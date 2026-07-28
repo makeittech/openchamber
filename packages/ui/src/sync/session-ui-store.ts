@@ -83,7 +83,7 @@ import {
 } from "@/lib/harness/resolve-execution-target"
 import {
   clearPendingHandoffTarget,
-  createEngineHandoffSession,
+  createHarnessHandoffSession,
   getPendingHandoffTarget,
 } from "@/lib/harness/session-handoff"
 import { useHarnessStore } from "@/stores/useHarnessStore"
@@ -1305,7 +1305,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       const handoffTitle = typeof handoffTitleCandidate === "string" && handoffTitleCandidate.trim()
         ? handoffTitleCandidate.trim()
         : undefined
-      const handoff = await createEngineHandoffSession({
+      const handoff = await createHarnessHandoffSession({
         sourceSessionId,
         directory: currentSessionDirectory,
         sourceHarnessId,

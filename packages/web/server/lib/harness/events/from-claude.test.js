@@ -417,6 +417,38 @@ describe('abort finalization', () => {
     });
   });
 
+  it('closes a subagent tool part left running by the abort', () => {
+    const ctx = createClaudeMapperContext({
+      sessionId: 'ses_1',
+      directory: '/proj',
+      userMessageId: 'msg_u',
+      assistantMessageId: 'msg_a',
+    });
+
+    // Subagent tools live in ctx.subagentByToolUseId, not ctx.toolParts —
+    // walking only the parent leaves the nested transcript spinning forever.
+    mapClaudeMessageToEvents(ctx, {
+      type: 'assistant',
+      parent_tool_use_id: 'toolu_sub',
+      message: {
+        content: [{ type: 'tool_use', id: 'call_child', name: 'Bash', input: { command: 'sleep 999' } }],
+      },
+    });
+
+    const events = buildTurnAbortEvents(ctx);
+    const childTool = events
+      .map((e) => e.properties.part)
+      .find((p) => p?.type === 'tool' && p.callID === 'call_child');
+
+    expect(childTool).toBeDefined();
+    expect(childTool.sessionID).not.toBe('ses_1');
+    expect(childTool.state).toMatchObject({
+      status: 'error',
+      error: 'Aborted by user',
+      input: { command: 'sleep 999' },
+    });
+  });
+
   it('leaves already-settled tools alone', () => {
     const ctx = createClaudeMapperContext({
       sessionId: 'ses_1',

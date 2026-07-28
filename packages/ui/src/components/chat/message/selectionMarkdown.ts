@@ -58,7 +58,7 @@ const toSelectionNode = (node: Node): SelectionNode | null => {
   };
 };
 
-export const trimSelectionNodes = (nodes: SelectionNode[]): SelectionNode[] => {
+const trimSelectionNodes = (nodes: SelectionNode[]): SelectionNode[] => {
   return nodes
     .filter((node) => node.type === 'text' || !node.isCodeLineNumber)
     .map((node) => node.type === 'text'
@@ -197,8 +197,8 @@ const isInlineSelectionNode = (node: SelectionNode): boolean => {
   return !node.isMarkdownBlock && !node.isCodeLines && node.component !== 'markdown-code' && !BLOCK_TAGS.has(node.tag);
 };
 
-export const selectionNodesToMarkdown = (nodes: SelectionNode[], plainText: string): string => {
-  const trimmedNodes = trimSelectionNodes(nodes);
+/** Callers that already trimmed skip a second full recursive pass. */
+const renderTrimmedSelectionNodes = (trimmedNodes: SelectionNode[], plainText: string): string => {
   if (trimmedNodes.every((node) => isInlineSelectionNode(node))) {
     const inlineMarkdown = trimSelectionValue(trimmedNodes.map((node) => renderInlineMarkdownNode(node)).join(''));
     if (inlineMarkdown) return inlineMarkdown;
@@ -211,6 +211,9 @@ export const selectionNodesToMarkdown = (nodes: SelectionNode[], plainText: stri
     .trim();
   return markdown || trimSelectionValue(plainText);
 };
+
+export const selectionNodesToMarkdown = (nodes: SelectionNode[], plainText: string): string =>
+  renderTrimmedSelectionNodes(trimSelectionNodes(nodes), plainText);
 
 const getContainingBlockCode = (node: Node): HTMLElement | null => {
   const element = node.nodeType === 1 ? node as Element : node.parentElement;
@@ -229,7 +232,7 @@ export const rangeToMarkdown = (range: Range, plainText: string): string => {
     );
   }
 
-  return selectionNodesToMarkdown(nodes, plainText);
+  return renderTrimmedSelectionNodes(nodes, plainText);
 };
 
 export const wrapMarkdownSelectionForChat = (markdown: string): string => {

@@ -2,7 +2,7 @@ import React from 'react';
 import { dropdownTriggerVariants } from '@/components/ui/dropdown-trigger';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ProviderLogo } from '@/components/ui/ProviderLogo';
-import { EngineLogo } from '@/components/ui/EngineLogo';
+import { HarnessLogo } from '@/components/ui/HarnessLogo';
 import { Icon } from "@/components/icon/Icon";
 import { cn } from '@/lib/utils';
 import { useConfigStore } from '@/stores/useConfigStore';
@@ -13,11 +13,11 @@ import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { ModelPickerList, type ModelPickerEntry, type ModelPickerProvider } from '@/components/model-picker/ModelPickerList';
 import {
-  buildEngineOptions,
+  buildHarnessOptions,
   buildPickerProviders,
 } from '@/components/chat/model-controls/modelPickerData';
 import { CLAUDE_FAVORITE_PROVIDER_ID } from '@/lib/harness/favorite-targets';
-import { withEnginesSettingsDefaults } from '@/lib/harness/settings';
+import { withHarnessSettingsDefaults } from '@/lib/harness/settings';
 import type { HarnessId } from '@/types/harness';
 import { CLAUDE_EFFORT_LEVELS } from '@/types/harness';
 
@@ -55,7 +55,7 @@ const ModelChip: React.FC<{
   return (
     <div className={cn('flex items-center gap-1.5 px-2 rounded-md bg-interactive-selection/20 border border-border/30', CHIP_HEIGHT_CLASS)}>
       {isClaude
-        ? <EngineLogo harnessId="claude-code" className="h-3.5 w-3.5" />
+        ? <HarnessLogo harnessId="claude-code" className="h-3.5 w-3.5" />
         : <ProviderLogo providerId={model.providerID} className="h-3.5 w-3.5" />}
       <span className="typography-meta font-medium truncate max-w-[140px]">
         {label}
@@ -125,7 +125,7 @@ export const ModelMultiSelect: React.FC<ModelMultiSelectProps> = ({
   const claudeCatalog = useHarnessStore((state) => state.catalogsById['claude-code']);
   const refreshHarnessCatalog = useHarnessStore((state) => state.refresh);
   const [pickerHarnessId, setPickerHarnessId] = React.useState<HarnessId>('opencode');
-  const [enginesClaudeCodeEnabled, setEnginesClaudeCodeEnabled] = React.useState(true);
+  const [harnessClaudeCodeEnabled, setHarnessClaudeCodeEnabled] = React.useState(true);
   const [isOpen, setIsOpen] = React.useState(false);
   const [searchQuery, setSearchQuery] = React.useState('');
   const [availableHeight, setAvailableHeight] = React.useState<number | null>(null);
@@ -149,12 +149,12 @@ export const ModelMultiSelect: React.FC<ModelMultiSelectProps> = ({
         if (!response.ok || cancelled) return;
         const data = await response.json().catch(() => null) as Record<string, unknown> | null;
         if (!data || cancelled) return;
-        const resolved = withEnginesSettingsDefaults({
-          enginesClaudeCodeEnabled: typeof data.enginesClaudeCodeEnabled === 'boolean'
-            ? data.enginesClaudeCodeEnabled
+        const resolved = withHarnessSettingsDefaults({
+          harnessClaudeCodeEnabled: typeof data.harnessClaudeCodeEnabled === 'boolean'
+            ? data.harnessClaudeCodeEnabled
             : undefined,
         });
-        setEnginesClaudeCodeEnabled(resolved.enginesClaudeCodeEnabled);
+        setHarnessClaudeCodeEnabled(resolved.harnessClaudeCodeEnabled);
       } catch {
         // keep default
       }
@@ -180,14 +180,14 @@ export const ModelMultiSelect: React.FC<ModelMultiSelectProps> = ({
     [claudeCatalogModels, pickerHarnessId, providers, t],
   );
 
-  const engineOptions = React.useMemo(
-    () => buildEngineOptions({
+  const harnessOptions = React.useMemo(
+    () => buildHarnessOptions({
       t,
       pickerHarnessId,
-      enginesClaudeCodeEnabled,
+      harnessClaudeCodeEnabled,
       claudeCatalog,
     }),
-    [claudeCatalog, enginesClaudeCodeEnabled, pickerHarnessId, t],
+    [claudeCatalog, harnessClaudeCodeEnabled, pickerHarnessId, t],
   );
 
   // Count occurrences of each model for display purposes
@@ -264,11 +264,11 @@ export const ModelMultiSelect: React.FC<ModelMultiSelectProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isOpen]);
 
-  const handleSelectEngine = React.useCallback((engineId: HarnessId) => {
-    if (engineId === 'claude-code' && !enginesClaudeCodeEnabled) return;
+  const handleSelectHarness = React.useCallback((engineId: HarnessId) => {
+    if (engineId === 'claude-code' && !harnessClaudeCodeEnabled) return;
     setPickerHarnessId(engineId);
     setSearchQuery('');
-  }, [enginesClaudeCodeEnabled]);
+  }, [harnessClaudeCodeEnabled]);
 
   const handleSelectModel = React.useCallback((entry: ModelPickerEntry) => {
     const nextModel = {
@@ -302,7 +302,7 @@ export const ModelMultiSelect: React.FC<ModelMultiSelectProps> = ({
     input: t('chat.modelControls.input'),
     output: t('chat.modelControls.output'),
     costPerMillion: t('chat.modelControls.costPerMillion'),
-    engines: t('chat.engines.section'),
+    engines: t('chat.harness.section'),
   }), [t]);
 
   const filteredFavorites = React.useMemo(
@@ -368,10 +368,10 @@ export const ModelMultiSelect: React.FC<ModelMultiSelectProps> = ({
                 onSearchQueryChange={setSearchQuery}
                 onSelect={handleSelectModel}
                 labels={labels}
-                engines={engineOptions}
-                onSelectEngine={(engineId) => {
+                harnesses={harnessOptions}
+                onSelectHarness={(engineId) => {
                   if (engineId === 'opencode' || engineId === 'claude-code') {
-                    handleSelectEngine(engineId);
+                    handleSelectHarness(engineId);
                   }
                 }}
                 selectionCount={(entry) => modelCounts.get(`${entry.providerID}:${entry.modelID}`) || 0}

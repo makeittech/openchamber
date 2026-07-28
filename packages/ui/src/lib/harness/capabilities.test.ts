@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
-import type { EngineCatalog, HarnessId } from '@/types/harness';
+import type { HarnessCatalog, HarnessId } from '@/types/harness';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useHarnessStore } from '@/stores/useHarnessStore';
 import {
-  engineSupportsSteerDelivery,
+  harnessSupportsSteerDelivery,
   getHarnessCapabilityLevel,
   resolveSessionHarnessId,
   sessionSupports,
@@ -77,8 +77,8 @@ describe('sessionSupports', () => {
   });
 
   test('Claude sessions do not support steer delivery', () => {
-    expect(engineSupportsSteerDelivery('opencode')).toBe(true);
-    expect(engineSupportsSteerDelivery('claude-code')).toBe(false);
+    expect(harnessSupportsSteerDelivery('opencode')).toBe(true);
+    expect(harnessSupportsSteerDelivery('claude-code')).toBe(false);
     useSelectionStore.getState().saveSessionTarget('ses_claude', {
       harnessId: 'claude-code',
       modelRef: 'sonnet',
@@ -89,8 +89,8 @@ describe('sessionSupports', () => {
   });
 
   test('prefers catalog capability levels when present', () => {
-    const catalog: EngineCatalog = {
-      engine: {
+    const catalog: HarnessCatalog = {
+      descriptor: {
         id: 'claude-code',
         displayName: 'Claude Code',
         shortName: 'Claude',
@@ -106,7 +106,7 @@ describe('sessionSupports', () => {
     };
     useHarnessStore.setState({
       catalogs: [catalog],
-      catalogsById: { 'claude-code': catalog } as Partial<Record<HarnessId, EngineCatalog>>,
+      catalogsById: { 'claude-code': catalog } as Partial<Record<HarnessId, HarnessCatalog>>,
       loadState: 'ready',
       error: null,
     });

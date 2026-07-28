@@ -101,7 +101,7 @@ export function buildClaudePrompt(text, files, options = {}) {
  * @param {() => ((payload: object, options?: object) => void) | null | undefined} [deps.getBroadcast]
  * @param {typeof startClaudeQuery} [deps.startQuery]
  * @param {typeof detectClaudeCode} [deps.detect]
- * @param {(options?: { contextDirectory?: string | null }) => Promise<Record<string, unknown> | null>} [deps.createOpenChamberMcpServers]
+ * @param {(options?: { contextDirectory?: string | null, signal?: AbortSignal }) => Promise<Record<string, unknown> | null>} [deps.createOpenChamberMcpServers]
  */
 export function createClaudeCodeTranslator(deps = {}) {
   /** @type {Map<string, { handle: object, ctx: object, aborting: boolean, idleEmitted: boolean }>} */
@@ -221,10 +221,18 @@ export function createClaudeCodeTranslator(deps = {}) {
     // Bridge user/project OpenChamber MCP configs, then merge the in-process
     // OpenChamber control tool (if enabled). Control-tool failure must not block
     // the turn — Claude can still answer with bridged MCP alone.
+    // One controller per turn. A bridged OpenChamber control action can wait on
+    // a session for its whole `timeout` (up to 24h), so ending the turn has to
+    // cancel it too — otherwise it keeps polling long after the turn is gone.
+    const turnAbort = new AbortController();
+
     const bridgedMcpServers = buildClaudeMcpServersFromOpenChamber(directory);
     let controlMcpServers = null;
     try {
-      controlMcpServers = await createOpenChamberMcpServers({ contextDirectory: directory });
+      controlMcpServers = await createOpenChamberMcpServers({
+        contextDirectory: directory,
+        signal: turnAbort.signal,
+      });
     } catch (error) {
       console.warn(
         '[harness/claude-code] OpenChamber MCP injection failed:',
@@ -285,6 +293,8 @@ export function createClaudeCodeTranslator(deps = {}) {
         agentProgressSummaries: true,
       });
     } catch (error) {
+      // The turn never started; release anything the MCP bridge already began.
+      turnAbort.abort();
       const wrapped = error instanceof Error ? error : new Error(String(error));
       if (!wrapped.code) wrapped.code = 'CLAUDE_SDK_UNAVAILABLE';
       if (!wrapped.statusCode) wrapped.statusCode = 503;
@@ -296,7 +306,7 @@ export function createClaudeCodeTranslator(deps = {}) {
       throw wrapped;
     }
 
-    const activeTurn = { handle, ctx, aborting: false, idleEmitted: false };
+    const activeTurn = { handle, ctx, aborting: false, idleEmitted: false, turnAbort };
     activeTurns.set(sessionId, activeTurn);
     const emitEvents = (events) => {
       if (events.some((event) => isIdleStatusEvent(event, sessionId))) {
@@ -366,6 +376,8 @@ export function createClaudeCodeTranslator(deps = {}) {
         } catch {
           // ignore
         }
+        // No control action may outlive the turn that requested it.
+        turnAbort.abort();
         activeTurns.delete(sessionId);
       }
     })();
@@ -401,6 +413,13 @@ export function createClaudeCodeTranslator(deps = {}) {
 
     active.aborting = true;
     active.idleEmitted = true;
+    try {
+      // Cancels an in-flight bridged control action (`wait: true` can poll for
+      // hours); the control service rejects with 499 on this signal.
+      active.turnAbort?.abort();
+    } catch {
+      // abort cleanup must still close and remove the active turn
+    }
     try {
       rejectPendingForSession(sessionId);
     } catch {

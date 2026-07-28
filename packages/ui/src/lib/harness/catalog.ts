@@ -1,8 +1,8 @@
 import type {
   CapabilityLevel,
-  EngineCatalog,
-  EngineCatalogModel,
-  EngineCatalogSection,
+  HarnessCatalog,
+  HarnessCatalogModel,
+  HarnessCatalogSection,
   HarnessAuthMode,
   HarnessCapability,
   HarnessDescriptor,
@@ -97,7 +97,7 @@ const parseStringList = (value: unknown): string[] | undefined => {
   return items.length > 0 ? items : undefined;
 };
 
-const parseModel = (value: unknown): EngineCatalogModel | null => {
+const parseModel = (value: unknown): HarnessCatalogModel | null => {
   if (!isRecord(value)) {
     return null;
   }
@@ -136,7 +136,7 @@ const parseModel = (value: unknown): EngineCatalogModel | null => {
   };
 };
 
-const parseSection = (value: unknown): EngineCatalogSection | null => {
+const parseSection = (value: unknown): HarnessCatalogSection | null => {
   if (!isRecord(value)) {
     return null;
   }
@@ -154,7 +154,7 @@ const parseSection = (value: unknown): EngineCatalogSection | null => {
   }
   const models = value.models
     .map((entry) => parseModel(entry))
-    .filter((entry): entry is EngineCatalogModel => Boolean(entry));
+    .filter((entry): entry is HarnessCatalogModel => Boolean(entry));
   return {
     id: value.id.trim(),
     name: value.name.trim(),
@@ -163,13 +163,13 @@ const parseSection = (value: unknown): EngineCatalogSection | null => {
   };
 };
 
-/** Parse one engine catalog object from server JSON. Returns null on malformed payload. */
-export function parseEngineCatalog(value: unknown): EngineCatalog | null {
+/** Parse one harness catalog object from server JSON. Returns null on malformed payload. */
+export function parseHarnessCatalog(value: unknown): HarnessCatalog | null {
   if (!isRecord(value)) {
     return null;
   }
-  const engine = parseDescriptor(value.engine);
-  if (!engine) {
+  const descriptor = parseDescriptor(value.descriptor);
+  if (!descriptor) {
     return null;
   }
   if (!isHarnessRuntimeStatus(value.status)) {
@@ -178,11 +178,11 @@ export function parseEngineCatalog(value: unknown): EngineCatalog | null {
   const sections = Array.isArray(value.sections)
     ? value.sections
       .map((entry) => parseSection(entry))
-      .filter((entry): entry is EngineCatalogSection => Boolean(entry))
+      .filter((entry): entry is HarnessCatalogSection => Boolean(entry))
     : [];
 
   return {
-    engine,
+    descriptor,
     status: value.status as HarnessRuntimeStatus,
     ...(typeof value.statusDetail === 'string' && value.statusDetail.trim().length > 0
       ? { statusDetail: value.statusDetail.trim() }
@@ -194,13 +194,13 @@ export function parseEngineCatalog(value: unknown): EngineCatalog | null {
   };
 }
 
-const parseCatalogArray = (list: unknown[]): EngineCatalog[] | null => {
+const parseCatalogArray = (list: unknown[]): HarnessCatalog[] | null => {
   if (list.length === 0) {
     return [];
   }
   const catalogs = list
-    .map((entry) => parseEngineCatalog(entry))
-    .filter((entry): entry is EngineCatalog => Boolean(entry));
+    .map((entry) => parseHarnessCatalog(entry))
+    .filter((entry): entry is HarnessCatalog => Boolean(entry));
   // Every entry malformed ⇒ treat as parse failure, not authoritative empty.
   if (catalogs.length === 0) {
     return null;
@@ -209,17 +209,17 @@ const parseCatalogArray = (list: unknown[]): EngineCatalog[] | null => {
 };
 
 /** Parse GET /api/harness list payload. Returns null exclusively on fetch/parse failure shapes. */
-export function parseEngineCatalogList(payload: unknown): EngineCatalog[] | null {
+export function parseHarnessCatalogList(payload: unknown): HarnessCatalog[] | null {
   if (Array.isArray(payload)) {
     return parseCatalogArray(payload);
   }
   if (!isRecord(payload)) {
     return null;
   }
-  const list = Array.isArray(payload.engines)
-    ? payload.engines
-    : Array.isArray(payload.catalogs)
-      ? payload.catalogs
+  const list = Array.isArray(payload.catalogs)
+    ? payload.catalogs
+    : Array.isArray(payload.engines)
+      ? payload.engines
       : null;
   if (!list) {
     return null;
@@ -227,10 +227,10 @@ export function parseEngineCatalogList(payload: unknown): EngineCatalog[] | null
   return parseCatalogArray(list);
 }
 
-export function indexCatalogsById(catalogs: EngineCatalog[]): Record<HarnessId, EngineCatalog | undefined> {
-  const result: Partial<Record<HarnessId, EngineCatalog>> = {};
+export function indexCatalogsById(catalogs: HarnessCatalog[]): Record<HarnessId, HarnessCatalog | undefined> {
+  const result: Partial<Record<HarnessId, HarnessCatalog>> = {};
   for (const catalog of catalogs) {
-    result[catalog.engine.id] = catalog;
+    result[catalog.descriptor.id] = catalog;
   }
-  return result as Record<HarnessId, EngineCatalog | undefined>;
+  return result as Record<HarnessId, HarnessCatalog | undefined>;
 }

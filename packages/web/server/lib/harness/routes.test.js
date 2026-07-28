@@ -36,17 +36,17 @@ async function withServer(register, run) {
 }
 
 describe('harness routes', () => {
-  it('lists engines and returns 404 for unknown harness', async () => {
+  it('lists harness catalogs and returns 404 for unknown harness', async () => {
     await withServer((app) => {
       registerHarnessRoutes(app, {
         initBindings: false,
         detectAll: async () => ([
-          { engine: { id: 'opencode' }, status: 'ready', sections: [] },
-          { engine: { id: 'claude-code' }, status: 'missing-cli', sections: [] },
+          { descriptor: { id: 'opencode' }, status: 'ready', sections: [] },
+          { descriptor: { id: 'claude-code' }, status: 'missing-cli', sections: [] },
         ]),
         detectOne: async (id) => {
           if (id === 'claude-code') {
-            return { engine: { id: 'claude-code' }, status: 'missing-cli', sections: [] };
+            return { descriptor: { id: 'claude-code' }, status: 'missing-cli', sections: [] };
           }
           return null;
         },
@@ -55,8 +55,8 @@ describe('harness routes', () => {
       const list = await fetch(`${base}/api/harness`);
       expect(list.status).toBe(200);
       const body = await list.json();
-      expect(body.engines).toHaveLength(2);
-      expect(body.engines[1].status).toBe('missing-cli');
+      expect(body.catalogs).toHaveLength(2);
+      expect(body.catalogs[1].status).toBe('missing-cli');
 
       const missing = await fetch(`${base}/api/harness/nope`);
       expect(missing.status).toBe(404);

@@ -25,8 +25,8 @@ import { SkillsPage } from '@/components/sections/skills/SkillsPage';
 import { ProjectsSidebar } from '@/components/sections/projects/ProjectsSidebar';
 import { ProjectsPage } from '@/components/sections/projects/ProjectsPage';
 import { RemoteInstancesPage } from '@/components/sections/remote-instances/RemoteInstancesPage';
-import { EnginesSidebar } from '@/components/sections/engines/EnginesSidebar';
-import { EnginesPage } from '@/components/sections/engines/EnginesPage';
+import { HarnessSidebar } from '@/components/sections/harness/HarnessSidebar';
+import { HarnessPage } from '@/components/sections/harness/HarnessPage';
 import { ProvidersSidebar } from '@/components/sections/providers/ProvidersSidebar';
 import { ProvidersPage } from '@/components/sections/providers/ProvidersPage';
 import { useHarnessStore } from '@/stores/useHarnessStore';
@@ -100,7 +100,7 @@ const pageOrder: SettingsPageSlug[] = [
   'tunnel',
   'git',
   // 'opencode' group — OpenCode
-  'engines',
+  'harness',
   'providers',
   'agents',
   'behavior',
@@ -198,7 +198,7 @@ export function getSettingsNavIcon(slug: SettingsPageSlug): IconName | null {
     case 'sessions':
       return 'chat-history';
 
-    case 'engines':
+    case 'harness':
       return 'terminal-box';
     case 'providers':
       return 'cloud';
@@ -378,8 +378,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
         return t('settings.page.projects.title');
       case 'remote-instances':
         return t('settings.page.remoteInstances.title');
-      case 'engines':
-        return t('settings.page.engines.title');
+      case 'harness':
+        return t('settings.page.harness.title');
       case 'providers':
         return t('settings.page.providers.title');
       case 'usage':
@@ -496,11 +496,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
       useConfigStore.getState().setSelectedProvider(ADD_PROVIDER_SETTINGS_ID);
     }
 
-    if (result.id.startsWith('engines.')) {
+    if (result.id.startsWith('harness.')) {
       const harnessStore = useHarnessStore.getState();
-      if (result.id.startsWith('engines.claude-code')) {
+      if (result.id.startsWith('harness.claude-code')) {
         harnessStore.setSelectedHarnessId('claude-code');
-      } else if (result.id.startsWith('engines.opencode')) {
+      } else if (result.id.startsWith('harness.opencode')) {
         harnessStore.setSelectedHarnessId('opencode');
       }
     }
@@ -658,8 +658,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
         return <PluginsSidebar onItemSelect={opts.onItemSelect} />;
       case 'skills.installed':
         return <SkillsSidebar onItemSelect={opts.onItemSelect} />;
-      case 'engines':
-        return <EnginesSidebar onItemSelect={opts.onItemSelect} />;
+      case 'harness':
+        return <HarnessSidebar onItemSelect={opts.onItemSelect} />;
       case 'providers':
         return <ProvidersSidebar onItemSelect={opts.onItemSelect} />;
       case 'usage':
@@ -698,8 +698,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
         return <SkillsPage view="installed" />;
       case 'skills.catalog':
         return <SkillsPage view="catalog" />;
-      case 'engines':
-        return <EnginesPage />;
+      case 'harness':
+        return <HarnessPage />;
       case 'providers':
         return <ProvidersPage />;
       case 'usage':

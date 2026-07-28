@@ -1,17 +1,17 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { indexCatalogsById, parseEngineCatalog, parseEngineCatalogList } from '@/lib/harness/catalog';
+import { indexCatalogsById, parseHarnessCatalog, parseHarnessCatalogList } from '@/lib/harness/catalog';
 import { opencodeClient } from '@/lib/opencode/client';
 import { useProjectsStore } from '@/stores/useProjectsStore';
-import type { EngineCatalog, HarnessId } from '@/types/harness';
+import type { HarnessCatalog, HarnessId } from '@/types/harness';
 import { isHarnessId } from '@/types/harness';
 
 export type HarnessLoadState = 'idle' | 'loading' | 'ready' | 'error';
 
 export type HarnessStore = {
-  catalogs: EngineCatalog[];
-  catalogsById: Partial<Record<HarnessId, EngineCatalog>>;
+  catalogs: HarnessCatalog[];
+  catalogsById: Partial<Record<HarnessId, HarnessCatalog>>;
   /** Distinct from ready+empty: authoritative fetch outcome. */
   loadState: HarnessLoadState;
   error: string | null;
@@ -21,7 +21,7 @@ export type HarnessStore = {
   scopeKey: string | null;
 
   setSelectedHarnessId: (id: HarnessId) => void;
-  getCatalog: (id: HarnessId) => EngineCatalog | undefined;
+  getCatalog: (id: HarnessId) => HarnessCatalog | undefined;
   refresh: (options?: { force?: boolean }) => Promise<boolean>;
   refreshDetail: (id: HarnessId) => Promise<boolean>;
   detect: (id: HarnessId) => Promise<boolean>;
@@ -77,8 +77,8 @@ const readErrorMessage = async (response: Response): Promise<string> => {
   return `Request failed (${response.status})`;
 };
 
-const upsertCatalog = (catalogs: EngineCatalog[], next: EngineCatalog): EngineCatalog[] => {
-  const without = catalogs.filter((entry) => entry.engine.id !== next.engine.id);
+const upsertCatalog = (catalogs: HarnessCatalog[], next: HarnessCatalog): HarnessCatalog[] => {
+  const without = catalogs.filter((entry) => entry.descriptor.id !== next.descriptor.id);
   return [...without, next];
 };
 
@@ -141,7 +141,7 @@ export const useHarnessStore = create<HarnessStore>()(
             if (generation !== loadGeneration) {
               return false;
             }
-            const catalogs = parseEngineCatalogList(payload);
+            const catalogs = parseHarnessCatalogList(payload);
             if (catalogs === null) {
               set({
                 loadState: previous.catalogs.length > 0 ? 'ready' : 'error',
@@ -201,7 +201,7 @@ export const useHarnessStore = create<HarnessStore>()(
           if (generation !== loadGeneration) {
             return false;
           }
-          const catalog = parseEngineCatalog(payload);
+          const catalog = parseHarnessCatalog(payload);
           if (!catalog) {
             set({ error: 'Invalid harness detail response' });
             return false;
@@ -247,7 +247,7 @@ export const useHarnessStore = create<HarnessStore>()(
           if (generation !== loadGeneration) {
             return false;
           }
-          const catalog = parseEngineCatalog(payload);
+          const catalog = parseHarnessCatalog(payload);
           if (!catalog) {
             set({ error: 'Invalid harness detect response' });
             return false;

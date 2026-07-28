@@ -34,7 +34,12 @@ type SettledToolRef = {
 
 const isSessionIdle = (state: State, sessionID: string): boolean => {
   const status = state.session_status[sessionID]
-  return !status || status.type === "idle"
+  if (status) return status.type === "idle"
+  // OpenCode's status snapshot omits idle sessions, so absence means idle —
+  // but only once that snapshot has actually landed. Before it does (attach,
+  // reconnect, cold start, failed status fetch) absence means *unknown*, and
+  // settling on it would kill a tool that is genuinely still running.
+  return state.sessionStatusLoaded === true
 }
 
 const readToolStatus = (part: Part): string | undefined => {

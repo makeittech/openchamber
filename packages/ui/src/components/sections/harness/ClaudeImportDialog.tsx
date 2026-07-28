@@ -39,7 +39,7 @@ const projectLabel = (project: ClaudeImportProjectCandidate): string => {
 const selectableSessions = (project: ClaudeImportProjectCandidate): ClaudeImportSessionCandidate[] =>
   project.sessions.filter((session) => !session.alreadyImported && !session.directoryMissing && session.directory);
 
-export type ClaudeImportDialogProps = {
+type ClaudeImportDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 };
@@ -53,11 +53,18 @@ export const ClaudeImportDialog: React.FC<ClaudeImportDialogProps> = ({ open, on
   const [selected, setSelected] = React.useState<Set<SelectedKey>>(() => new Set());
   const [expanded, setExpanded] = React.useState<Set<string>>(() => new Set());
 
+  // Reopening the dialog starts a second scan; an earlier one that resolves
+  // later must not overwrite the fresher candidate list.
+  const loadGenerationRef = React.useRef(0);
+
   const loadCandidates = React.useCallback(async () => {
+    const generation = loadGenerationRef.current + 1;
+    loadGenerationRef.current = generation;
     setLoading(true);
     setError(null);
     try {
       const payload = await listClaudeImportCandidates();
+      if (loadGenerationRef.current !== generation) return;
       setProjects(payload.projects);
       const nextExpanded = new Set<string>();
       const nextSelected = new Set<SelectedKey>();
@@ -70,16 +77,17 @@ export const ClaudeImportDialog: React.FC<ClaudeImportDialogProps> = ({ open, on
       setExpanded(nextExpanded);
       setSelected(nextSelected);
     } catch (err) {
+      if (loadGenerationRef.current !== generation) return;
       const message = err instanceof HarnessClientError
         ? err.message
         : err instanceof Error
           ? err.message
-          : t('settings.engines.claudeCode.import.error.load');
+          : t('settings.harness.claudeCode.import.error.load');
       setError(message);
       setProjects([]);
       setSelected(new Set());
     } finally {
-      setLoading(false);
+      if (loadGenerationRef.current === generation) setLoading(false);
     }
   }, [t]);
 
@@ -176,32 +184,36 @@ export const ClaudeImportDialog: React.FC<ClaudeImportDialogProps> = ({ open, on
       }
 
       if (result.summary.imported > 0) {
-        toast.success(t('settings.engines.claudeCode.import.toast.success', {
+        toast.success(t('settings.harness.claudeCode.import.toast.success', {
           count: result.summary.imported,
         }));
       }
       if (result.summary.skipped > 0 && result.summary.imported === 0 && result.summary.failed === 0) {
-        toast.success(t('settings.engines.claudeCode.import.toast.skippedOnly', {
+        toast.success(t('settings.harness.claudeCode.import.toast.skippedOnly', {
           count: result.summary.skipped,
         }));
       }
       if (result.summary.failed > 0) {
-        toast.error(t('settings.engines.claudeCode.import.toast.partialFail', {
+        toast.error(t('settings.harness.claudeCode.import.toast.partialFail', {
           failed: result.summary.failed,
           imported: result.summary.imported,
         }));
       }
       if (result.summary.imported === 0 && result.summary.skipped === 0 && result.summary.failed === 0) {
-        toast.error(t('settings.engines.claudeCode.import.toast.none'));
+        toast.error(t('settings.harness.claudeCode.import.toast.none'));
       }
 
-      onOpenChange(false);
+      // Nothing landed — keep the dialog (and the selection) so the user can
+      // retry instead of re-picking every session from a fresh scan.
+      if (result.summary.imported > 0 || result.summary.skipped > 0) {
+        onOpenChange(false);
+      }
     } catch (err) {
       const message = err instanceof HarnessClientError
         ? err.message
         : err instanceof Error
           ? err.message
-          : t('settings.engines.claudeCode.import.error.import');
+          : t('settings.harness.claudeCode.import.error.import');
       setError(message);
       toast.error(message);
     } finally {
@@ -213,19 +225,19 @@ export const ClaudeImportDialog: React.FC<ClaudeImportDialogProps> = ({ open, on
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg max-h-[85vh] flex flex-col gap-0 overflow-hidden">
         <DialogHeader>
-          <DialogTitle>{t('settings.engines.claudeCode.import.dialog.title')}</DialogTitle>
+          <DialogTitle>{t('settings.harness.claudeCode.import.dialog.title')}</DialogTitle>
           <DialogDescription>
-            {t('settings.engines.claudeCode.import.dialog.description')}
+            {t('settings.harness.claudeCode.import.dialog.description')}
           </DialogDescription>
         </DialogHeader>
 
         <div className="flex-1 min-h-0 overflow-y-auto py-3 space-y-3">
           {loading ? (
-            <p className={SETTINGS_HELPER_CLASS}>{t('settings.engines.claudeCode.import.dialog.loading')}</p>
+            <p className={SETTINGS_HELPER_CLASS}>{t('settings.harness.claudeCode.import.dialog.loading')}</p>
           ) : error && projects.length === 0 ? (
             <p className="typography-ui text-status-error">{error}</p>
           ) : projects.length === 0 ? (
-            <p className={SETTINGS_HELPER_CLASS}>{t('settings.engines.claudeCode.import.dialog.empty')}</p>
+            <p className={SETTINGS_HELPER_CLASS}>{t('settings.harness.claudeCode.import.dialog.empty')}</p>
           ) : (
             <>
               <div className="flex items-center justify-between gap-2">
@@ -235,12 +247,12 @@ export const ClaudeImportDialog: React.FC<ClaudeImportDialogProps> = ({ open, on
                     indeterminate={!allSelected && selectedCount > 0}
                     onChange={toggleSelectAll}
                     disabled={allSelectable.length === 0 || importing}
-                    ariaLabel={t('settings.engines.claudeCode.import.dialog.selectAllAria')}
+                    ariaLabel={t('settings.harness.claudeCode.import.dialog.selectAllAria')}
                   />
-                  <span>{t('settings.engines.claudeCode.import.dialog.selectAll')}</span>
+                  <span>{t('settings.harness.claudeCode.import.dialog.selectAll')}</span>
                 </label>
                 <span className={SETTINGS_HELPER_CLASS}>
-                  {t('settings.engines.claudeCode.import.dialog.selectedCount', { count: selectedCount })}
+                  {t('settings.harness.claudeCode.import.dialog.selectedCount', { count: selectedCount })}
                 </span>
               </div>
 
@@ -260,7 +272,7 @@ export const ClaudeImportDialog: React.FC<ClaudeImportDialogProps> = ({ open, on
                           indeterminate={projectIndeterminate}
                           onChange={(enabled) => toggleProject(project, enabled)}
                           disabled={selectable.length === 0 || importing}
-                          ariaLabel={t('settings.engines.claudeCode.import.dialog.projectAria', {
+                          ariaLabel={t('settings.harness.claudeCode.import.dialog.projectAria', {
                             name: projectLabel(project),
                           })}
                         />
@@ -280,9 +292,9 @@ export const ClaudeImportDialog: React.FC<ClaudeImportDialogProps> = ({ open, on
                           <div className={cn(SETTINGS_HELPER_CLASS, 'truncate')}>
                             {project.directory || project.projectKey}
                             {project.directoryMissing
-                              ? ` · ${t('settings.engines.claudeCode.import.dialog.directoryMissing')}`
+                              ? ` · ${t('settings.harness.claudeCode.import.dialog.directoryMissing')}`
                               : ''}
-                            {` · ${t('settings.engines.claudeCode.import.dialog.sessionCount', {
+                            {` · ${t('settings.harness.claudeCode.import.dialog.sessionCount', {
                               count: project.sessionCount,
                             })}`}
                           </div>
@@ -302,19 +314,19 @@ export const ClaudeImportDialog: React.FC<ClaudeImportDialogProps> = ({ open, on
                                   checked={selected.has(sessionKey(session.foreignSessionId))}
                                   onChange={(enabled) => toggleSession(session, enabled)}
                                   disabled={disabled}
-                                  ariaLabel={t('settings.engines.claudeCode.import.dialog.sessionAria', {
+                                  ariaLabel={t('settings.harness.claudeCode.import.dialog.sessionAria', {
                                     title: session.title || session.foreignSessionId,
                                   })}
                                 />
                                 <div className="min-w-0 flex-1">
                                   <div className="typography-ui text-foreground truncate">
-                                    {session.title || t('settings.engines.claudeCode.import.dialog.untitled')}
+                                    {session.title || t('settings.harness.claudeCode.import.dialog.untitled')}
                                   </div>
                                   <div className={SETTINGS_HELPER_CLASS}>
                                     {session.alreadyImported
-                                      ? t('settings.engines.claudeCode.import.dialog.alreadyImported')
+                                      ? t('settings.harness.claudeCode.import.dialog.alreadyImported')
                                       : session.directoryMissing
-                                        ? t('settings.engines.claudeCode.import.dialog.directoryMissing')
+                                        ? t('settings.harness.claudeCode.import.dialog.directoryMissing')
                                         : session.foreignSessionId.slice(0, 8)}
                                   </div>
                                 </div>
@@ -342,7 +354,7 @@ export const ClaudeImportDialog: React.FC<ClaudeImportDialogProps> = ({ open, on
             disabled={importing}
             onClick={() => onOpenChange(false)}
           >
-            {t('settings.engines.claudeCode.import.dialog.cancel')}
+            {t('settings.harness.claudeCode.import.dialog.cancel')}
           </Button>
           <Button
             type="button"
@@ -351,8 +363,8 @@ export const ClaudeImportDialog: React.FC<ClaudeImportDialogProps> = ({ open, on
             onClick={() => void handleImport()}
           >
             {importing
-              ? t('settings.engines.claudeCode.import.dialog.importing')
-              : t('settings.engines.claudeCode.import.dialog.import', { count: selectedCount })}
+              ? t('settings.harness.claudeCode.import.dialog.importing')
+              : t('settings.harness.claudeCode.import.dialog.import', { count: selectedCount })}
           </Button>
         </DialogFooter>
       </DialogContent>

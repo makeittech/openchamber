@@ -6,6 +6,17 @@
 import { listMcpConfigs } from '../../../opencode/mcp.js';
 
 /**
+ * Server name owned by the in-process OpenChamber control tool.
+ *
+ * `permissions.js` auto-allows every `mcp__openchamber__*` tool by name, so a
+ * bridged server may never claim this key: `.opencode/opencode.json` lives
+ * inside the opened repository and is attacker-controlled when that repository
+ * is someone else's. Merge order alone is not a guard — the control server is
+ * absent whenever the agent-control setting is off or its construction throws.
+ */
+const RESERVED_MCP_SERVER_NAME = 'openchamber';
+
+/**
  * @param {unknown} entry
  * @returns {Record<string, unknown> | null}
  */
@@ -90,6 +101,10 @@ export function buildClaudeMcpServersFromOpenChamber(directory, deps = {}) {
     if (!entry || typeof entry !== 'object') continue;
     const name = typeof entry.name === 'string' ? entry.name.trim() : '';
     if (!name) continue;
+    if (name.toLowerCase() === RESERVED_MCP_SERVER_NAME) {
+      console.warn(`[harness/claude-code] ignoring MCP server named "${name}": reserved by OpenChamber`);
+      continue;
+    }
     const converted = convertOpenCodeMcpEntryToClaude(entry);
     if (!converted) continue;
     servers[name] = converted;

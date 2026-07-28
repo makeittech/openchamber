@@ -48,7 +48,7 @@ function useEffortDisplay(claudeEffort: ClaudeEffort | undefined) {
     const { t } = useI18n();
     const isDefault = !claudeEffort;
     return {
-        label: claudeEffort ? t(CLAUDE_EFFORT_LABEL_KEYS[claudeEffort]) : t('chat.engines.effort.default'),
+        label: claudeEffort ? t(CLAUDE_EFFORT_LABEL_KEYS[claudeEffort]) : t('chat.harness.effort.default'),
         isDefault,
         // Non-default effort is a selection, not a status — tint with the
         // selection token rather than a status color.
@@ -80,7 +80,7 @@ export const ClaudeEffortSelector: React.FC<ClaudeEffortSelectorProps> = ({
                     buttonHeight,
                     'cursor-pointer hover:bg-transparent hover:opacity-70',
                 )}
-                aria-label={t('chat.engines.effort.aria', { level: label })}
+                aria-label={t('chat.harness.effort.aria', { level: label })}
             >
                 <Icon name="brain-ai-3" className={cn(controlIconSize, 'flex-shrink-0', colorClass)} />
                 <span
@@ -108,7 +108,7 @@ export const ClaudeEffortSelector: React.FC<ClaudeEffortSelectorProps> = ({
                                 'model-controls__effort-trigger flex items-center gap-1.5 transition-colors cursor-pointer hover:bg-transparent hover:opacity-70 min-w-0',
                                 buttonHeight,
                             )}
-                            aria-label={t('chat.engines.effort.aria', { level: label })}
+                            aria-label={t('chat.harness.effort.aria', { level: label })}
                         >
                             <Icon name="brain-ai-3" className={cn(controlIconSize, 'flex-shrink-0', colorClass)} />
                             <span
@@ -127,12 +127,12 @@ export const ClaudeEffortSelector: React.FC<ClaudeEffortSelectorProps> = ({
                 </TooltipTrigger>
                 <DropdownMenuContent align="end" alignOffset={-40} className="w-[min(180px,calc(100vw-2rem))]">
                     <DropdownMenuLabel className="typography-ui-header font-semibold text-foreground">
-                        {t('chat.engines.effort.label')}
+                        {t('chat.harness.effort.label')}
                     </DropdownMenuLabel>
                     <DropdownMenuItem className="typography-meta" onSelect={() => onEffortChange(undefined)}>
                         <div className="flex items-center justify-between gap-2 w-full min-w-0">
                             <span className="typography-meta font-medium text-foreground truncate min-w-0">
-                                {t('chat.engines.effort.default')}
+                                {t('chat.harness.effort.default')}
                             </span>
                             {isDefault && <Icon name="check" className="size-4 text-primary flex-shrink-0" />}
                         </div>
@@ -157,7 +157,7 @@ export const ClaudeEffortSelector: React.FC<ClaudeEffortSelectorProps> = ({
                 </DropdownMenuContent>
             </DropdownMenu>
             <TooltipContent side="top">
-                <p className="typography-meta">{t('chat.engines.effort.tooltip', { level: label })}</p>
+                <p className="typography-meta">{t('chat.harness.effort.tooltip', { level: label })}</p>
             </TooltipContent>
         </Tooltip>
     );
@@ -181,7 +181,7 @@ export const ClaudeEffortMobilePanel: React.FC<ClaudeEffortMobilePanelProps> = (
         <MobileOverlayPanel
             open={activeMobilePanel === 'effort'}
             onClose={onClose}
-            title={t('chat.engines.effort.label')}
+            title={t('chat.harness.effort.label')}
         >
             <div className="flex flex-col gap-1 p-2">
                 <button
@@ -190,7 +190,7 @@ export const ClaudeEffortMobilePanel: React.FC<ClaudeEffortMobilePanelProps> = (
                     onClick={() => select(undefined)}
                 >
                     <span className="typography-meta font-medium text-foreground">
-                        {t('chat.engines.effort.default')}
+                        {t('chat.harness.effort.default')}
                     </span>
                     {!claudeEffort ? <Icon name="check" className="size-4 text-primary flex-shrink-0" /> : null}
                 </button>
@@ -211,7 +211,7 @@ export const ClaudeEffortMobilePanel: React.FC<ClaudeEffortMobilePanelProps> = (
                 ))}
             </div>
             <p className="typography-meta text-muted-foreground px-3 pb-2">
-                {t('chat.engines.effort.tooltip', { level: label })}
+                {t('chat.harness.effort.tooltip', { level: label })}
             </p>
         </MobileOverlayPanel>
     );

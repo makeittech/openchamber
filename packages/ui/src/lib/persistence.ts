@@ -14,7 +14,7 @@ import { setFilesViewShowGitignored } from '@/lib/filesViewShowGitignored';
 import { loadAppearancePreferences, applyAppearancePreferences } from '@/lib/appearancePersistence';
 import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 import { sanitizeStarterRefs } from '@/lib/draftStarters';
-import { sanitizeEnginesSettings } from '@/lib/harness/settings';
+import { sanitizeHarnessSettings } from '@/lib/harness/settings';
 import {
   favoriteTargetsToLegacyRefs,
   legacyRefsToFavoriteTargets,
@@ -1233,7 +1233,7 @@ const sanitizeWebSettings = (payload: unknown): DesktopSettings | null => {
   if (typeof candidate.smallModelOverride === 'string' && candidate.smallModelOverride.length > 0) {
     result.smallModelOverride = candidate.smallModelOverride;
   }
-  Object.assign(result, sanitizeEnginesSettings(candidate));
+  Object.assign(result, sanitizeHarnessSettings(candidate));
   if (typeof candidate.autoCreateWorktree === 'boolean') {
     result.autoCreateWorktree = candidate.autoCreateWorktree;
   }

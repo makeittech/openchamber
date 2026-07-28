@@ -1,7 +1,7 @@
 import React from 'react';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { cn } from '@/lib/utils';
-import { EngineLogo } from '@/components/ui/EngineLogo';
+import { HarnessLogo } from '@/components/ui/HarnessLogo';
 import { useI18n } from '@/lib/i18n';
 import { SETTINGS_PANEL_TITLE_CLASS } from '@/components/sections/shared/SettingsSection';
 import { useHarnessStore } from '@/stores/useHarnessStore';
@@ -10,7 +10,7 @@ import type { HarnessId, HarnessRuntimeStatus } from '@/types/harness';
 import { HARNESS_IDS } from '@/types/harness';
 import { useShallow } from 'zustand/react/shallow';
 
-interface EnginesSidebarProps {
+interface HarnessSidebarProps {
   onItemSelect?: () => void;
 }
 
@@ -42,27 +42,27 @@ const StatusDot: React.FC<{ tone: StatusTone }> = ({ tone }) => {
   return <span className={cn('inline-block h-2 w-2 rounded-full flex-shrink-0', classes[tone])} />;
 };
 
-const ENGINE_LABEL_KEYS: Record<HarnessId, 'settings.engines.sidebar.engine.opencode' | 'settings.engines.sidebar.engine.claudeCode'> = {
-  opencode: 'settings.engines.sidebar.engine.opencode',
-  'claude-code': 'settings.engines.sidebar.engine.claudeCode',
+const ENGINE_LABEL_KEYS: Record<HarnessId, 'settings.harness.sidebar.harness.opencode' | 'settings.harness.sidebar.harness.claudeCode'> = {
+  opencode: 'settings.harness.sidebar.harness.opencode',
+  'claude-code': 'settings.harness.sidebar.harness.claudeCode',
 };
 
 const STATUS_LABEL_KEYS: Record<
   HarnessRuntimeStatus,
-  | 'settings.engines.sidebar.status.ready'
-  | 'settings.engines.sidebar.status.needsLogin'
-  | 'settings.engines.sidebar.status.missingCli'
-  | 'settings.engines.sidebar.status.unsupportedHost'
-  | 'settings.engines.sidebar.status.error'
+  | 'settings.harness.sidebar.status.ready'
+  | 'settings.harness.sidebar.status.needsLogin'
+  | 'settings.harness.sidebar.status.missingCli'
+  | 'settings.harness.sidebar.status.unsupportedHost'
+  | 'settings.harness.sidebar.status.error'
 > = {
-  ready: 'settings.engines.sidebar.status.ready',
-  'needs-login': 'settings.engines.sidebar.status.needsLogin',
-  'missing-cli': 'settings.engines.sidebar.status.missingCli',
-  'unsupported-host': 'settings.engines.sidebar.status.unsupportedHost',
-  error: 'settings.engines.sidebar.status.error',
+  ready: 'settings.harness.sidebar.status.ready',
+  'needs-login': 'settings.harness.sidebar.status.needsLogin',
+  'missing-cli': 'settings.harness.sidebar.status.missingCli',
+  'unsupported-host': 'settings.harness.sidebar.status.unsupportedHost',
+  error: 'settings.harness.sidebar.status.error',
 };
 
-export const EnginesSidebar: React.FC<EnginesSidebarProps> = ({ onItemSelect }) => {
+export const HarnessSidebar: React.FC<HarnessSidebarProps> = ({ onItemSelect }) => {
   const { t } = useI18n();
   const activeProjectId = useProjectsStore((s) => s.activeProjectId);
   const {
@@ -89,13 +89,13 @@ export const EnginesSidebar: React.FC<EnginesSidebarProps> = ({ onItemSelect }) 
   return (
     <div className="flex h-full flex-col bg-background">
       <div className="border-b px-3 pt-4 pb-3">
-        <h2 className={`${SETTINGS_PANEL_TITLE_CLASS} mb-1`}>{t('settings.engines.sidebar.title')}</h2>
+        <h2 className={`${SETTINGS_PANEL_TITLE_CLASS} mb-1`}>{t('settings.harness.sidebar.title')}</h2>
         <p className="typography-meta text-muted-foreground">
           {loadState === 'loading'
-            ? t('settings.engines.sidebar.status.loading')
+            ? t('settings.harness.sidebar.status.loading')
             : error
-              ? t('settings.engines.page.loadError')
-              : t('settings.engines.sidebar.subtitle')}
+              ? t('settings.harness.page.loadError')
+              : t('settings.harness.sidebar.subtitle')}
         </p>
       </div>
 
@@ -108,8 +108,8 @@ export const EnginesSidebar: React.FC<EnginesSidebarProps> = ({ onItemSelect }) 
           const statusLabel = status
             ? t(STATUS_LABEL_KEYS[status])
             : loadState === 'loading'
-              ? t('settings.engines.sidebar.status.loading')
-              : t('settings.engines.sidebar.status.unknown');
+              ? t('settings.harness.sidebar.status.loading')
+              : t('settings.harness.sidebar.status.unknown');
 
           return (
             <div
@@ -127,7 +127,7 @@ export const EnginesSidebar: React.FC<EnginesSidebarProps> = ({ onItemSelect }) 
                 }}
                 className="flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
               >
-                <EngineLogo
+                <HarnessLogo
                   harnessId={id}
                   className="h-4 w-4 flex-shrink-0 text-muted-foreground"
                 />

@@ -2,6 +2,8 @@ import React from 'react';
 import type { Part } from '@opencode-ai/sdk/v2';
 
 import UserTextPart from './parts/UserTextPart';
+import { HandoffContextPartCard } from './HandoffContextPartCard';
+import { isHandoffContextPart } from '@/lib/harness/handoff-context';
 import ToolPart from './parts/ToolPart';
 import AssistantTextPart from './parts/AssistantTextPart';
 import ReasoningPart from './parts/ReasoningPart';
@@ -730,6 +732,14 @@ const UserMessageBody = React.memo(({ messageId, parts, messageCreatedAt, isMobi
                 style={useStickyScrollableUserContent ? { maxHeight: 'calc(var(--chat-scroll-height, 100dvh) * 0.4)' } : undefined}
             >
                 {userContentParts.map((part, index) => {
+                    if (isHandoffContextPart(part)) {
+                        return (
+                            <React.Fragment key={part.id ?? `user-handoff-context-${index}`}>
+                                <HandoffContextPartCard part={part} />
+                            </React.Fragment>
+                        );
+                    }
+
                     if (isSubtaskPart(part)) {
                         return (
                             <React.Fragment key={part.id ?? `user-subtask-${index}`}>
@@ -2173,7 +2183,7 @@ const AssistantMessageBody = React.memo(({
                             onClick={supportsMultiRun ? handleForkMultiRunClick : undefined}
                             aria-label={supportsMultiRun
                                 ? t('chat.messageBody.actions.startNewMultiRun')
-                                : t('chat.engines.capability.multirunUnsupported')}
+                                : t('chat.harness.capability.multirunUnsupported')}
                         >
                             <ArrowsMerge className="h-4 w-4" />
                         </Button>
@@ -2181,7 +2191,7 @@ const AssistantMessageBody = React.memo(({
                     <TooltipContent sideOffset={6}>
                         {supportsMultiRun
                             ? t('chat.messageBody.actions.startNewMultiRun')
-                            : t('chat.engines.capability.multirunUnsupported')}
+                            : t('chat.harness.capability.multirunUnsupported')}
                     </TooltipContent>
                 </Tooltip>
             ) : null}

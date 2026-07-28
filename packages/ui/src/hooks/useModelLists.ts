@@ -9,7 +9,7 @@ import {
   legacyRefsToFavoriteTargets,
 } from '@/lib/harness/favorite-targets';
 import { buildClaudeModelMetadata } from '@/lib/harness/claude-models';
-import type { EngineCatalogModel, ExecutionTarget } from '@/types/harness';
+import type { HarnessCatalogModel, ExecutionTarget } from '@/types/harness';
 import type { Provider } from '@opencode-ai/sdk/v2';
 
 type ProviderModel = Provider['models'][string];
@@ -32,7 +32,7 @@ const buildClaudeProvider = (name: string, models: ProviderModel[]): ProviderWit
   models,
 });
 
-const asProviderModel = (catalogModel: EngineCatalogModel): ProviderModel => {
+const asProviderModel = (catalogModel: HarnessCatalogModel): ProviderModel => {
   const metadata = buildClaudeModelMetadata(catalogModel);
   const input = metadata.modalities?.input ?? ['text'];
   const output = metadata.modalities?.output ?? ['text'];
@@ -104,7 +104,7 @@ export const useModelLists = () => {
         if (isHidden(ref.providerID, ref.modelID)) continue;
         const providerModel = asProviderModel(model);
         const provider = buildClaudeProvider(
-          claudeCatalog?.engine.displayName || 'Claude Code',
+          claudeCatalog?.descriptor.displayName || 'Claude Code',
           [providerModel],
         );
         items.push({

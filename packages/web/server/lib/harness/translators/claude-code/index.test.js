@@ -72,13 +72,14 @@ function createControlledStream() {
   };
 }
 
-function createHarness(handle) {
+function createHarness(handle, extraDeps = {}) {
   const events = [];
   const startQuery = mock(async () => handle);
   const translator = createClaudeCodeTranslator({
     detect: mock(async () => ({ status: 'ready' })),
     startQuery,
     getBroadcast: () => (payload) => events.push(payload),
+    ...extraDeps,
   });
   return { events, startQuery, translator };
 }
@@ -150,6 +151,45 @@ describe('createClaudeCodeTranslator', () => {
 
     controller.end();
     await waitFor(() => !translator._activeTurns.has('ses_active'));
+  });
+
+  it('abort cancels the signal handed to the OpenChamber MCP bridge', async () => {
+    const controller = createControlledStream();
+    const handle = createHandle(controller);
+    let mcpSignal = null;
+    const { translator } = createHarness(handle, {
+      createOpenChamberMcpServers: async ({ signal }) => {
+        mcpSignal = signal;
+        return null;
+      },
+    });
+
+    await translator.prompt(basePrompt('ses_mcp_abort'));
+    expect(mcpSignal).toBeInstanceOf(AbortSignal);
+    expect(mcpSignal.aborted).toBe(false);
+
+    await translator.abort({ sessionId: 'ses_mcp_abort' });
+
+    // A bridged control action with `wait: true` polls until this fires.
+    expect(mcpSignal.aborted).toBe(true);
+  });
+
+  it('ends the MCP bridge signal when the turn completes normally', async () => {
+    const controller = createControlledStream();
+    const handle = createHandle(controller);
+    let mcpSignal = null;
+    const { translator } = createHarness(handle, {
+      createOpenChamberMcpServers: async ({ signal }) => {
+        mcpSignal = signal;
+        return null;
+      },
+    });
+
+    await translator.prompt(basePrompt('ses_mcp_done'));
+    controller.end();
+    await waitFor(() => !translator._activeTurns.has('ses_mcp_done'));
+
+    expect(mcpSignal.aborted).toBe(true);
   });
 
   it('abort during an active turn emits idle and MessageAbortedError', async () => {

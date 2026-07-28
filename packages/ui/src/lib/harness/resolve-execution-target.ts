@@ -10,7 +10,7 @@ export type ResolveExecutionTargetArgs = {
   variant?: string;
 };
 
-export type ActiveEngineTargetArgs = {
+export type ActiveHarnessTargetArgs = {
   sessionId?: string | null;
   sessionTarget?: ExecutionTarget | null;
   pendingHandoffTarget?: ExecutionTarget | null;
@@ -18,13 +18,13 @@ export type ActiveEngineTargetArgs = {
 };
 
 /**
- * Resolve the engine target the composer is currently acting on, from targets
+ * Resolve the harness target the composer is currently acting on, from targets
  * the caller already holds (no store read).
  *
  * Preference: session target → pending handoff → last used. A pending handoff
  * counts only for a real session; without one there is nothing to hand off from.
  */
-export function resolveActiveEngineTarget(args: ActiveEngineTargetArgs): ExecutionTarget | null {
+export function resolveActiveHarnessTarget(args: ActiveHarnessTargetArgs): ExecutionTarget | null {
   const sessionId = typeof args.sessionId === 'string' ? args.sessionId.trim() : '';
   if (sessionId) {
     if (args.sessionTarget && isExecutionTarget(args.sessionTarget)) return args.sessionTarget;

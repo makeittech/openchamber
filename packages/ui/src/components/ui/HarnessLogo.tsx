@@ -8,14 +8,14 @@ const ENGINE_LOGO_PROVIDER_ID: Record<HarnessId, string> = {
   'claude-code': 'claude-code',
 };
 
-interface EngineLogoProps {
+interface HarnessLogoProps {
   harnessId: HarnessId | string;
   className?: string;
   alt?: string;
 }
 
 /** Brand mark for an execution engine (OpenCode / Claude Code). */
-export const EngineLogo: React.FC<EngineLogoProps> = ({ harnessId, className, alt }) => {
+export const HarnessLogo: React.FC<HarnessLogoProps> = ({ harnessId, className, alt }) => {
   const providerId = harnessId === 'claude-code' || harnessId === 'opencode'
     ? ENGINE_LOGO_PROVIDER_ID[harnessId]
     : null;

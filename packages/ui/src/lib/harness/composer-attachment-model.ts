@@ -5,11 +5,11 @@
  */
 
 import type { ModelMetadata } from '@/types';
-import type { EngineCatalog } from '@/types/harness';
+import type { HarnessCatalog } from '@/types/harness';
 import { resolveActiveClaudeModel } from '@/lib/harness/claude-models';
 import {
-  resolveActiveEngineTarget,
-  type ActiveEngineTargetArgs,
+  resolveActiveHarnessTarget,
+  type ActiveHarnessTargetArgs,
 } from '@/lib/harness/resolve-execution-target';
 
 export type ComposerAttachmentModel = {
@@ -18,13 +18,13 @@ export type ComposerAttachmentModel = {
   inputModalities: string[] | undefined;
 };
 
-export function resolveComposerAttachmentModel(args: ActiveEngineTargetArgs & {
+export function resolveComposerAttachmentModel(args: ActiveHarnessTargetArgs & {
   openCodeProviderId?: string | null;
   openCodeModelId?: string | null;
   openCodeMetadata?: ModelMetadata | null;
-  claudeCatalog?: EngineCatalog | null;
+  claudeCatalog?: HarnessCatalog | null;
 }): ComposerAttachmentModel {
-  const target = resolveActiveEngineTarget(args);
+  const target = resolveActiveHarnessTarget(args);
 
   if (target?.harnessId === 'claude-code') {
     const { modelRef, metadata } = resolveActiveClaudeModel(target, args.claudeCatalog);

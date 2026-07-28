@@ -4,6 +4,8 @@
  * for harness turns (those are broadcast-only into the UI stream).
  */
 
+import { isClaudeSubagentSessionId } from './events/from-claude.js';
+
 /** @typedef {'busy' | 'idle'} HarnessSessionStatus */
 
 /**
@@ -41,11 +43,15 @@ function evictOldestIdle() {
 }
 
 /**
+ * `null` for subagent sessions: they never report status, so tracking them
+ * would only evict real sessions once SESSION_LIMIT is reached.
+ *
  * @param {string} sessionId
  * @param {string} [directory]
- * @returns {HarnessTurnSnapshot}
+ * @returns {HarnessTurnSnapshot | null}
  */
 function ensureSnapshot(sessionId, directory = '') {
+  if (isClaudeSubagentSessionId(sessionId)) return null;
   let snap = snapshots.get(sessionId);
   if (!snap) {
     snap = {
@@ -79,6 +85,7 @@ export function applyHarnessEventToSnapshot(event, directory = '') {
     const statusType = event.properties?.status?.type;
     if (statusType !== 'busy' && statusType !== 'idle') return;
     const snap = ensureSnapshot(sessionId, directory);
+    if (!snap) return;
     snap.status = statusType;
     snap.updatedAt = Date.now();
     if (statusType === 'busy') snap.aborted = false;
@@ -91,6 +98,7 @@ export function applyHarnessEventToSnapshot(event, directory = '') {
     const sessionId = typeof info.sessionID === 'string' ? info.sessionID : '';
     if (!sessionId) return;
     const snap = ensureSnapshot(sessionId, directory);
+    if (!snap) return;
     snap.updatedAt = Date.now();
     if (info.error?.name === 'MessageAbortedError') {
       snap.aborted = true;
@@ -122,6 +130,7 @@ export function applyHarnessEventToSnapshot(event, directory = '') {
     const messageID = typeof part.messageID === 'string' ? part.messageID : '';
     if (!messageID) return;
     const snap = ensureSnapshot(sessionId, directory);
+    if (!snap) return;
     snap.updatedAt = Date.now();
 
     const attach = (bucket) => {

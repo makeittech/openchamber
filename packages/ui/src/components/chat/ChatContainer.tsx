@@ -21,6 +21,7 @@ import { ScrollShadow } from '@/components/ui/ScrollShadow';
 import { useChatAutoFollow, type AnimationHandlers, type ContentChangeReason } from '@/hooks/useChatAutoFollow';
 import { useChatTimelineController } from './hooks/useChatTimelineController';
 import { TimelineDialog } from './TimelineDialog';
+import { HarnessSwitchDialog } from '@/components/harness/HarnessSwitchDialog';
 import { useChatTurnNavigation } from './hooks/useChatTurnNavigation';
 import { useChatSurfaceMode } from './useChatSurfaceMode';
 import { useDeviceInfo } from '@/lib/device';
@@ -1212,6 +1213,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
                 isLoadingEarlier={timelineController.isLoadingOlder}
                 onLoadEarlier={handleLoadOlderClick}
             />
+            <HarnessSwitchDialog />
         </div>
     );
 };

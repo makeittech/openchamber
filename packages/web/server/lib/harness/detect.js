@@ -37,7 +37,7 @@ export function interpretClaudeAuthStatus(payload) {
     return { loggedIn: false, detail: 'auth-status-logged-out', authMethod };
   }
 
-  // API-key / console auth is not Claude subscription login for the engine.
+  // API-key / console auth is not Claude subscription login for the harness.
   if (
     normalized === 'none'
     || normalized.includes('api')
@@ -205,7 +205,7 @@ export async function detectClaudeCode(options = {}) {
     const binaryPath = findClaudeBinary();
     if (!binaryPath) {
       return {
-        engine: descriptor,
+        descriptor,
         status: 'missing-cli',
         statusDetail: 'Claude CLI (`claude`) was not found on PATH',
         sections: [],
@@ -215,7 +215,7 @@ export async function detectClaudeCode(options = {}) {
     const sdk = await probeSdk();
     if (!sdk.available) {
       return {
-        engine: descriptor,
+        descriptor,
         status: 'error',
         statusDetail: sdk.error || 'Claude Agent SDK is unavailable',
         version: probeClaudeVersion(binaryPath),
@@ -231,10 +231,10 @@ export async function detectClaudeCode(options = {}) {
     if (!login.loggedIn) {
       const apiKeyOnly = login.detail === 'api-key-only';
       return {
-        engine: descriptor,
+        descriptor,
         status: 'needs-login',
         statusDetail: apiKeyOnly
-          ? 'Claude Code API-key auth was detected, but this engine requires a Claude subscription login. Run `claude auth login`, then re-detect.'
+          ? 'Claude Code API-key auth was detected, but this harness requires a Claude subscription login. Run `claude auth login`, then re-detect.'
           : 'Claude Code subscription login was not detected. Run `claude auth login`, then re-detect.',
         version,
         sections: [{
@@ -247,7 +247,7 @@ export async function detectClaudeCode(options = {}) {
     }
 
     return {
-      engine: descriptor,
+      descriptor,
       status: 'ready',
       statusDetail: undefined,
       version,
@@ -260,7 +260,7 @@ export async function detectClaudeCode(options = {}) {
     };
   } catch (error) {
     return {
-      engine: descriptor,
+      descriptor,
       status: 'error',
       statusDetail: error instanceof Error ? error.message : 'Claude Code detect failed',
       sections: [],
@@ -277,7 +277,7 @@ export function detectOpenCode(options = {}) {
   const descriptor = getHarnessDescriptor('opencode');
   const ready = options.openCodeReady !== false;
   return {
-    engine: descriptor,
+    descriptor,
     status: ready ? 'ready' : 'error',
     statusDetail: ready ? undefined : 'OpenCode lifecycle is not ready',
     sections: [],

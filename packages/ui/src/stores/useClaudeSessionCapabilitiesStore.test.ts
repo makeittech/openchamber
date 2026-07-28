@@ -22,7 +22,12 @@ let harnessCapabilitiesImpl: () => Promise<{
   },
 });
 
+// `mock.module` is global to the run, so a partial mock would strip the real
+// module's other exports for every test file that loads after this one.
+const actualClient = await import('@/lib/harness/client');
+
 mock.module('@/lib/harness/client', () => ({
+  ...actualClient,
   harnessSessionCapabilities: async (sessionId: string) => {
     const result = await harnessCapabilitiesImpl();
     return {

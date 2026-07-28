@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { parseEngineCatalog } from './catalog';
+import { parseHarnessCatalog } from './catalog';
 
-describe('parseEngineCatalog model fields', () => {
+describe('parseHarnessCatalog model fields', () => {
   test('preserves Claude model limits, modalities, and capability flags', () => {
-    const catalog = parseEngineCatalog({
-      engine: {
+    const catalog = parseHarnessCatalog({
+      descriptor: {
         id: 'claude-code',
         displayName: 'Claude Code',
         shortName: 'Claude',

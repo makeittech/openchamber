@@ -84,7 +84,7 @@ const MOBILE_SETTINGS_PAGES = [
   'magic-prompts',
   'behavior',
   'mcp',
-  'engines',
+  'harness',
   'providers',
   'usage',
   'voice',
