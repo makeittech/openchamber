@@ -151,3 +151,49 @@ describe('startClaudeQuery permissionMode allowlist', () => {
     expect(await runWith('totallyMadeUp')).not.toHaveProperty('permissionMode');
   });
 });
+
+describe('startClaudeQuery effort forwarding', () => {
+  /** @type {string | undefined} */
+  let tempDir;
+
+  afterEach(() => {
+    if (tempDir) {
+      rmSync(tempDir, { recursive: true, force: true });
+      tempDir = undefined;
+    }
+  });
+
+  const runWith = async (effort) => {
+    tempDir = mkdtempSync(join(tmpdir(), 'oc-claude-effort-'));
+    let seenOptions;
+    const handle = await startClaudeQuery({
+      prompt: 'hi',
+      cwd: tempDir,
+      effort,
+      includePartialMessages: false,
+      queryImpl: ({ options }) => {
+        seenOptions = options;
+        return { async *[Symbol.asyncIterator]() {}, interrupt: async () => {} };
+      },
+    });
+    await handle.close?.();
+    return seenOptions;
+  };
+
+  // The SDK turns this into the CLI's `--effort <level>` flag, so the composer
+  // control only has an effect if the level actually lands in options.
+  for (const level of ['low', 'medium', 'high', 'xhigh', 'max']) {
+    it(`forwards the selected level "${level}"`, async () => {
+      expect((await runWith(level)).effort).toBe(level);
+    });
+  }
+
+  it('omits effort for the SDK default', async () => {
+    expect(await runWith(undefined)).not.toHaveProperty('effort');
+    expect(await runWith('  ')).not.toHaveProperty('effort');
+  });
+
+  it('drops an unknown level instead of failing the turn on an invalid flag', async () => {
+    expect(await runWith('ultra')).not.toHaveProperty('effort');
+  });
+});

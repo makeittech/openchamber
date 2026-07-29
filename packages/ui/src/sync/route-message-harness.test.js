@@ -291,29 +291,71 @@ describe('routeMessage Claude harness branch', () => {
     expect(sendMessageCalls).toHaveLength(0);
   });
 
-  test('rejects OpenCode-only slash commands on Claude sessions', async () => {
+  test('translates OpenCode commands into a harness command payload', async () => {
     useSelectionStore.getState().saveSessionTarget('session-claude', {
       harnessId: 'claude-code',
       modelRef: 'sonnet',
     });
     useCommandsStore.setState({
-      commands: [{ name: 'opencode-only-cmd', description: 'oc', scope: 'global' }],
+      commands: [{ name: 'pr-review', description: 'oc', scope: 'global' }],
     });
 
-    let caught = null;
-    try {
-      await routeMessage({
-        sessionId: 'session-claude',
-        directory: '/claude/project',
-        content: '/opencode-only-cmd',
-        providerID: 'anthropic',
-        modelID: 'claude-sonnet',
-      });
-    } catch (error) {
-      caught = error;
-    }
+    await routeMessage({
+      sessionId: 'session-claude',
+      directory: '/claude/project',
+      content: '/pr-review 2480 extra',
+      providerID: 'anthropic',
+      modelID: 'claude-sonnet',
+    });
 
-    expect(caught?.code).toBe('CLAUDE_SLASH_UNSUPPORTED');
-    expect(harnessPromptCalls).toHaveLength(0);
+    expect(harnessPromptCalls).toHaveLength(1);
+    // The server owns expansion, so the literal "/name args" line never travels
+    // as prompt text — only the command reference does.
+    expect(harnessPromptCalls[0].command).toEqual({ name: 'pr-review', arguments: '2480 extra' });
+    expect(harnessPromptCalls[0].text).toBe('');
+    expect(sendMessageCalls).toHaveLength(0);
+  });
+
+  test('keeps queued follow-up text alongside a translated command', async () => {
+    useSelectionStore.getState().saveSessionTarget('session-claude', {
+      harnessId: 'claude-code',
+      modelRef: 'sonnet',
+    });
+    useCommandsStore.setState({
+      commands: [{ name: 'pr-review', description: 'oc', scope: 'global' }],
+    });
+
+    await routeMessage({
+      sessionId: 'session-claude',
+      directory: '/claude/project',
+      content: '/pr-review 2480',
+      providerID: 'anthropic',
+      modelID: 'claude-sonnet',
+      additionalParts: [{ text: 'also check the tests' }],
+    });
+
+    expect(harnessPromptCalls).toHaveLength(1);
+    expect(harnessPromptCalls[0].command).toEqual({ name: 'pr-review', arguments: '2480' });
+    expect(harnessPromptCalls[0].text).toBe('also check the tests');
+  });
+
+  test('leaves unknown slash tokens as literal harness prompt text', async () => {
+    useSelectionStore.getState().saveSessionTarget('session-claude', {
+      harnessId: 'claude-code',
+      modelRef: 'sonnet',
+    });
+    useCommandsStore.setState({ commands: [] });
+
+    await routeMessage({
+      sessionId: 'session-claude',
+      directory: '/claude/project',
+      content: '/not-a-known-command',
+      providerID: 'anthropic',
+      modelID: 'claude-sonnet',
+    });
+
+    expect(harnessPromptCalls).toHaveLength(1);
+    expect(harnessPromptCalls[0].command).toBeUndefined();
+    expect(harnessPromptCalls[0].text).toBe('/not-a-known-command');
   });
 });

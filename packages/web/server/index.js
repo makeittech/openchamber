@@ -95,6 +95,7 @@ import {
   addHarnessEventObserver,
   getHarnessRecentMessages,
   isHarnessSessionWorking,
+  translateOpenCodeCommandForClaude,
 } from './lib/harness/index.js';
 import { createGracefulShutdownRuntime } from './lib/opencode/shutdown-runtime.js';
 import { createProjectConfigRuntime } from './lib/projects/project-config.js';
@@ -462,6 +463,15 @@ const harnessRouter = createHarnessRouter({
   createOpenChamberMcpServers: (options) => (
     claudeOpenChamberMcpAdapter?.createMcpServers(options) ?? Promise.resolve(null)
   ),
+  // OpenCode/OpenChamber slash commands run on Claude sessions by resolving the
+  // authoritative template from OpenCode per turn. `buildOpenCodeUrl` /
+  // `getOpenCodeAuthHeaders` are declared further down; this closure only runs
+  // while serving a prompt, long after module evaluation.
+  resolveOpenCodeCommand: (params) => translateOpenCodeCommandForClaude({
+    ...params,
+    buildOpenCodeUrl,
+    getOpenCodeAuthHeaders,
+  }),
 });
 const broadcastUiNotification = (...args) => notificationEmitterRuntime.broadcastUiNotification(...args);
 

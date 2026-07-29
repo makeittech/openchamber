@@ -2194,7 +2194,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.harness.manageHarnesses': '管理 Harness…',
   'chat.harness.chip.claude': 'Claude · {model}',
   'chat.harness.notReady': 'Claude Code 尚未就绪。请打开设置 → Harness以安装、登录或重新检测。',
-  'chat.harness.slashUnsupported': '此 OpenCode 斜杠命令在 Claude Code 上不可用。请使用 Claude 原生 /命令，或发送普通消息。',
+  'chat.harness.commandTranslationFailed': '无法在 Claude Code 上运行此 OpenCode 命令。',
   'chat.harness.effort.label': '思考强度',
   'chat.harness.effort.default': '默认',
   'chat.harness.effort.low': '低',

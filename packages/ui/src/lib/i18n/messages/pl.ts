@@ -1238,7 +1238,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.harness.manageHarnesses': 'Zarządzaj harnessami…',
   'chat.harness.chip.claude': 'Claude · {model}',
   'chat.harness.notReady': 'Claude Code nie jest gotowy. Otwórz Ustawienia → Harnessy, aby zainstalować, zalogować się lub wykryć ponownie.',
-  'chat.harness.slashUnsupported': 'To polecenie slash OpenCode nie jest dostępne w Claude Code. Użyj natywnego polecenia / Claude albo wyślij zwykłą wiadomość.',
+  'chat.harness.commandTranslationFailed': 'Nie udało się uruchomić tego polecenia OpenCode w Claude Code.',
   'chat.harness.effort.label': 'Wysiłek',
   'chat.harness.effort.default': 'Domyślny',
   'chat.harness.effort.low': 'Niski',

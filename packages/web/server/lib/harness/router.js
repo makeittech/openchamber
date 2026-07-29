@@ -7,12 +7,16 @@ import { createOpenCodeTranslator } from './translators/opencode/index.js';
 
 /**
  * @param {object} [deps]
+ * @param {() => ((payload: object, options?: object) => void) | null | undefined} [deps.getBroadcast]
+ * @param {(options?: object) => Promise<Record<string, unknown> | null>} [deps.createOpenChamberMcpServers]
+ * @param {(params: { name: string, args: string, directory: string }) => Promise<{ name: string, text: string }>} [deps.resolveOpenCodeCommand]
  */
 export function createHarnessRouter(deps = {}) {
   const getBroadcast = deps.getBroadcast || (() => null);
   const claude = deps.claudeTranslator || createClaudeCodeTranslator({
     getBroadcast,
     createOpenChamberMcpServers: deps.createOpenChamberMcpServers,
+    resolveOpenCodeCommand: deps.resolveOpenCodeCommand,
   });
   const opencode = deps.opencodeTranslator || createOpenCodeTranslator();
 

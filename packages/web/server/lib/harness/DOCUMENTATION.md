@@ -28,6 +28,7 @@ Parent specs:
 | Attachment mapping | `translators/claude-code/attachments.js` |
 | Claude permissions bridge | `translators/claude-code/permissions.js` |
 | Claude prompt orchestration | `translators/claude-code/index.js` |
+| OpenCode command → Claude prompt text | `translators/claude-code/opencode-command.js` |
 | Claude local project/chat import | `translators/claude-code/import-from-disk.js` |
 | Claude transcript JSONL → message replay | `translators/claude-code/transcript-messages.js` |
 | OpenCode stub (SDK path stays in UI) | `translators/opencode/index.js` |
@@ -203,11 +204,15 @@ Owning module: `translators/claude-code/import-from-disk.js`.
     "effort": "high"
   },
   "text": "…",
+  "command": { "name": "pr-review", "arguments": "2480" },
   "files": [{ "mime": "image/png", "url": "data:image/png;base64,…", "filename": "a.png" }],
   "messageId": "msg_…",
   "assistantMessageId": "msg_…"
 }
 ```
+
+`command` is optional. When present the server expands the OpenCode command
+template and prepends it to `text` (see *OpenCode command translation*).
 
 Response `202` with `{ ok, sessionId, harnessId, messageId, assistantMessageId, status: "started" }`.
 Streaming continues asynchronously via the event broadcaster.
@@ -345,9 +350,51 @@ Capabilities: `slash-commands: full`, `mcp: full`, `subagents: full`.
 
 | Concern | Behavior |
 | --- | --- |
-| Slash | Claude-native `/command` (from `system/init.slash_commands` + built-ins) is sent as harness prompt text. UI autocomplete switches to Claude commands on Claude sessions. OpenCode-only slash/skills still reject with `CLAUDE_SLASH_UNSUPPORTED`. `/compact` uses Claude compaction, not OpenCode summarize. |
+| Slash | Claude-native `/command` (from `system/init.slash_commands` + built-ins) is sent as harness prompt text. UI autocomplete switches to Claude commands on Claude sessions. OpenCode/OpenChamber commands are **translated** into prompt text (see below). `/compact` uses Claude compaction, not OpenCode summarize. |
 | MCP | OpenChamber MCP configs (`opencode` mcp entries) convert to Claude `mcpServers` (`stdio` / `http`). Project `.mcp.json` still loads via `settingSources`. Status from `system/init.mcp_servers` is stored in `session-capabilities.js`. |
 | Subagents | `Agent` is allowed; nested `parent_tool_use_id` streams map into synthetic child sessions (`session.created` with `parentID`) so the sidebar shows subagent work. |
+
+### OpenCode command translation
+
+Owning module: `translators/claude-code/opencode-command.js`.
+
+Claude Code has no concept of an OpenCode command, so `/pr-review` (and every
+other `.opencode/command` / OpenChamber command, including OpenCode skills,
+which OpenCode registers as commands) is translated into ordinary prompt text
+before the turn starts.
+
+| Step | Where |
+| --- | --- |
+| Detect that the slash token is an OpenCode command, not Claude-native | `session-ui-store.routeMessage` |
+| Send `command: { name, arguments }` in the prompt body | `lib/harness/client.ts` |
+| Resolve the authoritative template (`GET /command?directory=`) | `resolveOpenCodeCommandDefinition` |
+| Expand the template | `expandOpenCodeCommandTemplate` |
+| Use the expanded text for the SDK prompt **and** the user message event | `translators/claude-code/index.js` |
+
+Template syntax:
+
+| Token | Behavior |
+| --- | --- |
+| `$ARGUMENTS` | Replaced with the text typed after the command name (every occurrence). Arguments with no placeholder are appended instead of dropped. |
+| ``!`cmd` `` | Replaced with the command's output, run in the session cwd (30s timeout, 100KB output, max 20 substitutions per template). A failed substitution is inlined as `[command failed: …]` so one broken command does not discard the template. |
+| `@file` | Left as-is — intentional runtime difference: Claude Code resolves `@path` mentions natively and can `Read` the file, so inlining would only duplicate bytes. |
+
+Invariants:
+
+- The **template never comes from the client**. Only the command name and
+  arguments travel, and the server re-reads the definition from OpenCode per
+  turn — otherwise a prompt body could hand the server arbitrary shell to run.
+- Lookup failure is not "command not found": an unreachable OpenCode returns
+  `COMMAND_LOOKUP_FAILED` (502) / `COMMAND_UNAVAILABLE` (503), never a 404 that
+  looks like a command the user never defined.
+- Translation runs **before** `bindSession` and before any optimistic user
+  message is broadcast, so a failed lookup leaves no half-started turn and the
+  client rolls its optimistic message back.
+- `text` in the prompt body carries only the sections *around* the command
+  (handoff seed, queued follow-ups); the server joins them after the expanded
+  template rather than dropping that user input.
+- The command's own `agent` / `model` fields are ignored — the turn runs on the
+  session's Claude target and OpenChamber agent selection.
 
 Invariants that are easy to break here:
 
@@ -511,6 +558,7 @@ bun test packages/web/server/lib/harness/translators/claude-code/auth-env.test.j
 bun test packages/web/server/lib/harness/translators/claude-code/attachments.test.js
 bun test packages/web/server/lib/harness/translators/claude-code/permissions.test.js
 bun test packages/web/server/lib/harness/translators/claude-code/transcript-messages.test.js
+bun test packages/web/server/lib/harness/translators/claude-code/opencode-command.test.js
 bun test packages/ui/src/lib/harness/client.test.js
 ```
 

@@ -74,7 +74,7 @@ import { setSessionOpener } from "./session-navigation"
 import { getRuntimeKey } from "@/lib/runtime-switch"
 import { persistWorktreeTopology, readPersistedWorktreeTopology } from "./worktree-topology-cache"
 import { rememberRuntimeLiveStatus } from "./runtime-live-memory"
-import { HarnessClientError, harnessPrompt } from "@/lib/harness/client"
+import { HarnessClientError, harnessPrompt, type HarnessOpenCodeCommand } from "@/lib/harness/client"
 import { resolveClaudeAgentsSendOptions } from "@/lib/harness/claude-agents-mode"
 import { getCachedClaudeAgentsMode } from "@/lib/harness/settings"
 import {
@@ -91,8 +91,6 @@ import type { ExecutionTarget } from "@/types/harness"
 
 export type { AttachedFile }
 
-const CLAUDE_SLASH_UNSUPPORTED =
-  "This OpenCode slash command is not available on Claude Code. Use a Claude-native /command or send a normal message."
 const CLAUDE_NOT_READY_MESSAGE =
   "Claude Code is not ready. Open Settings → Engines to install, log in, or re-detect."
 
@@ -162,10 +160,12 @@ export function routeMessage(params: {
 
   if (target.harnessId === "claude-code") {
     // Claude-native slash/skills go through harnessPrompt as literal prompt text.
-    // Known OpenCode-only commands/skills that are NOT Claude-native are rejected
-    // rather than silently falling back to OpenCode command dispatch.
+    // OpenCode/OpenChamber commands are not Claude-native, so they are translated:
+    // the server resolves the command template from OpenCode and expands it into
+    // prompt text for this turn (see harness/translators/claude-code).
+    let openCodeCommand: HarnessOpenCodeCommand | undefined
     if (params.content.startsWith("/")) {
-      const [head] = params.content.split(" ")
+      const [head, ...tail] = params.content.split(" ")
       const cmdName = head.slice(1)
       const claudeSlash = new Set(
         useClaudeSessionCapabilitiesStore.getState().getSlashCommands(params.sessionId)
@@ -188,7 +188,7 @@ export function routeMessage(params: {
           || storeCommands.find((c) => c.name === cmdName)
           || useSkillsStore.getState().skills.some((s) => s.name === cmdName)
         if (isOpenCodeCommand) {
-          return Promise.reject(new HarnessClientError(CLAUDE_SLASH_UNSUPPORTED, "CLAUDE_SLASH_UNSUPPORTED", 400))
+          openCodeCommand = { name: cmdName, arguments: tail.join(" ") }
         }
       }
       // Claude-native /command (or unknown token) continues as a harness prompt.
@@ -228,6 +228,12 @@ export function routeMessage(params: {
       .map((text) => text.trim())
       .filter((text) => text.length > 0)
     const harnessText = harnessSections.join("\n\n")
+    // A translated command owns the turn text: the server prepends the expanded
+    // template and appends whatever is sent here, so the literal "/name args"
+    // line is dropped and only the surrounding sections travel.
+    const promptText = openCodeCommand
+      ? [...seedParts, ...queuedParts].map((text) => text.trim()).filter(Boolean).join("\n\n")
+      : harnessText
 
     // Normal prompt — optimistic insert; transport is /api/harness/prompt (not OpenCode SDK).
     return optimisticSend({
@@ -242,7 +248,7 @@ export function routeMessage(params: {
         sessionId: params.sessionId,
         directory,
         target,
-        text: harnessText,
+        text: promptText,
         files: params.files?.map((file) => ({
           mime: file.mime,
           url: file.url,
@@ -252,6 +258,7 @@ export function routeMessage(params: {
         seedFromSessionId: params.seedFromSessionId,
         agentsMode,
         systemPromptAppend,
+        ...(openCodeCommand ? { command: openCodeCommand } : {}),
       }).then(() => {}),
     })
   }

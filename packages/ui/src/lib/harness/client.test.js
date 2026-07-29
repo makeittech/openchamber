@@ -57,6 +57,37 @@ describe('buildHarnessPromptBody', () => {
     expect(body.seedFromSessionId).toBe('ses_source');
   });
 
+  test('carries an OpenCode command reference without its template', () => {
+    const body = buildHarnessPromptBody({
+      sessionId: 'ses_1',
+      directory: '/project',
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      text: '',
+      command: { name: ' pr-review ', arguments: ' 2480 ' },
+    });
+    expect(body.command).toEqual({ name: 'pr-review', arguments: '2480' });
+  });
+
+  test('omits empty command arguments and unnamed commands', () => {
+    const withoutArgs = buildHarnessPromptBody({
+      sessionId: 'ses_1',
+      directory: '/project',
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      text: '',
+      command: { name: 'changelog', arguments: '  ' },
+    });
+    expect(withoutArgs.command).toEqual({ name: 'changelog' });
+
+    const unnamed = buildHarnessPromptBody({
+      sessionId: 'ses_1',
+      directory: '/project',
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      text: 'hi',
+      command: { name: '   ' },
+    });
+    expect(unnamed.command).toBeUndefined();
+  });
+
   test('rejects opencode targets', () => {
     expect(() => buildHarnessPromptBody({
       sessionId: 'ses_1',

@@ -50,9 +50,11 @@ function useEffortDisplay(claudeEffort: ClaudeEffort | undefined) {
     return {
         label: claudeEffort ? t(CLAUDE_EFFORT_LABEL_KEYS[claudeEffort]) : t('chat.harness.effort.default'),
         isDefault,
-        // Non-default effort is a selection, not a status — tint with the
-        // selection token rather than a status color.
-        colorClass: isDefault ? 'text-muted-foreground' : 'text-[color:var(--interactive-selection)]',
+        // Same tint as the OpenCode thinking-variant chip next to it: both mark
+        // an active reasoning-depth override in the same composer row.
+        // `--interactive-selection` is a low-alpha *background* token, so using
+        // it as a text color rendered the active level as unreadable grey.
+        colorClass: isDefault ? 'text-muted-foreground' : 'text-[color:var(--status-info)]',
     };
 }
 

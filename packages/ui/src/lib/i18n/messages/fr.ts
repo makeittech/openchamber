@@ -1994,7 +1994,7 @@ export const dict = {
   'chat.harness.manageHarnesses': 'Gérer les harnesses…',
   'chat.harness.chip.claude': 'Claude · {model}',
   'chat.harness.notReady': 'Claude Code n’est pas prêt. Ouvrez Réglages → Harnesses pour installer, vous connecter ou redétecter.',
-  'chat.harness.slashUnsupported': 'Cette commande slash OpenCode n’est pas disponible sur Claude Code. Utilisez une commande / native Claude ou envoyez un message normal.',
+  'chat.harness.commandTranslationFailed': 'Impossible d’exécuter cette commande OpenCode sur Claude Code.',
   'chat.harness.effort.label': 'Effort',
   'chat.harness.effort.default': 'Par défaut',
   'chat.harness.effort.low': 'Faible',

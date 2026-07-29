@@ -26,6 +26,19 @@ export type HarnessPromptParams = {
   agentsMode?: 'claude' | 'opencode';
   /** OpenCode agent system prompt to append when agentsMode is `opencode`. */
   systemPromptAppend?: string;
+  /**
+   * OpenCode/OpenChamber slash command to translate into prompt text.
+   *
+   * Only the name and arguments travel: the server resolves the authoritative
+   * template from OpenCode itself, so the client never supplies the (shell
+   * bearing) template body.
+   */
+  command?: HarnessOpenCodeCommand;
+};
+
+export type HarnessOpenCodeCommand = {
+  name: string;
+  arguments?: string;
 };
 
 export type HarnessPromptResult = {
@@ -152,6 +165,13 @@ export function buildHarnessPromptBody(params: HarnessPromptParams): Record<stri
   }
   if (typeof params.systemPromptAppend === 'string' && params.systemPromptAppend.trim()) {
     body.systemPromptAppend = params.systemPromptAppend.trim();
+  }
+  const commandName = params.command?.name.trim();
+  if (commandName) {
+    body.command = {
+      name: commandName,
+      ...(params.command?.arguments?.trim() ? { arguments: params.command.arguments.trim() } : {}),
+    };
   }
   return body;
 }

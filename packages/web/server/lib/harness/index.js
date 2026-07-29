@@ -64,6 +64,7 @@ export { mergeHarnessMessagesIntoSessionMessages } from './session-messages.js';
 export { createHarnessRouter } from './router.js';
 export { registerHarnessRoutes } from './routes.js';
 export { createClaudeCodeTranslator, buildClaudePrompt } from './translators/claude-code/index.js';
+export { translateOpenCodeCommandForClaude } from './translators/claude-code/opencode-command.js';
 export { buildClaudeCodeChildEnv, API_PRIORITY_ENV_KEYS } from './translators/claude-code/auth-env.js';
 export {
   mapAttachmentToContentBlock,

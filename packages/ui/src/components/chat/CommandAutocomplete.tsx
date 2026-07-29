@@ -35,6 +35,9 @@ export interface CommandAutocompleteHandle {
   handleKeyDown: (key: string) => void;
 }
 
+/** Stable empty reference so the capabilities selector cannot loop on identity. */
+const EMPTY_SKILL_NAMES: readonly string[] = [];
+
 const BASE_BADGE_CLASS = "text-[10px] leading-none uppercase font-bold tracking-tight px-1.5 py-1 rounded border flex-shrink-0";
 const TYPE_BADGE_CLASS = cn(
   BASE_BADGE_CLASS,
@@ -89,6 +92,9 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
   const claudeSlashCommands = useClaudeSessionCapabilitiesStore((s) => (
     selectClaudeSlashCommands(s, currentSessionId)
   ));
+  const claudeNativeSkills = useClaudeSessionCapabilitiesStore((s) => (
+    (currentSessionId ? s.bySessionId[currentSessionId]?.skills : undefined) ?? EMPTY_SKILL_NAMES
+  ));
   const refreshClaudeCapabilities = useClaudeSessionCapabilitiesStore((s) => s.refresh);
 
   const [commands, setCommands] = React.useState<CommandInfo[]>([]);
@@ -140,7 +146,8 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
       try {
         if (isClaudeEngine) {
           // Claude sessions: Claude-native slash + OpenChamber local helpers that
-          // are engine-agnostic (undo/redo/timeline). Hide OpenCode/skills menus.
+          // are engine-agnostic (undo/redo/timeline) + OpenCode commands, which
+          // the harness translates into prompt text (harness/translators).
           const claudeCommands: CommandInfo[] = claudeSlashCommands.map((name, index) => ({
             id: `claude:slash:${name}:${index}`,
             name,
@@ -156,8 +163,50 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
                 { id: 'openchamber:timeline', name: 'timeline', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.timelineDescription'), isBuiltIn: true },
               ]
             : [];
+          // A Claude-native command or skill of the same name wins in
+          // routeMessage, so it must win in the menu too — otherwise the row
+          // would describe a translation that never happens.
+          const takenNames = new Set(
+            [...claudeCommands, ...localHelpers]
+              .map((cmd) => cmd.name.toLowerCase())
+              .concat(claudeNativeSkills.map((name) => name.toLowerCase())),
+          );
+          const translatedCommands: CommandInfo[] = commandsWithMetadata
+            .filter((cmd) => !takenNames.has(cmd.name.toLowerCase()))
+            .map((cmd, index) => ({
+              id: `opencode:${cmd.scope ?? 'global'}:${cmd.name}:${index}`,
+              name: cmd.name,
+              source: 'opencode' as const,
+              description: cmd.description,
+              agent: cmd.agent ?? undefined,
+              model: cmd.model ?? undefined,
+              isSkill: cmd.source === 'skill',
+              scope: cmd.scope,
+            }));
+          const translatedNames = new Set(translatedCommands.map((cmd) => cmd.name.toLowerCase()));
+          // OpenCode-owned skills: Claude discovers `.claude/skills` itself, so
+          // only the ones it cannot see are worth translating.
+          const translatedSkills: CommandInfo[] = skills
+            .filter((skill) => (
+              skill.source !== 'claude'
+              && !takenNames.has(skill.name.toLowerCase())
+              && !translatedNames.has(skill.name.toLowerCase())
+            ))
+            .map((skill, index) => ({
+              id: `skill:${skill.scope}:${skill.source ?? 'opencode'}:${skill.name}:${index}`,
+              name: skill.name,
+              source: 'skill' as const,
+              description: skill.description,
+              isSkill: true,
+              scope: skill.scope,
+            }));
           // Prefer Claude compact over OpenChamber's OpenCode summarize.
-          const allCommands = [...claudeCommands, ...localHelpers];
+          const allCommands = [
+            ...claudeCommands,
+            ...localHelpers,
+            ...translatedCommands,
+            ...translatedSkills,
+          ];
           const filtered = (searchQuery
             ? allCommands.filter((cmd) => (
               fuzzyMatch(cmd.name, searchQuery)
@@ -355,6 +404,7 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
     t,
     isClaudeEngine,
     claudeSlashCommands,
+    claudeNativeSkills,
   ]);
 
   React.useEffect(() => {

@@ -20,6 +20,7 @@ import {
   importClaudeSessions,
   listClaudeImportCandidates,
 } from './translators/claude-code/import-from-disk.js';
+import { createOpenCodeCommandResolver } from './translators/claude-code/opencode-command.js';
 
 /**
  * @param {import('express').Express} app
@@ -48,11 +49,18 @@ export function registerHarnessRoutes(app, deps = {}) {
   };
   const detectAll = deps.detectAll || detectAllHarnesses;
   const detectOne = deps.detectOne || detectHarness;
-  const router = deps.router || createHarnessRouter({ getBroadcast });
   const buildOpenCodeUrl = typeof deps.buildOpenCodeUrl === 'function' ? deps.buildOpenCodeUrl : null;
   const getOpenCodeAuthHeaders = typeof deps.getOpenCodeAuthHeaders === 'function'
     ? deps.getOpenCodeAuthHeaders
     : () => ({});
+  const resolveOpenCodeCommand = createOpenCodeCommandResolver({
+    buildOpenCodeUrl,
+    getOpenCodeAuthHeaders,
+  });
+  const router = deps.router || createHarnessRouter({
+    getBroadcast,
+    ...(resolveOpenCodeCommand ? { resolveOpenCodeCommand } : {}),
+  });
 
   if (deps.initBindings !== false) {
     initSessionBindings(deps.sessionBindings);

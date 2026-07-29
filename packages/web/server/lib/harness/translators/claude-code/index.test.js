@@ -244,4 +244,111 @@ describe('createClaudeCodeTranslator', () => {
     expect(idleEvents(events, 'ses_no_result')).toHaveLength(1);
     expect(eventTypes(events)).not.toContain('session.error');
   });
+
+  it('forwards the sticky target effort to the SDK query', async () => {
+    const controller = createControlledStream();
+    const handle = createHandle(controller);
+    const { startQuery, translator } = createHarness(handle);
+
+    await translator.prompt({
+      ...basePrompt('ses_effort'),
+      target: { harnessId: 'claude-code', modelRef: 'sonnet', effort: 'xhigh' },
+    });
+
+    expect(startQuery.mock.calls[0][0].effort).toBe('xhigh');
+    expect(getSessionBinding('ses_effort')?.target?.effort).toBe('xhigh');
+
+    controller.end();
+    await waitFor(() => !translator._activeTurns.has('ses_effort'));
+  });
+
+  it('sends the expanded OpenCode command as both prompt and user message', async () => {
+    const controller = createControlledStream();
+    const handle = createHandle(controller);
+    const resolveOpenCodeCommand = mock(async () => ({
+      name: 'pr-review',
+      text: 'Review this pull request: 2480',
+    }));
+    const { events, startQuery, translator } = createHarness(handle, { resolveOpenCodeCommand });
+
+    await translator.prompt({
+      ...basePrompt('ses_command'),
+      text: '',
+      command: { name: 'pr-review', arguments: '2480' },
+    });
+
+    expect(resolveOpenCodeCommand).toHaveBeenCalledWith({
+      name: 'pr-review',
+      args: '2480',
+      directory: '/project',
+    });
+    expect(startQuery.mock.calls[0][0].prompt).toBe('Review this pull request: 2480');
+    const userText = events.find((event) => (
+      event.type === 'message.part.updated'
+      && event.properties?.part?.messageID === 'msg_user_ses_command'
+    ));
+    expect(userText?.properties?.part?.text).toBe('Review this pull request: 2480');
+
+    controller.end();
+    await waitFor(() => !translator._activeTurns.has('ses_command'));
+  });
+
+  it('keeps queued text after the expanded command', async () => {
+    const controller = createControlledStream();
+    const handle = createHandle(controller);
+    const { startQuery, translator } = createHarness(handle, {
+      resolveOpenCodeCommand: async () => ({ name: 'pr-review', text: 'Review PR 2480' }),
+    });
+
+    await translator.prompt({
+      ...basePrompt('ses_command_extra'),
+      text: 'also check the tests',
+      command: { name: 'pr-review', arguments: '2480' },
+    });
+
+    expect(startQuery.mock.calls[0][0].prompt).toBe('Review PR 2480\n\nalso check the tests');
+
+    controller.end();
+    await waitFor(() => !translator._activeTurns.has('ses_command_extra'));
+  });
+
+  it('fails the turn cleanly when command translation is unavailable', async () => {
+    const controller = createControlledStream();
+    const handle = createHandle(controller);
+    const { events, startQuery, translator } = createHarness(handle);
+
+    await expect(translator.prompt({
+      ...basePrompt('ses_command_unavailable'),
+      text: '',
+      command: { name: 'pr-review' },
+    })).rejects.toMatchObject({ code: 'COMMAND_UNAVAILABLE', statusCode: 503 });
+
+    // Nothing optimistic was broadcast and no turn was registered, so the client
+    // can roll its optimistic message back.
+    expect(startQuery).not.toHaveBeenCalled();
+    expect(events).toHaveLength(0);
+    expect(translator._activeTurns.has('ses_command_unavailable')).toBe(false);
+  });
+
+  it('propagates a command lookup failure without starting a turn', async () => {
+    const controller = createControlledStream();
+    const handle = createHandle(controller);
+    const { events, startQuery, translator } = createHarness(handle, {
+      resolveOpenCodeCommand: async () => {
+        const error = new Error('Command /nope was not found in OpenCode');
+        error.code = 'COMMAND_NOT_FOUND';
+        error.statusCode = 404;
+        throw error;
+      },
+    });
+
+    await expect(translator.prompt({
+      ...basePrompt('ses_command_missing'),
+      text: '',
+      command: { name: 'nope' },
+    })).rejects.toMatchObject({ code: 'COMMAND_NOT_FOUND', statusCode: 404 });
+
+    expect(startQuery).not.toHaveBeenCalled();
+    expect(events).toHaveLength(0);
+  });
 });

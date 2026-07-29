@@ -5,6 +5,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { buildClaudeCodeChildEnv } from './auth-env.js';
+import { isClaudeEffort } from '../../registry.js';
 import {
   assertClaudeWorkingDirectory,
   resolveClaudeCodeExecutable,
@@ -214,8 +215,13 @@ export async function startClaudeQuery(params) {
   if (ALLOWED_PERMISSION_MODES.has(permissionMode)) {
     options.permissionMode = permissionMode;
   }
-  if (typeof params.effort === 'string' && params.effort.trim()) {
-    options.effort = params.effort.trim();
+  // The SDK forwards this as the CLI's `--effort <level>` flag, so an
+  // unrecognized level fails the whole turn instead of the control silently
+  // doing nothing. Drop anything outside the registry list and let the SDK
+  // default apply.
+  const effort = typeof params.effort === 'string' ? params.effort.trim() : '';
+  if (isClaudeEffort(effort)) {
+    options.effort = effort;
   }
   if (typeof params.canUseTool === 'function') {
     options.canUseTool = params.canUseTool;

@@ -13,6 +13,7 @@ import {
   rejectPendingForSession,
   replyPermission as replyPendingPermission,
 } from './permissions.js';
+import { normalizeOpenCodeCommandRequest } from './opencode-command.js';
 import {
   buildTurnAbortEvents,
   buildUserMessageEvents,
@@ -102,6 +103,7 @@ export function buildClaudePrompt(text, files, options = {}) {
  * @param {typeof startClaudeQuery} [deps.startQuery]
  * @param {typeof detectClaudeCode} [deps.detect]
  * @param {(options?: { contextDirectory?: string | null, signal?: AbortSignal }) => Promise<Record<string, unknown> | null>} [deps.createOpenChamberMcpServers]
+ * @param {(params: { name: string, args: string, directory: string }) => Promise<{ name: string, text: string }>} [deps.resolveOpenCodeCommand]
  */
 export function createClaudeCodeTranslator(deps = {}) {
   /** @type {Map<string, { handle: object, ctx: object, aborting: boolean, idleEmitted: boolean }>} */
@@ -110,6 +112,9 @@ export function createClaudeCodeTranslator(deps = {}) {
   const startQuery = deps.startQuery || startClaudeQuery;
   const detect = deps.detect || detectClaudeCode;
   const createOpenChamberMcpServers = deps.createOpenChamberMcpServers || (async () => null);
+  const resolveOpenCodeCommand = typeof deps.resolveOpenCodeCommand === 'function'
+    ? deps.resolveOpenCodeCommand
+    : null;
 
   /**
    * @param {object} body
@@ -117,7 +122,8 @@ export function createClaudeCodeTranslator(deps = {}) {
   const prompt = async (body) => {
     const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : '';
     const directory = typeof body?.directory === 'string' ? body.directory : '';
-    const text = typeof body?.text === 'string' ? body.text : '';
+    let text = typeof body?.text === 'string' ? body.text : '';
+    const commandRequest = normalizeOpenCodeCommandRequest(body?.command);
     const target = body?.target && typeof body.target === 'object' ? body.target : null;
     const harnessId = target?.harnessId || 'claude-code';
 
@@ -160,6 +166,29 @@ export function createClaudeCodeTranslator(deps = {}) {
       error.code = 'TURN_IN_PROGRESS';
       error.statusCode = 409;
       throw error;
+    }
+
+    // OpenCode/OpenChamber slash command: translate it into prompt text before
+    // anything is bound or broadcast, so a failed lookup leaves no half-started
+    // turn behind and the client can roll its optimistic message back.
+    if (commandRequest) {
+      if (!resolveOpenCodeCommand) {
+        const error = new Error(
+          'OpenCode command translation is unavailable for this harness runtime',
+        );
+        error.code = 'COMMAND_UNAVAILABLE';
+        error.statusCode = 503;
+        throw error;
+      }
+      const translated = await resolveOpenCodeCommand({
+        name: commandRequest.name,
+        args: commandRequest.args,
+        directory,
+      });
+      // `text` carries only the sections around the command (handoff seed,
+      // queued follow-ups). Keeping them preserves user input that would
+      // otherwise be lost when the command replaces the turn text.
+      text = [translated.text, text.trim()].filter(Boolean).join('\n\n');
     }
 
     const capabilities = getHarnessCapabilities('claude-code');

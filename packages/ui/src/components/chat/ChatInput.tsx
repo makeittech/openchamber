@@ -169,6 +169,13 @@ const MAX_MOBILE_COMPOSER_LINES = 16;
  */
 const MOBILE_COMPOSER_BOUND_GAP_PX = 4;
 const EMPTY_QUEUE: QueuedMessage[] = [];
+/** Harness errors raised while translating an OpenCode command for Claude. */
+const COMMAND_TRANSLATION_ERROR_CODES = new Set([
+    'COMMAND_NOT_FOUND',
+    'COMMAND_LOOKUP_FAILED',
+    'COMMAND_UNAVAILABLE',
+    'COMMAND_INVALID',
+]);
 const COMPACT_CHAT_PLACEHOLDER_MAX_WIDTH = 560;
 const renameFileForAttachmentCitation = (file: File, filename: string): File => {
     if (file.name === filename) {
@@ -1375,13 +1382,24 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                     }
                     return;
                 }
+                // OpenCode command translation failed (missing command, OpenCode
+                // unreachable, empty template). That is not a harness setup
+                // problem, so it gets no "Manage Harnesses" action.
+                if (COMMAND_TRANSLATION_ERROR_CODES.has(error.code)) {
+                    if (allAttachments.length > 0) {
+                        useInputStore.getState().setAttachedFiles(allAttachments);
+                    }
+                    toast.error(
+                        t('chat.harness.commandTranslationFailed'),
+                        rawMessage ? { description: rawMessage } : undefined,
+                    );
+                    return;
+                }
                 const harnessMessage = error.code === 'CLAUDE_NOT_READY'
                     || error.code === 'CLAUDE_MISSING_CLI'
                     || error.code === 'CLAUDE_NEEDS_LOGIN'
                     ? t('chat.harness.notReady')
-                    : error.code === 'CLAUDE_SLASH_UNSUPPORTED'
-                        ? t('chat.harness.slashUnsupported')
-                        : (rawMessage || t('chat.chatInput.toast.messageSendFailed'));
+                    : (rawMessage || t('chat.chatInput.toast.messageSendFailed'));
                 if (allAttachments.length > 0) {
                     useInputStore.getState().setAttachedFiles(allAttachments);
                 }
