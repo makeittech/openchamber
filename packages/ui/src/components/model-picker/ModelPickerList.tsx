@@ -12,7 +12,6 @@ import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } 
 import { CSS as DndCSS } from '@dnd-kit/utilities';
 import { Icon } from '@/components/icon/Icon';
 import { Input } from '@/components/ui/input';
-import { HarnessLogo } from '@/components/ui/HarnessLogo';
 import { ProviderLogo } from '@/components/ui/ProviderLogo';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -21,7 +20,10 @@ import { mergeModelMetadataWithLiveModel } from '@/lib/modelMetadata';
 import { getModelDisplayName as getSharedModelDisplayName } from '@/lib/modelDisplay';
 import { cn } from '@/lib/utils';
 import { useModelPickerSectionsStore } from '@/stores/useModelPickerSectionsStore';
+import { HarnessTabs, type ModelPickerHarnessOption } from './HarnessTabs';
 import type { ModelMetadata } from '@/types';
+
+export type { ModelPickerHarnessOption };
 
 type ProviderModel = Record<string, unknown> & { id?: string; name?: string };
 
@@ -372,13 +374,6 @@ const scrollIntoView = (container: HTMLElement | null, node: HTMLElement | null)
   container.scrollTop = Math.max(0, Math.min(target, max));
 };
 
-export type ModelPickerHarnessOption = {
-  id: string;
-  name: string;
-  statusLabel?: string;
-  selected: boolean;
-};
-
 interface ModelPickerListProps {
   providers: ModelPickerProvider[];
   favoriteModels: ModelPickerFavoriteEntry[];
@@ -414,7 +409,7 @@ interface ModelPickerListProps {
   providerOrder?: string[];
   onReorderProvider?: (orderedProviderIDs: string[]) => void;
   reorderProviderTitle?: string;
-  /** Engines rows rendered between Recents and provider/model lists. */
+  /** Harness tabs rendered above the search field; hidden when only one harness exists. */
   harnesses?: ModelPickerHarnessOption[];
   onSelectHarness?: (harnessId: string) => void;
   /** Actions rendered under the model list (e.g. Manage harnesses…, Add provider…). */
@@ -797,6 +792,17 @@ export const ModelPickerList: React.FC<ModelPickerListProps> = ({
 
   return (
     <>
+      {harnesses && harnesses.length > 1 ? (
+        <div className="px-2 pt-2 pb-1.5 border-b border-border/40">
+          <HarnessTabs
+            harnesses={harnesses}
+            onSelect={onSelectHarness}
+            ariaLabel={labels.harnesses}
+            disabled={disabled}
+          />
+        </div>
+      ) : null}
+
       <div className="px-2 py-1 border-b border-border/40">
         <div className="relative">
           <Icon name="search" className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
@@ -861,48 +867,7 @@ export const ModelPickerList: React.FC<ModelPickerListProps> = ({
             </div>
           ) : null}
 
-          {harnesses && harnesses.length > 0 ? (
-            <div>
-              {(filteredFavorites.length > 0 || filteredRecents.length > 0) ? <div className="h-px bg-border/40 my-1" /> : null}
-              {renderSectionHeader('harnesses', <Icon name="stack" className="h-4 w-4" />, labels.harnesses ?? 'Harnesses')}
-              {!isSectionCollapsed('harnesses') ? (
-                <div className="flex flex-col gap-0.5 pb-1">
-                  {harnesses.map((harness) => (
-                    <button
-                      key={harness.id}
-                      type="button"
-                      disabled={disabled}
-                      onClick={() => onSelectHarness?.(harness.id)}
-                      className={cn(
-                        'w-full text-left px-2 py-1.5 rounded-md typography-meta flex items-center gap-2 cursor-pointer',
-                        !disabled && (harness.selected ? 'bg-interactive-selection' : 'hover:bg-interactive-hover/50'),
-                        disabled && 'cursor-not-allowed opacity-60',
-                        rowClassName,
-                      )}
-                      aria-pressed={harness.selected}
-                    >
-                      <span className={cn(
-                        'flex size-4 flex-shrink-0 items-center justify-center',
-                        harness.selected ? 'text-foreground' : 'text-muted-foreground',
-                      )}>
-                        <Icon name={harness.selected ? 'checkbox-circle' : 'checkbox-blank'} className="size-4" />
-                      </span>
-                      <HarnessLogo
-                        harnessId={harness.id}
-                        className="size-3.5 flex-shrink-0 text-muted-foreground"
-                      />
-                      <span className="font-medium truncate flex-1 min-w-0">{harness.name}</span>
-                      {harness.statusLabel ? (
-                        <span className="typography-micro text-muted-foreground flex-shrink-0">{harness.statusLabel}</span>
-                      ) : null}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-
-          {(filteredFavorites.length > 0 || filteredRecents.length > 0 || (harnesses && harnesses.length > 0)) && filteredProviders.length > 0 ? <div className="h-px bg-border/40 my-1" /> : null}
+          {(filteredFavorites.length > 0 || filteredRecents.length > 0) && filteredProviders.length > 0 ? <div className="h-px bg-border/40 my-1" /> : null}
 
           {providerSortingEnabled ? (
             <DndContext sensors={providerSectionSensors} collisionDetection={closestCenter} onDragEnd={handleProviderDragEnd}>

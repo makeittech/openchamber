@@ -9,7 +9,6 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { MobileOverlayPanel } from '@/components/ui/MobileOverlayPanel';
 import { HarnessLogo } from '@/components/ui/HarnessLogo';
@@ -19,6 +18,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { Icon } from "@/components/icon/Icon";
 import type { IconName } from "@/components/icon/icons";
 import { ModelPickerList, type ModelPickerEntry } from '@/components/model-picker/ModelPickerList';
+import { HarnessTabs } from '@/components/model-picker/HarnessTabs';
 import { useIsVSCodeRuntime } from '@/hooks/useRuntimeAPIs';
 import { isDesktopShell } from '@/lib/desktop';
 import { getAgentColor } from '@/lib/agentColors';
@@ -38,11 +38,10 @@ import { useSync } from '@/sync/use-sync';
 import { useUIStore } from '@/stores/useUIStore';
 import { useModelLists } from '@/hooks/useModelLists';
 import { useIsTextTruncated } from '@/hooks/useIsTextTruncated';
-import { formatEffortLabel, getCycledPrimaryAgentName, isPrimaryMode, type MobileControlsPanel } from './mobileControlsUtils';
+import { formatEffortLabel, getCycledPrimaryAgentName, type MobileControlsPanel } from './mobileControlsUtils';
 import { ClaudeEffortMobilePanel, ClaudeEffortSelector } from './model-controls/ClaudeEffortControl';
 import { MobileInfoCard } from './model-controls/MobileInfoCard';
 import { useModelPickerData } from './model-controls/useModelPickerData';
-import { HARNESS_STATUS_LABEL_KEYS } from './model-controls/modelPickerData';
 import { getCurrentIntlLocale, useI18n } from '@/lib/i18n';
 import { useOpenCodeReadiness } from '@/hooks/useOpenCodeReadiness';
 import { eventMatchesShortcut, getEffectiveShortcutCombo, normalizeCombo } from '@/lib/shortcuts';
@@ -59,6 +58,13 @@ import {
 } from '@/lib/harness/claude-models';
 import { claudePermissionModeFromEditPermission } from '@/lib/harness/claude-models';
 import { getAgentDefaultEditPermission } from '@/stores/utils/permissionUtils';
+import { useClaudeAgentsStore } from '@/stores/useClaudeAgentsStore';
+import {
+    filterComposerAgents,
+    resolveActiveComposerAgentName,
+    resolveComposerAgents,
+    resolveComposerDefaultAgentName,
+} from './model-controls/composerAgents';
 import type { ExecutionTarget, HarnessId } from '@/types/harness';
 import { isClaudeEffort, isClaudePermissionMode } from '@/types/harness';
 import { harnessSessionBinding } from '@/lib/harness/client';
@@ -748,37 +754,62 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         }
     }, [isAgentSelectorOpen, isCompact]);
 
-    const selectableDesktopAgents = React.useMemo(() => {
-        return agents.filter((agent) => isPrimaryMode(agent.mode));
-    }, [agents]);
+    // Claude Code sessions in native agents mode pick from Claude's own agent
+    // set (`.claude/agents` + built-ins) instead of OpenCode agents. The picker
+    // renders both from the same narrow `{ name, description }` shape.
+    const claudeNativeAgentsActive = pickerHarnessId === 'claude-code' && claudeAgentsMode === 'claude';
+    const sessionDirectory = currentSessionId ? getDirectoryForSession(currentSessionId) : undefined;
+    const loadClaudeAgents = useClaudeAgentsStore((state) => state.load);
+    const claudeNativeAgents = useClaudeAgentsStore((state) => state.getAgents(sessionDirectory));
+    const selectClaudeAgent = useClaudeAgentsStore((state) => state.select);
+    const hydrateClaudeAgentSelection = useClaudeAgentsStore((state) => state.hydrateSelection);
+    const claudeSelectedAgentName = useClaudeAgentsStore((state) => state.getSelected(currentSessionId));
 
-    const sortedAndFilteredAgents = React.useMemo(() => {
-        const sorted = [...selectableDesktopAgents].sort((a, b) => a.name.localeCompare(b.name));
-        if (!agentSearchQuery.trim()) {
-            return sorted;
-        }
-        return sorted.filter((agent) =>
-            fuzzyMatch(agent.name, agentSearchQuery) ||
-            (agent.description && fuzzyMatch(agent.description, agentSearchQuery))
-        );
-    }, [selectableDesktopAgents, agentSearchQuery]);
+    React.useEffect(() => {
+        if (!claudeNativeAgentsActive) return;
+        void loadClaudeAgents(sessionDirectory);
+    }, [claudeNativeAgentsActive, loadClaudeAgents, sessionDirectory]);
 
-    const defaultAgentName = React.useMemo(() => {
-        if (settingsDefaultAgent) {
-            const found = selectableDesktopAgents.find(a => a.name === settingsDefaultAgent);
-            if (found) return found.name;
-        }
-        const buildAgent = selectableDesktopAgents.find(a => a.name === 'build');
-        if (buildAgent) return buildAgent.name;
-        return selectableDesktopAgents[0]?.name;
-    }, [settingsDefaultAgent, selectableDesktopAgents]);
+    // Replay the agent the session's last turn ran under, so a reload does not
+    // silently reset the chip to "Claude default" while the server still has it.
+    React.useEffect(() => {
+        if (!claudeNativeAgentsActive || !currentSessionId) return;
+        void hydrateClaudeAgentSelection(currentSessionId);
+    }, [claudeNativeAgentsActive, currentSessionId, hydrateClaudeAgentSelection]);
+
+    const selectableDesktopAgents = React.useMemo(() => resolveComposerAgents({
+        claudeNativeAgentsActive,
+        claudeAgents: claudeNativeAgents,
+        openCodeAgents: agents,
+    }), [agents, claudeNativeAgents, claudeNativeAgentsActive]);
+
+    const sortedAndFilteredAgents = React.useMemo(
+        () => filterComposerAgents(selectableDesktopAgents, agentSearchQuery, fuzzyMatch),
+        [selectableDesktopAgents, agentSearchQuery],
+    );
+
+    const defaultAgentName = React.useMemo(() => resolveComposerDefaultAgentName({
+        claudeNativeAgentsActive,
+        agents: selectableDesktopAgents,
+        settingsDefaultAgent,
+    }), [claudeNativeAgentsActive, settingsDefaultAgent, selectableDesktopAgents]);
+
+    /** Name shown on the agent chip and marked selected in the list. */
+    const activeAgentName = resolveActiveComposerAgentName({
+        claudeNativeAgentsActive,
+        claudeSelectedAgentName,
+        openCodeAgentName: uiAgentName,
+    });
 
     const currentAgent = React.useMemo(() => {
+        // Claude agents are not OpenCode agents — the rich OpenCode tooltip
+        // (permissions, mode, temperature) does not describe them.
+        if (claudeNativeAgentsActive) return undefined;
         if (uiAgentName) {
             return agents.find((agent) => agent.name === uiAgentName);
         }
         return getCurrentAgent?.();
-    }, [agents, getCurrentAgent, uiAgentName]);
+    }, [agents, claudeNativeAgentsActive, getCurrentAgent, uiAgentName]);
 
     const sizeVariant: 'mobile' | 'vscode' | 'default' = isMobile ? 'mobile' : isVSCodeRuntime ? 'vscode' : 'default';
     const buttonHeight = sizeVariant === 'mobile' ? 'h-9' : sizeVariant === 'vscode' ? 'h-6' : 'h-8';
@@ -1467,6 +1498,20 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
 
     const handleAgentChange = React.useCallback((agentName: string, options?: { closeModelSelector?: boolean }) => {
         try {
+            // Native Claude agent: it only names the SDK main-thread agent for
+            // the next turn. It must not touch OpenCode agent/model selection,
+            // which stays keyed on OpenCode agents.
+            if (claudeNativeAgentsActive) {
+                selectClaudeAgent(currentSessionId, agentName);
+                if (options?.closeModelSelector ?? true) {
+                    setAgentMenuOpen(false);
+                }
+                if (isCompact) {
+                    closeMobilePanel();
+                }
+                return;
+            }
+
             explicitAgentSwitchRef.current = agentName;
             setAgent(agentName);
             addRecentAgent(agentName);
@@ -1492,22 +1537,26 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         buildClaudeTarget,
         closeMobilePanel,
         claudeModelRef,
+        claudeNativeAgentsActive,
         currentSessionId,
         isCompact,
         persistTarget,
         pickerHarnessId,
         saveSessionAgentSelection,
+        selectClaudeAgent,
         setAgent,
         setAgentMenuOpen,
     ]);
 
     const handleCycleAgentFromModelPicker = React.useCallback((direction: 1 | -1) => {
+        // Cycling walks OpenCode primary agents; Claude's native set is not one.
+        if (claudeNativeAgentsActive) return;
         const nextAgentName = getCycledPrimaryAgentName(agents, currentAgentName, direction);
         if (!nextAgentName) {
             return;
         }
         handleAgentChange(nextAgentName, { closeModelSelector: false });
-    }, [agents, currentAgentName, handleAgentChange]);
+    }, [agents, claudeNativeAgentsActive, currentAgentName, handleAgentChange]);
 
     const getCycleAgentDirectionFromEvent = React.useCallback((event: KeyboardEvent | React.KeyboardEvent): 1 | -1 | null => {
         const cycleAgentBackwardShortcut = cycleAgentShortcut && !cycleAgentShortcut.includes('shift')
@@ -1617,6 +1666,11 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     const isModelLabelTruncated = useIsTextTruncated(modelLabelRef, [currentModelDisplayName, isCompact]);
 
     const getAgentDisplayName = () => {
+        if (claudeNativeAgentsActive) {
+            return claudeSelectedAgentName
+                ? capitalizeAgentName(claudeSelectedAgentName)
+                : t('chat.modelControls.claudeAgents.defaultAgent');
+        }
         if (!uiAgentName) {
             const buildAgent = primaryAgents.find(agent => agent.name === 'build');
             const defaultAgent = buildAgent || primaryAgents[0];
@@ -2172,6 +2226,13 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                 title={t('chat.modelControls.selectModel')}
             >
                 <div className="flex flex-col gap-2">
+                    <HarnessTabs
+                        harnesses={harnessOptions}
+                        onSelect={handleSelectHarness}
+                        ariaLabel={t('chat.harness.section')}
+                        className="rounded-xl"
+                    />
+
                     <div>
                         <div className="relative">
                             <Icon name="search" className="absolute left-2 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
@@ -2198,38 +2259,6 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                 </button>
                             )}
                         </div>
-                    </div>
-
-                    <div className="flex flex-wrap gap-1.5 px-0.5">
-                        <Button
-                            type="button"
-                            variant="chip"
-                            size="xs"
-                            aria-pressed={pickerHarnessId === 'opencode'}
-                            onClick={() => handleSelectHarness('opencode')}
-                            className="gap-1.5"
-                        >
-                            <HarnessLogo harnessId="opencode" className="size-3.5" />
-                            {t('chat.harness.opencode')}
-                        </Button>
-                        {harnessClaudeCodeEnabled ? (
-                            <Button
-                                type="button"
-                                variant="chip"
-                                size="xs"
-                                aria-pressed={pickerHarnessId === 'claude-code'}
-                                onClick={() => handleSelectHarness('claude-code')}
-                                className="gap-1.5"
-                            >
-                                <HarnessLogo harnessId="claude-code" className="size-3.5" />
-                                {t('chat.harness.claudeCode')}
-                                {claudeCatalog ? (
-                                    <span className="typography-micro text-muted-foreground ml-1">
-                                        {t(HARNESS_STATUS_LABEL_KEYS[claudeCatalog.status])}
-                                    </span>
-                                ) : null}
-                            </Button>
-                        ) : null}
                     </div>
 
                     {!hasResults && (
@@ -2461,7 +2490,6 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
 
     const renderMobileAgentPanel = () => {
         if (!isCompact) return null;
-        if (pickerHarnessId === 'claude-code' && claudeAgentsMode === 'claude') return null;
 
         return (
             <MobileOverlayPanel
@@ -2472,7 +2500,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             >
                 <div className="flex flex-col gap-2">
                     {selectableDesktopAgents.map((agent) => {
-                        const isSelected = agent.name === uiAgentName;
+                        const isSelected = agent.name === activeAgentName;
                         const agentColor = getAgentColor(agent.name);
                         return (
                             <button
@@ -3155,10 +3183,6 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     };
 
     const renderAgentSelector = () => {
-        // Native Claude agents mode: OpenCode agent picker does not apply.
-        if (pickerHarnessId === 'claude-code' && claudeAgentsMode === 'claude') {
-            return null;
-        }
         if (!isCompact) {
             return (
                 <div className="flex items-center gap-2 min-w-0">
@@ -3194,9 +3218,9 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                                     className={cn(
                                                         controlIconSize,
                                                         'flex-shrink-0',
-                                                        uiAgentName ? '' : 'text-muted-foreground'
+                                                        activeAgentName ? '' : 'text-muted-foreground'
                                                     )}
-                                                    style={uiAgentName ? { color: `var(${getAgentColor(uiAgentName).var})` } : undefined}
+                                                    style={activeAgentName ? { color: `var(${getAgentColor(activeAgentName).var})` } : undefined}
                                                 />
                                                 <span
                                                     className={cn(
@@ -3205,7 +3229,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                                         'font-medium min-w-0 truncate',
                                                         isDesktop ? 'max-w-[220px]' : undefined
                                                     )}
-                                                    style={uiAgentName ? { color: `var(${getAgentColor(uiAgentName).var})` } : undefined}
+                                                    style={activeAgentName ? { color: `var(${getAgentColor(activeAgentName).var})` } : undefined}
                                                 >
                                                     {getAgentDisplayName()}
                                                 </span>
@@ -3232,11 +3256,11 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                 </div>
                                 <ScrollableOverlay outerClassName="max-h-[min(400px,calc(100dvh-12rem))] flex-1">
                                     <div className="p-1">
-                                        {!agentSearchQuery.trim() && defaultAgentName && (
+                                        {!agentSearchQuery.trim() && (claudeNativeAgentsActive || defaultAgentName) && (
                                             <>
                                                 <DropdownMenuItem
                                                     className="typography-meta"
-                                                    onSelect={() => handleAgentChange(defaultAgentName)}
+                                                    onSelect={() => handleAgentChange(claudeNativeAgentsActive ? '' : defaultAgentName!)}
                                                 >
                                                     <div className="flex items-center gap-1.5">
                                                         <Icon name="arrow-go-back" className="size-3.5 text-muted-foreground" />
@@ -3248,7 +3272,9 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                         )}
                                         {sortedAndFilteredAgents.length === 0 ? (
                                             <div className="px-2 py-4 text-center typography-meta text-muted-foreground">
-                                                No agents found
+                                                {claudeNativeAgentsActive
+                                                    ? t('chat.modelControls.claudeAgents.empty')
+                                                    : t('chat.modelControls.noAgentsFound')}
                                             </div>
                                         ) : (
                                             sortedAndFilteredAgents.map((agent) => (
@@ -3322,9 +3348,9 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                             className={cn(
                                 controlIconSize,
                                 'flex-shrink-0',
-                                uiAgentName ? '' : 'text-muted-foreground'
+                                activeAgentName ? '' : 'text-muted-foreground'
                             )}
-                            style={uiAgentName ? { color: `var(${getAgentColor(uiAgentName).var})` } : undefined}
+                            style={activeAgentName ? { color: `var(${getAgentColor(activeAgentName).var})` } : undefined}
                         />
                         <span
                             className={cn(
@@ -3333,7 +3359,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                 'font-medium truncate min-w-0',
                                 isMobile && 'max-w-[60px]'
                             )}
-                            style={uiAgentName ? { color: `var(${getAgentColor(uiAgentName).var})` } : undefined}
+                            style={activeAgentName ? { color: `var(${getAgentColor(activeAgentName).var})` } : undefined}
                         >
                             {getAgentDisplayName()}
                         </span>
