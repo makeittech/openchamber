@@ -5,6 +5,7 @@ import type { ContextPanelMode } from '@/stores/useUIStore';
 export type ContextSurfaceId =
   | 'editor'
   | 'git'
+  | 'pr'
   | 'diff'
   | 'terminal'
   | 'plan'
@@ -53,6 +54,15 @@ export const CONTEXT_SURFACES: readonly ContextSurfaceDescriptor[] = [
     mode: 'git',
     icon: 'git-branch',
     labelKey: 'layout.rightSidebar.git',
+    availability: 'always',
+  },
+  {
+    id: 'pr',
+    descriptionKey: 'contextRail.surface.pr.description',
+    defaultWidthFraction: 0.45,
+    mode: 'pr',
+    icon: 'git-pull-request',
+    labelKey: 'contextPanel.mode.pr',
     availability: 'always',
   },
   {

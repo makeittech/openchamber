@@ -71,18 +71,11 @@ const ContextPanelRailItem: React.FC<RailItemProps> = ({
             className={cn(
               'flex h-9 w-9 touch-none select-none items-center justify-center rounded-md transition-colors',
               isActive
-                ? 'text-foreground'
+                ? 'text-primary'
                 : 'text-muted-foreground hover:text-foreground',
             )}
           >
-            <span
-              className={cn(
-                'flex items-center justify-center transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none',
-                isActive ? 'scale-125' : 'scale-100',
-              )}
-            >
-              <Icon name={surface.icon} className="h-4 w-4" />
-            </span>
+            <Icon name={surface.icon} className="h-[18px] w-[18px]" />
             {showActivityDot ? (
               <span
                 aria-hidden="true"

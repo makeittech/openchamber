@@ -13,7 +13,7 @@ import { useFilesViewTabsStore } from './useFilesViewTabsStore';
 
 export type MainTab = 'chat' | 'plan' | 'git' | 'diff' | 'terminal' | 'files' | 'context' | 'diagram';
 export type PendingDiffScope = 'working' | 'staged' | 'turn';
-export type ContextPanelMode = 'diff' | 'file' | 'context' | 'plan' | 'chat' | 'preview' | 'browser' | 'git' | 'notes' | 'terminal';
+export type ContextPanelMode = 'diff' | 'file' | 'context' | 'plan' | 'chat' | 'preview' | 'browser' | 'git' | 'pr' | 'notes' | 'terminal';
 export type MermaidRenderingMode = 'svg' | 'ascii';
 export type UserMessageRenderingMode = 'markdown' | 'plain';
 export type ChatRenderMode = 'sorted' | 'live';
@@ -21,7 +21,7 @@ export type ActivityRenderMode = 'collapsed' | 'summary';
 export type SessionRetentionAction = 'archive' | 'delete';
 export type TimeFormatPreference = 'auto' | '12h' | '24h';
 export type WeekStartPreference = 'auto' | 'sunday' | 'monday';
-export type DesktopWindowControlsPosition = 'auto' | 'left' | 'right';
+export type DesktopWindowControlsPosition = 'left' | 'right';
 export type FileEditorKeymap = 'default' | 'vim';
 
 function normalizeFileEditorKeymap(value: unknown): FileEditorKeymap {
@@ -286,7 +286,7 @@ const sanitizeContextPanelTabs = (tabs: unknown): ContextPanelTab[] => {
       touchedAt?: unknown;
     };
 
-    if (candidate.mode !== 'diff' && candidate.mode !== 'file' && candidate.mode !== 'context' && candidate.mode !== 'plan' && candidate.mode !== 'chat' && candidate.mode !== 'preview' && candidate.mode !== 'browser' && candidate.mode !== 'git' && candidate.mode !== 'notes' && candidate.mode !== 'terminal') {
+if (candidate.mode !== 'diff' && candidate.mode !== 'file' && candidate.mode !== 'context' && candidate.mode !== 'plan' && candidate.mode !== 'chat' && candidate.mode !== 'preview' && candidate.mode !== 'browser' && candidate.mode !== 'git' && candidate.mode !== 'pr' && candidate.mode !== 'notes' && candidate.mode !== 'terminal') {
       continue;
     }
 
@@ -521,7 +521,7 @@ const sanitizeContextPanelByDirectory = (
     if (candidate.widthByMode && typeof candidate.widthByMode === 'object') {
       for (const [mode, value] of Object.entries(candidate.widthByMode as Record<string, unknown>)) {
         if (
-          (mode === 'diff' || mode === 'file' || mode === 'context' || mode === 'plan' || mode === 'chat' || mode === 'preview' || mode === 'browser' || mode === 'git' || mode === 'notes' || mode === 'terminal')
+          (mode === 'diff' || mode === 'file' || mode === 'context' || mode === 'plan' || mode === 'chat' || mode === 'preview' || mode === 'browser' || mode === 'git' || mode === 'pr' || mode === 'notes' || mode === 'terminal')
           && typeof value === 'number'
           && Number.isFinite(value)
         ) {
@@ -574,10 +574,6 @@ interface UIStore {
   contextRailOrder: string[];
   contextEditorTreeVisible: boolean;
   contextEditorTreeWidth: number;
-  isBottomTerminalOpen: boolean;
-  isBottomTerminalExpanded: boolean;
-  bottomTerminalHeight: number;
-  hasManuallyResizedBottomTerminal: boolean;
   notesPanelHeight: number;
   todoPanelHeight: number;
   isSessionSwitcherOpen: boolean;
@@ -734,10 +730,6 @@ interface UIStore {
   closeContextPanel: (directory: string) => void;
   toggleContextPanelExpanded: (directory: string) => void;
   setContextPanelWidth: (directory: string, mode: ContextPanelMode, width: number) => void;
-  toggleBottomTerminal: () => void;
-  setBottomTerminalOpen: (open: boolean) => void;
-  setBottomTerminalExpanded: (expanded: boolean) => void;
-  setBottomTerminalHeight: (height: number) => void;
   setNotesPanelHeight: (height: number) => void;
   setTodoPanelHeight: (height: number) => void;
   setSessionSwitcherOpen: (open: boolean) => void;
@@ -803,7 +795,6 @@ interface UIStore {
   setMobileKeyboardMode: (mode: MobileKeyboardMode) => void;
   applyTypography: () => void;
   applyPadding: () => void;
-  updateProportionalSidebarWidths: () => void;
   toggleFavoriteModel: (providerID: string, modelID: string) => void;
   reorderFavoriteModel: (
     activeProviderID: string,
@@ -897,10 +888,6 @@ export const useUIStore = create<UIStore>()(
         contextRailOrder: [],
         contextEditorTreeVisible: true,
         contextEditorTreeWidth: 240,
-        isBottomTerminalOpen: false,
-        isBottomTerminalExpanded: false,
-        bottomTerminalHeight: 300,
-        hasManuallyResizedBottomTerminal: false,
         notesPanelHeight: 112,
         todoPanelHeight: 259,
         isSessionSwitcherOpen: false,
@@ -1008,7 +995,7 @@ export const useUIStore = create<UIStore>()(
         showExpandedEditTools: false,
         timeFormatPreference: 'auto',
         weekStartPreference: 'auto',
-        desktopWindowControlsPosition: 'auto',
+        desktopWindowControlsPosition: 'right',
         mermaidRenderingMode: 'svg',
         userMessageRenderingMode: 'markdown',
         collapsibleUserMessages: true,
@@ -1427,64 +1414,6 @@ export const useUIStore = create<UIStore>()(
 
             return { contextPanelByDirectory: clampContextPanelRoots(byDirectory, 20) };
           });
-        },
-
-        toggleBottomTerminal: () => {
-          set((state) => {
-            const newOpen = !state.isBottomTerminalOpen;
-
-            if (newOpen && typeof window !== 'undefined') {
-              const proportionalHeight = Math.floor(window.innerHeight * 0.32);
-              return {
-                isBottomTerminalOpen: newOpen,
-                bottomTerminalHeight: proportionalHeight,
-                hasManuallyResizedBottomTerminal: false,
-              };
-            }
-
-            return { isBottomTerminalOpen: newOpen };
-          });
-        },
-
-        setBottomTerminalOpen: (open) => {
-          set((state) => {
-            if (state.isBottomTerminalOpen === open) {
-              if (!open) {
-                return state;
-              }
-              if (!state.hasManuallyResizedBottomTerminal && typeof window !== 'undefined') {
-                const proportionalHeight = Math.floor(window.innerHeight * 0.32);
-                if (state.bottomTerminalHeight === proportionalHeight && state.hasManuallyResizedBottomTerminal === false) {
-                  return state;
-                }
-                return {
-                  isBottomTerminalOpen: open,
-                  bottomTerminalHeight: proportionalHeight,
-                  hasManuallyResizedBottomTerminal: false,
-                };
-              }
-              return state;
-            }
-
-            if (open && typeof window !== 'undefined') {
-              const proportionalHeight = Math.floor(window.innerHeight * 0.32);
-              return {
-                isBottomTerminalOpen: open,
-                bottomTerminalHeight: proportionalHeight,
-                hasManuallyResizedBottomTerminal: false,
-              };
-            }
-
-            return { isBottomTerminalOpen: open };
-          });
-        },
-
-        setBottomTerminalExpanded: (expanded) => {
-          set({ isBottomTerminalExpanded: expanded });
-        },
-
-        setBottomTerminalHeight: (height) => {
-          set({ bottomTerminalHeight: height, hasManuallyResizedBottomTerminal: true });
         },
 
         setNotesPanelHeight: (height) => {
@@ -2073,25 +2002,6 @@ export const useUIStore = create<UIStore>()(
           });
         },
 
-        updateProportionalSidebarWidths: () => {
-          if (typeof window === 'undefined') {
-            return;
-          }
-
-          set((state) => {
-            const updates: Partial<UIStore> = {};
-
-            if (state.isBottomTerminalOpen && !state.hasManuallyResizedBottomTerminal) {
-              const nextHeight = Math.floor(window.innerHeight * 0.32);
-              if (state.bottomTerminalHeight !== nextHeight) {
-                updates.bottomTerminalHeight = nextHeight;
-              }
-            }
-
-            return Object.keys(updates).length > 0 ? updates : state;
-          });
-        },
-
         applyTheme: () => {
           const { theme } = get();
           const root = document.documentElement;
@@ -2212,7 +2122,7 @@ export const useUIStore = create<UIStore>()(
           set({ weekStartPreference: value });
         },
         setDesktopWindowControlsPosition: (value) => {
-          set({ desktopWindowControlsPosition: value });
+          set({ desktopWindowControlsPosition: value === 'left' ? 'left' : 'right' });
         },
         setMermaidRenderingMode: (value) => {
           set({ mermaidRenderingMode: value });
@@ -2292,12 +2202,19 @@ export const useUIStore = create<UIStore>()(
       {
         name: 'ui-store',
         storage: createDeferredSafeJSONStorage(),
-        version: 11,
+        version: 12,
         migrate: (persistedState, version) => {
           if (!persistedState || typeof persistedState !== 'object') {
             return persistedState;
           }
           const state = persistedState as Record<string, unknown>;
+
+          // v11 -> v12: drop legacy window-controls "auto" (always meant right).
+          if (version < 12) {
+            if (state.desktopWindowControlsPosition === 'auto' || state.desktopWindowControlsPosition == null) {
+              state.desktopWindowControlsPosition = 'right';
+            }
+          }
 
           // v10 -> v11: move the previous terminal font default forward.
           if (version < 11 && state.terminalFontSize === 13) {
@@ -2405,9 +2322,6 @@ export const useUIStore = create<UIStore>()(
           contextRailOrder: state.contextRailOrder,
           contextEditorTreeVisible: state.contextEditorTreeVisible,
           contextEditorTreeWidth: state.contextEditorTreeWidth,
-          isBottomTerminalOpen: state.isBottomTerminalOpen,
-          isBottomTerminalExpanded: state.isBottomTerminalExpanded,
-          bottomTerminalHeight: state.bottomTerminalHeight,
           notesPanelHeight: state.notesPanelHeight,
           todoPanelHeight: state.todoPanelHeight,
           isSessionSwitcherOpen: state.isSessionSwitcherOpen,

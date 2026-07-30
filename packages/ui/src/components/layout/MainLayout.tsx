@@ -211,33 +211,6 @@ export const MainLayout: React.FC = () => {
         }
     }, [isMobile, setIsMobile]);
 
-    React.useEffect(() => {
-        if (typeof window === 'undefined') {
-            return;
-        }
-
-        let frameId: number | undefined;
-
-        const handleResize = () => {
-            if (frameId !== undefined) {
-                return;
-            }
-            frameId = window.requestAnimationFrame(() => {
-                frameId = undefined;
-                useUIStore.getState().updateProportionalSidebarWidths();
-            });
-        };
-
-        window.addEventListener('resize', handleResize);
-
-        return () => {
-            window.removeEventListener('resize', handleResize);
-            if (frameId !== undefined) {
-                window.cancelAnimationFrame(frameId);
-            }
-        };
-    }, []);
-
     const handleToggleMobileRightDrawer = React.useCallback(() => {
         if (mobileLeftDrawerOpen) {
             setMobileSessionPanelOpen(false);
