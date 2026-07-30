@@ -24,7 +24,22 @@ export type HarnessPromptParams = {
   seedFromSessionId?: string;
   /** Claude agents mode for this turn (`opencode` inherits OpenChamber agent prompt/permissions). */
   agentsMode?: 'claude' | 'opencode';
-  /** OpenCode agent system prompt to append when agentsMode is `opencode`. */
+  /**
+   * Selected OpenCode agent name (`agentsMode: 'opencode'`).
+   *
+   * Only the name travels: the server re-reads the agent's prompt and
+   * permission ruleset from OpenCode, so a client cannot hand the permission
+   * bridge a ruleset that allows everything.
+   */
+  agent?: string;
+  /** Selected native Claude agent name (`agentsMode: 'claude'`). */
+  claudeAgent?: string;
+  /**
+   * OpenCode agent system prompt to append when agentsMode is `opencode`.
+   *
+   * Fallback only — the server prefers its own authoritative lookup and uses
+   * this when the runtime has no OpenCode URL builder to resolve agents with.
+   */
   systemPromptAppend?: string;
   /**
    * OpenCode/OpenChamber slash command to translate into prompt text.
@@ -77,6 +92,20 @@ export type HarnessPermissionReplyResult = {
   sessionId: string;
   requestId: string;
   reply: HarnessPermissionReply;
+};
+
+export type HarnessQuestionReplyParams = {
+  sessionId: string;
+  requestId: string;
+  answers?: string[][];
+  reject?: boolean;
+  directory?: string;
+};
+
+export type HarnessQuestionReplyResult = {
+  ok: boolean;
+  sessionId: string;
+  requestId: string;
 };
 
 export class HarnessClientError extends Error {
@@ -162,6 +191,12 @@ export function buildHarnessPromptBody(params: HarnessPromptParams): Record<stri
   }
   if (params.agentsMode === 'claude' || params.agentsMode === 'opencode') {
     body.agentsMode = params.agentsMode;
+  }
+  if (typeof params.agent === 'string' && params.agent.trim()) {
+    body.agent = params.agent.trim();
+  }
+  if (typeof params.claudeAgent === 'string' && params.claudeAgent.trim()) {
+    body.claudeAgent = params.claudeAgent.trim();
   }
   if (typeof params.systemPromptAppend === 'string' && params.systemPromptAppend.trim()) {
     body.systemPromptAppend = params.systemPromptAppend.trim();
@@ -321,6 +356,61 @@ export async function harnessPermissionReply(
   };
 }
 
+export async function harnessQuestionReply(
+  params: HarnessQuestionReplyParams,
+): Promise<HarnessQuestionReplyResult> {
+  if (!params.sessionId.trim()) {
+    throw new HarnessClientError('sessionId is required', 'QUESTION_REPLY_INVALID', 400);
+  }
+  if (!params.requestId.trim()) {
+    throw new HarnessClientError('requestId is required', 'QUESTION_REPLY_INVALID', 400);
+  }
+
+  const body: Record<string, unknown> = {
+    sessionId: params.sessionId,
+    requestId: params.requestId,
+  };
+  if (params.directory?.trim()) {
+    body.directory = params.directory.trim();
+  }
+  if (params.reject === true) {
+    body.reject = true;
+  } else if (Array.isArray(params.answers)) {
+    body.answers = params.answers;
+  }
+
+  let response: Response;
+  try {
+    response = await runtimeFetch('/api/harness/question/reply', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Harness question reply failed';
+    throw new HarnessClientError(message, 'HARNESS_NETWORK', 0);
+  }
+
+  if (!response.ok) {
+    const { message, code, status } = await readErrorPayload(response);
+    throw new HarnessClientError(message, code, response.status, status);
+  }
+
+  const payload = await response.json().catch(() => null);
+  if (!isRecord(payload)) {
+    return { ok: true, sessionId: params.sessionId, requestId: params.requestId };
+  }
+
+  return {
+    ok: payload.ok !== false,
+    sessionId: typeof payload.sessionId === 'string' ? payload.sessionId : params.sessionId,
+    requestId: typeof payload.requestId === 'string' ? payload.requestId : params.requestId,
+  };
+}
+
 export type ClaudeSessionCapabilities = {
   sessionId: string;
   foreignSessionId?: string;
@@ -415,12 +505,94 @@ export async function harnessSessionCapabilities(
   };
 }
 
+/** A Claude-native agent the composer can select as the main-thread agent. */
+export type ClaudeAgent = {
+  name: string;
+  description: string;
+  model: string;
+  source: 'builtin' | 'user' | 'project';
+};
+
+export type HarnessClaudeAgentsResult = {
+  agents: ClaudeAgent[];
+  roots: { user: string | null; project: string | null };
+};
+
+const sanitizeClaudeAgents = (value: unknown): ClaudeAgent[] => {
+  if (!Array.isArray(value)) return [];
+  const out: ClaudeAgent[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const name = typeof entry.name === 'string' ? entry.name.trim() : '';
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      name,
+      description: typeof entry.description === 'string' ? entry.description.trim() : '',
+      model: typeof entry.model === 'string' ? entry.model.trim() : '',
+      source: entry.source === 'user' || entry.source === 'project' ? entry.source : 'builtin',
+    });
+  }
+  return out;
+};
+
+/**
+ * List the Claude-native agents available for a directory (built-ins plus
+ * `.claude/agents` from user and project scope).
+ *
+ * Throws on failure — an unreachable harness must not look like "this project
+ * defines no agents", which would silently empty the composer picker.
+ */
+export async function harnessClaudeAgents(directory?: string): Promise<HarnessClaudeAgentsResult> {
+  let response: Response;
+  try {
+    response = await runtimeFetch('/api/harness/claude-code/agents', {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      ...(directory?.trim() ? { query: { directory: directory.trim() } } : {}),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Harness agents request failed';
+    throw new HarnessClientError(message, 'HARNESS_NETWORK', 0);
+  }
+
+  if (!response.ok) {
+    const { message, code, status } = await readErrorPayload(response);
+    throw new HarnessClientError(message, code, response.status, status);
+  }
+
+  const payload = await response.json().catch(() => null);
+  if (!isRecord(payload)) {
+    throw new HarnessClientError('Invalid harness agents response', 'HARNESS_INVALID_RESPONSE', response.status);
+  }
+
+  const roots = isRecord(payload.roots) ? payload.roots : {};
+  return {
+    agents: sanitizeClaudeAgents(payload.agents),
+    roots: {
+      user: typeof roots.user === 'string' && roots.user.trim() ? roots.user.trim() : null,
+      project: typeof roots.project === 'string' && roots.project.trim() ? roots.project.trim() : null,
+    },
+  };
+}
+
 export type HarnessSessionBinding = {
   sessionId: string;
   harnessId: string;
   directory?: string;
   target?: ExecutionTarget;
   foreignSessionId?: string;
+  /**
+   * Agent selection the session's last turn ran under. The server re-stamps it
+   * every turn so server-driven turns can replay it; the composer reads it back
+   * so a reload does not silently drop the user's pick.
+   */
+  agentsMode?: 'claude' | 'opencode';
+  agentName?: string;
+  claudeAgentName?: string;
 };
 
 /**
@@ -454,6 +626,15 @@ export async function harnessSessionBinding(sessionId: string): Promise<HarnessS
     ...(typeof binding.directory === 'string' ? { directory: binding.directory } : {}),
     ...(isExecutionTarget(binding.target) ? { target: binding.target } : {}),
     ...(typeof binding.foreignSessionId === 'string' ? { foreignSessionId: binding.foreignSessionId } : {}),
+    ...(binding.agentsMode === 'claude' || binding.agentsMode === 'opencode'
+      ? { agentsMode: binding.agentsMode }
+      : {}),
+    ...(typeof binding.agentName === 'string' && binding.agentName
+      ? { agentName: binding.agentName }
+      : {}),
+    ...(typeof binding.claudeAgentName === 'string' && binding.claudeAgentName
+      ? { claudeAgentName: binding.claudeAgentName }
+      : {}),
   };
 }
 

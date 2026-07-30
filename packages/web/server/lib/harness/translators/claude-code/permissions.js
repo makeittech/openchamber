@@ -5,6 +5,7 @@
 
 import { createOpenCodeId } from '../../events/from-claude.js';
 import { emitHarnessEvents } from '../../events/emit.js';
+import { createAskUserQuestionHandler } from './questions.js';
 
 /** @typedef {'once' | 'always' | 'reject'} PermissionReply */
 
@@ -171,6 +172,10 @@ export function buildAlwaysPatterns(patterns, toolName) {
  * @param {number} [params.timeoutMs]
  * @param {() => string} [params.createId]
  * @param {string} [params.assistantMessageId]
+ * @param {(toolName: string, input: Record<string, unknown>) => 'allow' | 'deny' | 'ask'} [params.resolveToolPolicy]
+ *   Inherited OpenCode agent permission rules (`agentsMode: 'opencode'`).
+ *   Omitted → every tool asks, which is the native Claude behavior.
+ * @param {string} [params.policySourceLabel] Agent name used in deny messages.
  * @returns {(toolName: string, input: Record<string, unknown>, options: object) => Promise<object>}
  */
 export function createCanUseTool(params) {
@@ -186,6 +191,20 @@ export function createCanUseTool(params) {
   const assistantMessageId = typeof params?.assistantMessageId === 'string'
     ? params.assistantMessageId
     : '';
+  const resolveToolPolicy = typeof params?.resolveToolPolicy === 'function'
+    ? params.resolveToolPolicy
+    : null;
+  const policySourceLabel = typeof params?.policySourceLabel === 'string'
+    ? params.policySourceLabel.trim()
+    : '';
+
+  const askUserQuestion = createAskUserQuestionHandler({
+    sessionId,
+    directory,
+    getBroadcast,
+    createId: typeof params?.createId === 'function' ? params.createId : () => createOpenCodeId('qst'),
+    assistantMessageId,
+  });
 
   return async (toolName, input, options = {}) => {
     if (!sessionId || !directory) {
@@ -203,11 +222,46 @@ export function createCanUseTool(params) {
     }
 
     const safeInput = input && typeof input === 'object' ? input : {};
+
+    // Clarifying questions are surfaced as OpenCode question cards, not as
+    // generic permission prompts.
+    if (toolName === 'AskUserQuestion') {
+      return askUserQuestion(safeInput, options);
+    }
+
     if (isOpenChamberInjectedTool(toolName)) {
       return {
         behavior: 'allow',
         updatedInput: safeInput,
       };
+    }
+
+    // Inherited OpenCode agent rules decide before the user is involved, the
+    // same way they do on an OpenCode session: `allow` runs, `deny` refuses,
+    // and only `ask` (or no rule at all) reaches the PermissionCard.
+    if (resolveToolPolicy) {
+      let decision = 'ask';
+      try {
+        decision = resolveToolPolicy(toolName, safeInput);
+      } catch (error) {
+        // A broken policy must not widen access — fall back to asking.
+        console.warn(
+          '[harness/claude-code] agent permission policy failed:',
+          error instanceof Error ? error.message : error,
+        );
+        decision = 'ask';
+      }
+      if (decision === 'allow') {
+        return { behavior: 'allow', updatedInput: safeInput };
+      }
+      if (decision === 'deny') {
+        return {
+          behavior: 'deny',
+          message: policySourceLabel
+            ? `Denied by OpenCode agent "${policySourceLabel}" permission rules`
+            : 'Denied by OpenCode agent permission rules',
+        };
+      }
     }
 
     const requestId = createId();

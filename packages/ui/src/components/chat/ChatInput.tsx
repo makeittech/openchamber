@@ -9,6 +9,8 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
 import { sessionSupports, sessionSupportsSteerDelivery } from '@/lib/harness/capabilities';
 import { resolveComposerAttachmentModel } from '@/lib/harness/composer-attachment-model';
+import { resolveActiveHarnessTarget } from '@/lib/harness/resolve-execution-target';
+import { useClaudeNativeAgentsActive } from '@/lib/harness/use-claude-agents-mode';
 import { useHarnessStore } from '@/stores/useHarnessStore';
 import { useInputStore } from '@/sync/input-store';
 import {
@@ -369,6 +371,14 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         currentSessionId ? state.pendingHandoffTargets.get(currentSessionId) ?? null : null
     ));
     const lastUsedTarget = useSelectionStore((state) => state.lastUsedTarget);
+    const claudeNativeAgentsActive = useClaudeNativeAgentsActive(
+        resolveActiveHarnessTarget({
+            sessionId: currentSessionId,
+            sessionTarget,
+            pendingHandoffTarget,
+            lastUsedTarget,
+        })?.harnessId,
+    );
     const claudeCatalog = useHarnessStore((state) => state.catalogsById['claude-code']);
     const composerAttachmentModel = React.useMemo(() => resolveComposerAttachmentModel({
         sessionId: currentSessionId,
@@ -1700,6 +1710,11 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     }, [abortCurrentOperation, clearAbortPrompt, currentSessionId, startAbortIndicator]);
 
     const handleCycleAgent = React.useCallback((direction: 1 | -1 = 1) => {
+        // With Claude's own agents selected the OpenCode agent does not travel
+        // with the turn, so cycling it would silently change something the
+        // composer no longer displays.
+        if (claudeNativeAgentsActive) return;
+
         const nextAgentName = getCycledPrimaryAgentName(agents, currentAgentName, direction);
         if (!nextAgentName) return;
 
@@ -1708,7 +1723,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         if (currentSessionId) {
             saveSessionAgentSelection(currentSessionId, nextAgentName);
         }
-    }, [agents, currentAgentName, currentSessionId, setAgent, saveSessionAgentSelection]);
+    }, [agents, claudeNativeAgentsActive, currentAgentName, currentSessionId, setAgent, saveSessionAgentSelection]);
 
     // Height the dictation transcript needs (null when idle). Its overlay sits
     // absolutely over the composer, so the composer must be able to grow for

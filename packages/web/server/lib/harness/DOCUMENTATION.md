@@ -27,6 +27,9 @@ Parent specs:
 | Subscription env policy | `translators/claude-code/auth-env.js` |
 | Attachment mapping | `translators/claude-code/attachments.js` |
 | Claude permissions bridge | `translators/claude-code/permissions.js` |
+| OpenCode agent → Claude prompt/permissions/subagents | `translators/claude-code/opencode-agents.js` |
+| Claude-native agent discovery | `translators/claude-code/claude-agents.js` |
+| Claude questions bridge | `translators/claude-code/questions.js` |
 | Claude prompt orchestration | `translators/claude-code/index.js` |
 | OpenCode command → Claude prompt text | `translators/claude-code/opencode-command.js` |
 | Claude local project/chat import | `translators/claude-code/import-from-disk.js` |
@@ -60,8 +63,10 @@ generic OpenCode proxy. JSON body parsing for `/api/harness` is enabled in
    - `session.status` (`busy` / `idle`)
    - `session.error` on hard failures
    - `permission.asked` / `permission.replied` via the canUseTool bridge
+   - `question.asked` / `question.replied` / `question.rejected` for the
+     `AskUserQuestion` tool (clarifying questions)
 
-   Assistant output streams as two segment kinds, `text` and `reasoning`.
+    Assistant output streams as two segment kinds, `text` and `reasoning`.
    Claude `thinking` blocks and `thinking_delta` stream events map to
    `reasoning` parts (extended thinking is requested via `effort`, so dropping
    it would silently discard requested output). A tool closes both open
@@ -130,6 +135,7 @@ File: `$OPENCHAMBER_DATA_DIR/harness-session-bindings.json`
 | Mutate | Debounced persist (~250ms); `flushSessionBindings()` for sync drain |
 | Retention | Prune to ~200 entries by oldest `updatedAt` |
 | Secrets | Never persisted — `sanitizeSessionBinding` allowlists fields |
+| Agent selection | `agentsMode`, `agentName`, `claudeAgentName` re-stamped every user turn |
 | Tests | `configureSessionBindings({ filePath, persist })`; `resetSessionBindings({ clearDisk })` |
 
 ## HTTP API
@@ -144,9 +150,11 @@ in responses. Never log tokens, OAuth material, or attachment bytes.
 | POST | `/api/harness/:id/detect` | Force refresh detect |
 | POST | `/api/harness/prompt` | Start Claude turn |
 | POST | `/api/harness/abort` | Abort active Claude turn |
-| POST | `/api/harness/permission/reply` | Resolve bridged `canUseTool` prompt |
+| POST | `/api/harness/permission/reply` | Resolve bridged `canUseTool` permission prompt |
+| POST | `/api/harness/question/reply` | Resolve bridged `AskUserQuestion` prompt |
 | GET | `/api/harness/sessions/:sessionId` | Binding debug/UI |
 | GET | `/api/harness/sessions/:sessionId/capabilities` | Claude slash/MCP/agents snapshot (built-in defaults before init) |
+| GET | `/api/harness/claude-code/agents` | Claude-native agents for a directory (`?directory=`) |
 | GET | `/api/harness/claude-code/import/candidates` | List local Claude Code projects/chats |
 | POST | `/api/harness/claude-code/import` | Import selected chats (OpenCode shell + binding) |
 
@@ -174,7 +182,10 @@ latest `ai-title` record → `summary` record → first user text.
 `translators/claude-code/transcript-messages.js` parses the bound session's
 Claude JSONL into OpenCode-shaped `{ info, parts }` messages (text, reasoning
 from thinking blocks, tool parts settled by matching `tool_result`; tools left
-running at transcript end become `error`). Ids are deterministic and ascending
+running at transcript end become `error`). Harness-injected
+`<task-notification>` user records (orphaned background shell tasks surfaced
+on resume) are model context, not user turns, and are skipped. Ids are
+deterministic and ascending
 from record timestamps, and results are cached per transcript mtime+size.
 `session-messages.js` merges, in ascending precedence: transcript replay →
 OpenCode shell messages → live turn snapshot. The live snapshot wins the tail
@@ -204,6 +215,9 @@ Owning module: `translators/claude-code/import-from-disk.js`.
     "effort": "high"
   },
   "text": "…",
+  "agentsMode": "opencode",
+  "agent": "build",
+  "claudeAgent": "code-reviewer",
   "command": { "name": "pr-review", "arguments": "2480" },
   "files": [{ "mime": "image/png", "url": "data:image/png;base64,…", "filename": "a.png" }],
   "messageId": "msg_…",
@@ -213,6 +227,11 @@ Owning module: `translators/claude-code/import-from-disk.js`.
 
 `command` is optional. When present the server expands the OpenCode command
 template and prepends it to `text` (see *OpenCode command translation*).
+
+`agent` names the OpenCode agent to inherit in `agentsMode: 'opencode'`;
+`claudeAgent` names the native Claude main-thread agent in `agentsMode:
+'claude'`. Both are names only — prompts, permissions and validity are resolved
+server-side (see *Agents mode*).
 
 Response `202` with `{ ok, sessionId, harnessId, messageId, assistantMessageId, status: "started" }`.
 Streaming continues asynchronously via the event broadcaster.
@@ -227,6 +246,22 @@ Streaming continues asynchronously via the event broadcaster.
   "directory": "/path/to/project"
 }
 ```
+
+### Question reply body
+
+```json
+{
+  "sessionId": "ses_…",
+  "requestId": "qst_…",
+  "answers": [["Option A"], ["Option B", "Option C"]],
+  "reject": false,
+  "directory": "/path/to/project"
+}
+```
+
+`answers` is an array of per-question selections; each inner array contains the
+selected option labels (single for single-select, one or more for multi-select).
+Set `reject: true` (and omit `answers`) to dismiss the question without answering.
 
 ### Detect statuses
 
@@ -289,14 +324,135 @@ Capability: `permissions: full`.
 UI: `harnessPermissionReply` → `respondToPermission` / `dismissPermission` branch
 when `getSessionTarget(sessionId)?.harnessId === 'claude-code'`.
 
+## Questions bridge
+
+`AskUserQuestion` also reaches the `canUseTool` callback. It is routed to
+`translators/claude-code/questions.js` instead of the permission bridge:
+
+1. `createAskUserQuestionHandler({ sessionId, directory, getBroadcast, assistantMessageId })`
+   is created by `createCanUseTool` for each turn.
+2. On `AskUserQuestion`: emit OpenCode-shaped `question.asked`
+   (`QuestionRequest`-like: `id`, `sessionID`, `questions`, optional
+   `tool: { messageID, callID }`).
+3. Pending map: `requestId → { resolve, reject, sessionId, … }`.
+4. Abort / turn-end → fail-closed deny + `question.rejected`.
+5. `replyQuestion({ sessionId, requestId, answers?, reject? })`:
+   - With `answers` → SDK `{ behavior: 'allow', updatedInput: { questions, answers } }`
+   - With `reject: true` → `{ behavior: 'deny', message: 'User declined' }`
+
+The `AskUserQuestion` `tool_use` / `tool_result` blocks are suppressed in
+`events/from-claude.js` so the transcript shows the native question card, not a
+running/completed generic tool part.
+
+UI: `harnessQuestionReply` → `respondToQuestion` / `rejectQuestion` branch when
+`getSessionTarget(sessionId)?.harnessId === 'claude-code'`.
+
 ### Agents mode (`harnessClaudeCodeAgentsMode`)
 
 Settings → Harnesses → Claude Code → **Agents to use**:
 
 | Mode | Behavior |
 | --- | --- |
-| `opencode` (default) | OpenChamber/OpenCode agents drive Claude `permissionMode` (edit → acceptEdits/default/plan) and append the selected agent’s system prompt to the Claude Code preset (`systemPrompt: { type: 'preset', preset: 'claude_code', append }`). Composer shows the OpenCode agent picker. |
-| `claude` | Native Claude Code prompts and permission settings. OpenCode agent picker is hidden on Claude sessions; sticky/OpenCode-derived `permissionMode` is not forwarded. |
+| `opencode` (default) | The selected OpenCode agent is inherited onto the Claude turn: its **full permission ruleset** decides every tool call, its `prompt` is appended to the Claude Code preset, and user-authored OpenCode subagents are registered as Claude `agents`. Composer shows the OpenCode agent picker. |
+| `claude` | Native Claude Code prompts and permission settings. Composer shows **Claude's own** agent list (`.claude/agents` + built-ins) and the selection is forwarded as the SDK `agent` option; sticky/OpenCode-derived `permissionMode` is not forwarded. |
+
+#### OpenCode agent inheritance
+
+Owning module: `translators/claude-code/opencode-agents.js`.
+
+Before this module, `opencode` mode only mapped the agent's `edit` rule onto a
+Claude `permissionMode`, so an agent with `bash: allow` still produced a
+PermissionCard for every command. Now the whole ruleset participates.
+
+| Step | Where |
+| --- | --- |
+| Composer sends only the agent **name** (`agent` in the prompt body) | `lib/harness/claude-agents-mode.ts` → `lib/harness/client.ts` |
+| Server re-reads `GET /agent?directory=` from OpenCode | `fetchOpenCodeAgents` |
+| Ruleset → per-tool decision | `createOpenCodeToolPolicy` |
+| Subagents → Claude `AgentDefinition`s | `buildClaudeAgentDefinitions` |
+| Policy consulted before any PermissionCard | `permissions.js` `createCanUseTool({ resolveToolPolicy })` |
+
+Tool mapping: Claude tool names are translated to OpenCode permission keys
+(`Bash`/`BashOutput` → `bash`, `Edit`/`Write`/`MultiEdit`/`NotebookEdit` →
+`edit`, `WebFetch` → `webfetch`, `Task`/`Agent` → `task`, …); an unmapped tool
+falls back to its lowercased name, and `mcp__server__tool` keeps its full name.
+The pattern is matched against the tool's own argument (`command` for bash,
+`file_path` for edits, `url` for webfetch, …) as a glob.
+
+Resolution order matches `packages/ui/src/stores/utils/permissionUtils.ts`: the
+last rule naming the permission explicitly wins; only when none matches does the
+last global `*` rule apply. `allow` runs the tool with no prompt, `deny` refuses
+with a message naming the agent, and `ask` (or no matching rule) falls through to
+the existing PermissionCard bridge.
+
+Invariants:
+
+- **The ruleset never comes from the client.** Only the agent name travels. A
+  prompt body carrying `{"*": "allow"}` would otherwise disable the permission
+  bridge outright — the same attack the `bypassPermissions` allowlist prevents.
+- A concrete pattern with no corresponding tool argument does **not** match
+  (fail closed); only `*` matches an absent argument.
+- Lookup failure degrades to `ask` for everything and logs; it never fails the
+  turn and never silently allows. An unmatched agent name inherits nothing.
+- The policy can only decide tools that actually reach `canUseTool`. Bridged
+  MCP wildcards in `allowedTools` (`mcp__<server>__*`) are auto-approved by the
+  SDK before the callback runs — it warns with
+  `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` — so an agent rule denying a bridged MCP
+  tool is **not** enforced. Gating those would require a `PreToolUse` hook.
+- Only **non-built-in** OpenCode agents with a real `prompt` and
+  `mode: subagent | all` are registered as Claude agents. A Claude
+  `AgentDefinition.prompt` *replaces* that agent's whole system prompt, so
+  registering OpenCode's built-ins (whose `prompt` is usually a one-line config
+  addendum) would gut Claude's own general-purpose/Explore agents. Native
+  `.claude/agents` still load — the SDK merges both sources.
+
+#### Claude-native agents
+
+Owning module: `translators/claude-code/claude-agents.js`;
+route `GET /api/harness/claude-code/agents?directory=`.
+
+Scans `<claudeConfigRoot>/agents/**.md` and `<directory>/.claude/agents/**.md`
+(frontmatter `name` / `description` / `model` only) and merges them over the
+built-in types. A missing directory contributes nothing and reports a `null`
+root — it is never an authoritative empty failure. Scanning is bounded (200
+files, depth 5, 500-char descriptions) and shares one budget across both roots.
+
+#### Server-driven turns
+
+A turn started by the server has no composer to read the agent selection from,
+and a Claude assistant message carries no `agent`. Every user turn therefore
+re-stamps `agentsMode` / `agentName` / `claudeAgentName` onto the durable
+binding, and the server-side callers replay them:
+
+| Caller | Path |
+| --- | --- |
+| Session goal auto-continuation | `session-goal/runtime.js` → `sendContinuation` |
+| Agent control tool (`session.send` on a Claude session) | `openchamber-sessions/routes.js` |
+
+Without this a goal loop or a tool-dispatched turn silently reverts to asking
+for every tool halfway through a session that was running unattended. Bindings
+written before this field existed simply carry none of it and degrade to the
+previous behavior — the next user turn re-stamps them.
+
+The composer reads the same fields back through
+`GET /api/harness/sessions/:sessionId` (`useClaudeAgentsStore.hydrateSelection`)
+so a reload does not reset the Claude agent chip to "Claude default" while the
+binding still names an agent. Nothing is written to client storage — the binding
+is the authority. Hydration runs once per session and never overwrites a pick
+made in the current tab, and a missing binding or failed lookup leaves the
+selection untouched rather than asserting "default".
+
+The same re-stamping is why the client-side callers must send the agent name on
+**every** path, not only the plain composer send: harness handoff
+(`sync/session-ui-store.ts`) and MultiRun (`stores/useMultiRunStore.ts`) used to
+strip it for Claude targets, which left the first turn of a handed-off or
+multi-run session inheriting nothing.
+
+The translator re-validates `claudeAgent` against this same discovery before
+forwarding it as the SDK `agent` option: the SDK fails the whole turn on an
+unknown agent name, and the client's picker can be stale because agent files
+change on disk. An unknown name is dropped (logged) and the default main-thread
+agent runs.
 
 That inheritance is enforced server-side for `permissionMode` allowlisting: `query.js` only
 forwards `default` / `acceptEdits` / `plan` to the SDK and drops anything else.
@@ -528,10 +684,10 @@ optimistic reconcile.
 ## UI send path (shared UI)
 
 - `packages/ui/src/lib/harness/client.ts` — `harnessPrompt` / `harnessAbort` /
-  `harnessPermissionReply` / `harnessSessionBinding` via `runtimeFetch`
+  `harnessPermissionReply` / `harnessQuestionReply` / `harnessSessionBinding` via `runtimeFetch`
 - `packages/ui/src/lib/harness/resolve-execution-target.ts` — sticky `ExecutionTarget` resolution
 - `packages/ui/src/sync/session-ui-store.ts` — `routeMessage` branches `claude-code` → harness prompt (not OpenCode SDK)
-- `packages/ui/src/sync/session-actions.ts` — permission reply/dismiss branches for Claude targets
+- `packages/ui/src/sync/session-actions.ts` — permission and question reply/dismiss branches for Claude targets
 - `packages/ui/src/lib/harness/composer-attachment-model.ts` — composer attachment modality warnings use the active `ExecutionTarget` (Claude catalog), not leftover OpenCode `currentModel`
 - Model picker Harnesses section lives in `ModelControls` / `ModelPickerList`
 - `ModelControls` derives the displayed Claude effort from the persisted
@@ -557,8 +713,11 @@ bun test packages/web/server/lib/harness/events/from-claude.test.js
 bun test packages/web/server/lib/harness/translators/claude-code/auth-env.test.js
 bun test packages/web/server/lib/harness/translators/claude-code/attachments.test.js
 bun test packages/web/server/lib/harness/translators/claude-code/permissions.test.js
+bun test packages/web/server/lib/harness/translators/claude-code/questions.test.js
 bun test packages/web/server/lib/harness/translators/claude-code/transcript-messages.test.js
 bun test packages/web/server/lib/harness/translators/claude-code/opencode-command.test.js
+bun test packages/web/server/lib/harness/translators/claude-code/opencode-agents.test.js
+bun test packages/web/server/lib/harness/translators/claude-code/claude-agents.test.js
 bun test packages/ui/src/lib/harness/client.test.js
 ```
 

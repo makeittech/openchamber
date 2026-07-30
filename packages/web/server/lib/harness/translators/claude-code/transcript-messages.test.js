@@ -178,6 +178,53 @@ describe('parseClaudeTranscript', () => {
     expect(messages).toHaveLength(1);
     expect(messages[0].parts[0].text).toBe('real user turn');
   });
+
+  it('skips harness-injected task-notification records instead of rendering them as user turns', () => {
+    const notification = '<task-notification>\n<task-id>bkynua6gi</task-id>\n'
+      + '<tool-use-id>toolu_015f1tQ4pFbs38sVFzESugqP</tool-use-id>\n<status>stopped</status>\n'
+      + '<summary>No completion record was found for this background shell command from the previous session.</summary>\n'
+      + '</task-notification>';
+    const filePath = writeTranscript([
+      JSON.stringify(baseRecord({
+        type: 'user',
+        uuid: 'u1',
+        timestamp: '2026-07-28T10:00:00.000Z',
+        message: { role: 'user', content: 'first prompt' },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a1',
+        timestamp: '2026-07-28T10:00:01.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'working on it' }] },
+      })),
+      // String content — how the SDK writes queued notifications on resume.
+      JSON.stringify(baseRecord({
+        type: 'user',
+        uuid: 'u2',
+        timestamp: '2026-07-28T10:05:00.000Z',
+        message: { role: 'user', content: notification },
+      })),
+      // Array content with a notification text block mixed with a real prompt.
+      JSON.stringify(baseRecord({
+        type: 'user',
+        uuid: 'u3',
+        timestamp: '2026-07-28T10:06:00.000Z',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: notification },
+            { type: 'text', text: 'follow-up prompt' },
+          ],
+        },
+      })),
+    ]);
+
+    const { messages } = parseClaudeTranscript({ sessionId: 'ses_shell', transcriptPath: filePath });
+    const userTexts = messages
+      .filter((message) => message.info.role === 'user')
+      .flatMap((message) => message.parts.map((part) => part.text));
+    expect(userTexts).toEqual(['first prompt', 'follow-up prompt']);
+  });
 });
 
 describe('getClaudeTranscriptMessages', () => {

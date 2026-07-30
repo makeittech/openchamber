@@ -11,6 +11,10 @@ import {
   createCanUseTool,
   resetPendingPermissions,
 } from './translators/claude-code/permissions.js';
+import {
+  createAskUserQuestionHandler,
+  resetPendingQuestions,
+} from './translators/claude-code/questions.js';
 
 beforeAll(() => {
   configureSessionBindings({ persist: false, load: true });
@@ -19,6 +23,7 @@ beforeAll(() => {
 afterEach(() => {
   resetSessionBindings();
   resetPendingPermissions();
+  resetPendingQuestions();
   configureSessionBindings({ persist: false, load: true });
 });
 
@@ -170,15 +175,21 @@ describe('harness routes', () => {
     });
   });
 
-  it('permission reply route resolves bridged canUseTool', async () => {
+  it('question reply route resolves bridged AskUserQuestion', async () => {
     const events = [];
-    createCanUseTool({
-      sessionId: 'ses_perm',
+    createAskUserQuestionHandler({
+      sessionId: 'ses_q',
       directory: '/tmp/project',
       getBroadcast: () => (payload) => events.push(payload),
-      createId: () => 'perm_route',
-      timeoutMs: 5_000,
-    })('Bash', { command: 'echo route' }, {});
+      createId: () => 'qst_route',
+    })({
+      questions: [{
+        question: 'Pick one',
+        header: 'Choice',
+        options: [{ label: 'A', description: 'Option A' }],
+        multiSelect: false,
+      }],
+    }, {});
 
     const router = createHarnessRouter({
       claudeTranslator: {
@@ -188,9 +199,12 @@ describe('harness routes', () => {
         async abort() {
           return { ok: true, aborted: false };
         },
-        async replyPermission(body) {
-          const { replyPermission } = await import('./translators/claude-code/permissions.js');
-          return replyPermission(body);
+        async replyPermission() {
+          return { ok: true };
+        },
+        async replyQuestion(body) {
+          const { replyQuestion } = await import('./translators/claude-code/questions.js');
+          return replyQuestion(body);
         },
       },
     });
@@ -198,13 +212,13 @@ describe('harness routes', () => {
     await withServer((app) => {
       registerHarnessRoutes(app, { router, initBindings: false });
     }, async (base) => {
-      const response = await fetch(`${base}/api/harness/permission/reply`, {
+      const response = await fetch(`${base}/api/harness/question/reply`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          sessionId: 'ses_perm',
-          requestId: 'perm_route',
-          reply: 'once',
+          sessionId: 'ses_q',
+          requestId: 'qst_route',
+          answers: [['A']],
           directory: '/tmp/project',
         }),
       });
@@ -212,11 +226,10 @@ describe('harness routes', () => {
       const json = await response.json();
       expect(json).toMatchObject({
         ok: true,
-        sessionId: 'ses_perm',
-        requestId: 'perm_route',
-        reply: 'once',
+        sessionId: 'ses_q',
+        requestId: 'qst_route',
       });
-      expect(events.some((event) => event.type === 'permission.replied')).toBe(true);
+      expect(events.some((event) => event.type === 'question.replied')).toBe(true);
     });
   });
 });
@@ -378,6 +391,107 @@ describe('harness Claude import routes', () => {
       expect(res.status).toBe(400);
       const body = await res.json();
       expect(body.code).toBe('IMPORT_INVALID');
+    });
+  });
+});
+
+describe('harness Claude agents route', () => {
+  it('returns the injected listClaudeAgents payload as JSON with status 200', async () => {
+    const payload = {
+      agents: [{ name: 'reviewer', description: 'Reviews code', model: 'sonnet', source: 'project' }],
+      roots: { user: null, project: '/tmp/app/.claude/agents' },
+    };
+    await withServer((app) => {
+      registerHarnessRoutes(app, {
+        initBindings: false,
+        listClaudeAgents: async () => payload,
+      });
+    }, async (base) => {
+      const res = await fetch(`${base}/api/harness/claude-code/agents`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(payload);
+    });
+  });
+
+  it('forwards the directory query param through to listClaudeAgents', async () => {
+    let received = null;
+    await withServer((app) => {
+      registerHarnessRoutes(app, {
+        initBindings: false,
+        listClaudeAgents: async (args) => {
+          received = args;
+          return { agents: [], roots: { user: null, project: null } };
+        },
+      });
+    }, async (base) => {
+      const res = await fetch(`${base}/api/harness/claude-code/agents?directory=${encodeURIComponent('/tmp/app')}`);
+      expect(res.status).toBe(200);
+      expect(received).toEqual({ directory: '/tmp/app' });
+    });
+  });
+
+  it('calls listClaudeAgents with an empty directory when the query param is missing', async () => {
+    let received = null;
+    await withServer((app) => {
+      registerHarnessRoutes(app, {
+        initBindings: false,
+        listClaudeAgents: async (args) => {
+          received = args;
+          return { agents: [], roots: { user: null, project: null } };
+        },
+      });
+    }, async (base) => {
+      const res = await fetch(`${base}/api/harness/claude-code/agents`);
+      expect(res.status).toBe(200);
+      expect(received).toEqual({ directory: '' });
+    });
+  });
+
+  it('responds with the thrown error status/code when listClaudeAgents rejects', async () => {
+    await withServer((app) => {
+      registerHarnessRoutes(app, {
+        initBindings: false,
+        listClaudeAgents: async () => {
+          const error = new Error('Claude Code is not ready (missing-cli)');
+          error.code = 'CLAUDE_MISSING_CLI';
+          error.statusCode = 503;
+          throw error;
+        },
+      });
+    }, async (base) => {
+      const res = await fetch(`${base}/api/harness/claude-code/agents`);
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.error).toBe('Claude Code is not ready (missing-cli)');
+      expect(body.code).toBe('CLAUDE_MISSING_CLI');
+    });
+  });
+
+  it('reaches the agents handler without falling through to /api/harness/:id', async () => {
+    const payload = {
+      agents: [{ name: 'planner', description: '', model: '', source: 'builtin' }],
+      roots: { user: null, project: null },
+    };
+    let detectOneCalls = 0;
+    await withServer((app) => {
+      registerHarnessRoutes(app, {
+        initBindings: false,
+        listClaudeAgents: async () => payload,
+        detectOne: async (id) => {
+          detectOneCalls += 1;
+          return { descriptor: { id }, status: 'ready', sections: [] };
+        },
+      });
+    }, async (base) => {
+      const res = await fetch(`${base}/api/harness/claude-code/agents`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // The agents payload, not a harness-detail payload from handleDetectOne.
+      expect(body).toEqual(payload);
+      expect(body).not.toHaveProperty('descriptor');
+      expect(body).not.toHaveProperty('status');
+      expect(body).not.toHaveProperty('sections');
+      expect(detectOneCalls).toBe(0);
     });
   });
 });

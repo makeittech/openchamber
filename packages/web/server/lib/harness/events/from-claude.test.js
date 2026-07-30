@@ -227,6 +227,49 @@ describe('from-claude mapper', () => {
     expect(mapped.events.some((e) => e.type === 'message.updated' && e.properties.info.finish === 'stop')).toBe(true);
   });
 
+  it('suppresses AskUserQuestion tool_use and tool_result blocks', () => {
+    const ctx = createClaudeMapperContext({
+      sessionId: 'ses_1',
+      directory: '/proj',
+      userMessageId: 'msg_u',
+      assistantMessageId: 'msg_a',
+    });
+
+    const start = mapClaudeMessageToEvents(ctx, {
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          id: 'call_ask',
+          name: 'AskUserQuestion',
+          input: {
+            questions: [{
+              question: 'Pick one',
+              header: 'Choice',
+              options: [{ label: 'A', description: 'Option A' }],
+              multiSelect: false,
+            }],
+          },
+        }],
+      },
+    });
+    expect(start.events).toEqual([]);
+    expect(ctx.askUserQuestionCallIds.has('call_ask')).toBe(true);
+    expect(ctx.toolParts.has('call_ask')).toBe(false);
+
+    const result = mapClaudeMessageToEvents(ctx, {
+      type: 'user',
+      message: {
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'call_ask',
+          content: { answers: { 'Pick one': 'A' } },
+        }],
+      },
+    });
+    expect(result.events).toEqual([]);
+  });
+
   it('ignores unknown message types without throwing', () => {
     const ctx = createClaudeMapperContext({
       sessionId: 'ses_1',

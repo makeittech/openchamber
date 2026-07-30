@@ -284,6 +284,7 @@ mock.module("@/sync/sync-refs", () => ({
 }))
 
 const harnessPermissionReplyCalls: Array<Record<string, unknown>> = []
+const harnessQuestionReplyCalls: Array<Record<string, unknown>> = []
 const harnessAbortCalls: Array<Record<string, unknown>> = []
 let sessionTargetById: Record<string, { harnessId: string; modelRef?: string; providerId?: string; modelId?: string } | null> = {}
 let pendingHandoffById: Record<string, { harnessId: string; modelRef?: string; providerId?: string; modelId?: string } | null> = {}
@@ -297,6 +298,17 @@ const selectionStoreMock = {
     getSessionTarget: (sessionId: string) => sessionTargetById[sessionId] ?? null,
     getPendingHandoffTarget: (sessionId: string) => pendingHandoffById[sessionId] ?? null,
     getLastUsedTarget: () => lastUsedTargetMock,
+    // `mock.module` is global to the whole test run, so anything omitted here
+    // is missing from `useSelectionStore` for every test file loaded after
+    // this one. These are the members `session-ui-store.sendMessage` reads;
+    // they are inert no-ops because this file only exercises session-actions.
+    getSessionAgentSelection: () => null,
+    saveSessionAgentSelection: () => {},
+    saveAgentModelForSession: () => {},
+    saveAgentModelVariantForSession: () => {},
+    saveSessionModelSelection: () => {},
+    sessionAgentSelections: new Map(),
+    lastUsedProvider: null,
     saveSessionTarget: (sessionId: string, target: { harnessId: string }) => {
       sessionTargetById[sessionId] = target
       lastUsedTargetMock = target
@@ -336,6 +348,10 @@ mock.module("@/lib/harness/client", () => ({
   harnessPermissionReply: mock(async (params: Record<string, unknown>) => {
     harnessPermissionReplyCalls.push(params)
     return { ok: true, sessionId: params.sessionId, requestId: params.requestId, reply: params.reply }
+  }),
+  harnessQuestionReply: mock(async (params: Record<string, unknown>) => {
+    harnessQuestionReplyCalls.push(params)
+    return { ok: true, sessionId: params.sessionId, requestId: params.requestId }
   }),
   harnessAbort: mock(async (params: Record<string, unknown>) => {
     harnessAbortCalls.push(params)
@@ -1230,6 +1246,50 @@ describe("rejectQuestion passes directory", () => {
   })
 })
 
+describe("Claude Code question routing", () => {
+  beforeEach(() => {
+    harnessQuestionReplyCalls.length = 0
+    replyCalls.length = 0
+    sessionTargetById = {}
+  })
+
+  test("respondToQuestion routes claude-code targets through harnessQuestionReply", async () => {
+    sessionTargetById["session-a"] = { harnessId: "claude-code", modelRef: "sonnet" }
+    const childStores = createChildStores([])
+
+    const { setActionRefs, respondToQuestion } = await import("./session-actions")
+    setActionRefs(mockSdk as unknown as OpencodeClient, childStores, () => "/test/project")
+
+    await respondToQuestion("session-a", "q-1", [["answer1"]])
+
+    expect(harnessQuestionReplyCalls).toEqual([{
+      sessionId: "session-a",
+      requestId: "q-1",
+      answers: [["answer1"]],
+      directory: "/test/project",
+    }])
+    expect(replyCalls.length).toBe(0)
+  })
+
+  test("rejectQuestion routes claude-code targets through harnessQuestionReply with reject", async () => {
+    sessionTargetById["session-a"] = { harnessId: "claude-code", modelRef: "sonnet" }
+    const childStores = createChildStores([])
+
+    const { setActionRefs, rejectQuestion } = await import("./session-actions")
+    setActionRefs(mockSdk as unknown as OpencodeClient, childStores, () => "/test/project")
+
+    await rejectQuestion("session-a", "q-2")
+
+    expect(harnessQuestionReplyCalls).toEqual([{
+      sessionId: "session-a",
+      requestId: "q-2",
+      reject: true,
+      directory: "/test/project",
+    }])
+    expect(replyCalls.length).toBe(0)
+  })
+})
+
 function buildQuestion(id: string, sessionId: string): QuestionRequest {
   return {
     id,
@@ -1249,6 +1309,7 @@ describe("dismissOpenQuestionsForSession", () => {
     replyCalls.length = 0
     scopedClientDirectories.length = 0
     questionReplyError = null
+    sessionTargetById = {}
   })
 
   test("returns false and rejects nothing when no questions are pending", async () => {

@@ -262,6 +262,203 @@ describe('createClaudeCodeTranslator', () => {
     await waitFor(() => !translator._activeTurns.has('ses_effort'));
   });
 
+  // --- Agents mode: what the SDK actually receives -------------------------
+  //
+  // These drive the whole prompt path, so they cover the wiring between
+  // opencode-agents.js, permissions.js and query.js rather than each module
+  // in isolation. The shapes mirror a live OpenCode `/agent` payload.
+
+  /** Resolver stub built from real `/agent` field names (`native`, ruleset array). */
+  function agentResolver(overrides = {}) {
+    const agents = overrides.agents ?? [
+      {
+        name: 'build',
+        mode: 'primary',
+        native: true,
+        prompt: 'Prefer ddgs for web search.',
+        permission: [
+          { permission: '*', pattern: '*', action: 'allow' },
+          { permission: 'bash', pattern: '*', action: 'allow' },
+          { permission: 'edit', pattern: '*', action: 'allow' },
+          { permission: 'read', pattern: '*', action: 'allow' },
+          { permission: 'read', pattern: '*.env', action: 'ask' },
+        ],
+      },
+      {
+        name: 'pr-review',
+        mode: 'subagent',
+        description: 'Reviews pull requests',
+        prompt: 'You are a meticulous PR reviewer.',
+      },
+    ];
+    return async ({ agentName }) => {
+      const { buildOpenCodeAgentInheritance } = await import('./opencode-agents.js');
+      return buildOpenCodeAgentInheritance(agents, agentName);
+    };
+  }
+
+  it('opencode mode: inherits the agent prompt, ruleset and custom subagents', async () => {
+    const controller = createControlledStream();
+    const handle = createHandle(controller);
+    const { startQuery, translator } = createHarness(handle, {
+      resolveOpenCodeAgents: agentResolver(),
+    });
+
+    await translator.prompt({
+      ...basePrompt('ses_oc_agents'),
+      agentsMode: 'opencode',
+      agent: 'build',
+    });
+
+    const options = startQuery.mock.calls[0][0];
+
+    // Prompt: the agent's own text is appended to Claude's preset.
+    expect(options.systemPrompt).toEqual({
+      type: 'preset',
+      preset: 'claude_code',
+      append: 'Prefer ddgs for web search.',
+    });
+
+    // Subagents: only the user-authored one; OpenCode's `native` build agent
+    // must not replace Claude's own agent set.
+    expect(Object.keys(options.agents)).toEqual(['pr-review']);
+    expect(options.agents['pr-review']).toMatchObject({
+      description: 'Reviews pull requests',
+      prompt: 'You are a meticulous PR reviewer.',
+    });
+
+    // Permissions: the ruleset decides, so allowed tools never reach the user.
+    await expect(options.canUseTool('Bash', { command: 'git status' }, {}))
+      .resolves.toEqual({ behavior: 'allow', updatedInput: { command: 'git status' } });
+    // ...but a narrower rule still wins over the later catch-all.
+    const envAsk = options.canUseTool('Read', { file_path: '/project/.env' }, {});
+    const { getPendingPermissionCount, replyPermission } = await import('./permissions.js');
+    expect(getPendingPermissionCount()).toBe(1);
+    replyPermission({
+      sessionId: 'ses_oc_agents',
+      requestId: (await import('./permissions.js')).listPendingPermissions()[0].id,
+      reply: 'reject',
+    });
+    await expect(envAsk).resolves.toMatchObject({ behavior: 'deny' });
+
+    controller.end();
+    await waitFor(() => !translator._activeTurns.has('ses_oc_agents'));
+  });
+
+  it('opencode mode: permissionMode comes from the ruleset, not the client target', async () => {
+    const controller = createControlledStream();
+    const handle = createHandle(controller);
+    const { startQuery, translator } = createHarness(handle, {
+      resolveOpenCodeAgents: agentResolver({
+        agents: [{
+          name: 'careful',
+          mode: 'primary',
+          permission: [{ permission: 'edit', pattern: '*', action: 'ask' }],
+        }],
+      }),
+    });
+
+    await translator.prompt({
+      ...basePrompt('ses_oc_mode'),
+      // A forged/stale client value that would make the SDK auto-accept edits
+      // without ever calling canUseTool.
+      target: { harnessId: 'claude-code', modelRef: 'sonnet', permissionMode: 'acceptEdits' },
+      agentsMode: 'opencode',
+      agent: 'careful',
+    });
+
+    expect(startQuery.mock.calls[0][0].permissionMode).toBe('default');
+
+    controller.end();
+    await waitFor(() => !translator._activeTurns.has('ses_oc_mode'));
+  });
+
+  it('opencode mode: a lookup failure degrades to asking, never to allowing', async () => {
+    const controller = createControlledStream();
+    const handle = createHandle(controller);
+    const { startQuery, translator } = createHarness(handle, {
+      resolveOpenCodeAgents: async () => {
+        throw Object.assign(new Error('offline'), { code: 'AGENT_LOOKUP_FAILED' });
+      },
+    });
+
+    await translator.prompt({
+      ...basePrompt('ses_oc_fail'),
+      agentsMode: 'opencode',
+      agent: 'build',
+    });
+
+    const options = startQuery.mock.calls[0][0];
+    // The turn still runs, with no inherited prompt or subagents...
+    expect(options.systemPrompt).toBeUndefined();
+    expect(options.agents).toBeUndefined();
+
+    // ...and every tool goes back to the PermissionCard bridge.
+    const { getPendingPermissionCount, rejectPendingForSession } = await import('./permissions.js');
+    void options.canUseTool('Bash', { command: 'rm -rf /' }, {});
+    expect(getPendingPermissionCount()).toBe(1);
+    rejectPendingForSession('ses_oc_fail');
+
+    controller.end();
+    await waitFor(() => !translator._activeTurns.has('ses_oc_fail'));
+  });
+
+  it('claude mode: inherits nothing and forwards a validated native agent', async () => {
+    const controller = createControlledStream();
+    const handle = createHandle(controller);
+    const resolveOpenCodeAgents = mock(agentResolver());
+    const { startQuery, translator } = createHarness(handle, {
+      resolveOpenCodeAgents,
+      listClaudeAgents: async () => ({
+        agents: [{ name: 'Explore', description: '', model: '', source: 'builtin' }],
+        roots: { user: null, project: null },
+      }),
+    });
+
+    await translator.prompt({
+      ...basePrompt('ses_claude_agents'),
+      target: { harnessId: 'claude-code', modelRef: 'sonnet', permissionMode: 'acceptEdits' },
+      agentsMode: 'claude',
+      agent: 'build',
+      claudeAgent: 'explore',
+    });
+
+    const options = startQuery.mock.calls[0][0];
+    // No OpenCode lookup happens at all in this mode.
+    expect(resolveOpenCodeAgents).not.toHaveBeenCalled();
+    expect(options.systemPrompt).toBeUndefined();
+    expect(options.agents).toBeUndefined();
+    expect(options.permissionMode).toBeUndefined();
+    // Name is matched case-insensitively and forwarded with Claude's casing.
+    expect(options.agent).toBe('Explore');
+
+    controller.end();
+    await waitFor(() => !translator._activeTurns.has('ses_claude_agents'));
+  });
+
+  it('claude mode: drops an unknown agent name instead of failing the turn', async () => {
+    const controller = createControlledStream();
+    const handle = createHandle(controller);
+    const { startQuery, translator } = createHarness(handle, {
+      listClaudeAgents: async () => ({
+        agents: [{ name: 'Explore', description: '', model: '', source: 'builtin' }],
+        roots: { user: null, project: null },
+      }),
+    });
+
+    await translator.prompt({
+      ...basePrompt('ses_claude_unknown'),
+      agentsMode: 'claude',
+      claudeAgent: 'deleted-agent',
+    });
+
+    // The SDK fails the whole turn on an unknown agent, so it must not travel.
+    expect(startQuery.mock.calls[0][0].agent).toBeUndefined();
+
+    controller.end();
+    await waitFor(() => !translator._activeTurns.has('ses_claude_unknown'));
+  });
+
   it('sends the expanded OpenCode command as both prompt and user message', async () => {
     const controller = createControlledStream();
     const handle = createHandle(controller);

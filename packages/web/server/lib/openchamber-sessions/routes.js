@@ -410,6 +410,18 @@ export const createOpenChamberSessionService = (dependencies) => {
       try {
         const effortLevels = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
         const effort = typeof variant === 'string' && effortLevels.has(variant) ? variant : undefined;
+        // Reuse the agent selection the session's last user turn recorded on
+        // its binding. A tool-dispatched turn has no composer to read it from,
+        // and without it the turn inherits no OpenCode agent — it would start
+        // prompting for every tool on a session that was running unattended.
+        const harnessBinding = typeof getSessionBinding === 'function'
+          ? getSessionBinding(sessionID)
+          : null;
+        const agentsMode = harnessBinding?.agentsMode === 'claude' || harnessBinding?.agentsMode === 'opencode'
+          ? harnessBinding.agentsMode
+          : undefined;
+        const agentName = asNonEmptyString(harnessBinding?.agentName);
+        const claudeAgentName = asNonEmptyString(harnessBinding?.claudeAgentName);
         await promptHarness({
           sessionId: sessionID,
           directory,
@@ -419,6 +431,9 @@ export const createOpenChamberSessionService = (dependencies) => {
             modelRef: model.modelID,
             ...(effort ? { effort } : {}),
           },
+          ...(agentsMode ? { agentsMode } : {}),
+          ...(agentName ? { agent: agentName } : {}),
+          ...(claudeAgentName ? { claudeAgent: claudeAgentName } : {}),
         });
       } catch (error) {
         throw markGoalPartial(error);

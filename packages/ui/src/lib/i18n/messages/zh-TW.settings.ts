@@ -2065,7 +2065,7 @@
   'settings.harness.claudeCode.section.agents': '代理',
   'settings.harness.claudeCode.agentsMode.label': '使用的代理',
   'settings.harness.claudeCode.agentsMode.aria': '為 Claude Code 工作階段選擇 Claude 或 OpenCode 代理',
-  'settings.harness.claudeCode.agentsMode.info': 'Claude 使用 Claude Code 原生系統提示與權限。OpenCode 在 Claude 工作階段中使用 OpenChamber 代理的權限與系統提示。',
+  'settings.harness.claudeCode.agentsMode.info': 'Claude 使用自己的代理、提示詞與權限設定。OpenCode 則讓 Claude 工作階段改為執行所選的 OpenCode 代理：其權限規則決定每一次工具呼叫，其提示詞會附加在 Claude 的提示詞之後，你自訂的 OpenCode 子代理也會對 Claude 可用。輸入框中的代理選擇器也會隨之切換。',
   'settings.harness.claudeCode.agentsMode.claude': 'Claude',
   'settings.harness.claudeCode.agentsMode.opencode': 'OpenCode',
   'settings.harness.claudeCode.section.warnings': '警告',

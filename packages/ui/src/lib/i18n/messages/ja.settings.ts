@@ -2065,7 +2065,7 @@ export const settingsDict = {
   'settings.harness.claudeCode.section.agents': 'エージェント',
   'settings.harness.claudeCode.agentsMode.label': '使用するエージェント',
   'settings.harness.claudeCode.agentsMode.aria': 'Claude Code セッションで Claude または OpenCode のエージェントを選択',
-  'settings.harness.claudeCode.agentsMode.info': 'Claude は Claude Code ネイティブのシステムプロンプトと権限を使います。OpenCode は Claude セッションで OpenChamber エージェントの権限とシステムプロンプトを使います。',
+  'settings.harness.claudeCode.agentsMode.info': 'Claude は自身のエージェント、プロンプト、権限設定を使います。OpenCode は代わりに、選択した OpenCode エージェントで Claude のセッションを実行させます。そのエージェントの権限ルールがすべてのツール呼び出しを決定し、そのプロンプトが Claude のプロンプトに追加され、あなた独自の OpenCode サブエージェントも Claude で使えるようになります。入力欄のエージェントピッカーもそれに合わせて切り替わります。',
   'settings.harness.claudeCode.agentsMode.claude': 'Claude',
   'settings.harness.claudeCode.agentsMode.opencode': 'OpenCode',
   'settings.harness.claudeCode.section.warnings': '警告',

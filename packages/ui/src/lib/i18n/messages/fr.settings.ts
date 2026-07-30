@@ -2065,7 +2065,7 @@ export const settingsDict = {
   'settings.harness.claudeCode.section.agents': 'Agents',
   'settings.harness.claudeCode.agentsMode.label': 'Agents à utiliser',
   'settings.harness.claudeCode.agentsMode.aria': 'Choisir les agents Claude ou OpenCode pour les sessions Claude Code',
-  'settings.harness.claudeCode.agentsMode.info': 'Claude utilise les prompts système et permissions natifs de Claude Code. OpenCode utilise les agents OpenChamber pour les permissions et prompts système sur les sessions Claude.',
+  'settings.harness.claudeCode.agentsMode.info': 'Claude utilise ses propres agents, prompts et paramètres de permissions. OpenCode fait en sorte que les sessions Claude exécutent à la place l’agent OpenCode sélectionné : ses règles de permissions décident de chaque appel d’outil, son prompt s’ajoute à celui de Claude, et vos sous-agents OpenCode personnalisés deviennent disponibles pour Claude. Le sélecteur d’agent de la zone de saisie change en conséquence.',
   'settings.harness.claudeCode.agentsMode.claude': 'Claude',
   'settings.harness.claudeCode.agentsMode.opencode': 'OpenCode',
   'settings.harness.claudeCode.section.warnings': 'Avertissements',

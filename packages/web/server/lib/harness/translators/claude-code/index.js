@@ -10,10 +10,16 @@ import {
 } from './mcp-config.js';
 import {
   createCanUseTool,
-  rejectPendingForSession,
+  rejectPendingForSession as rejectPendingPermissions,
   replyPermission as replyPendingPermission,
 } from './permissions.js';
+import {
+  rejectPendingForSession as rejectPendingQuestions,
+  replyQuestion as replyPendingQuestion,
+} from './questions.js';
 import { normalizeOpenCodeCommandRequest } from './opencode-command.js';
+import { claudePermissionModeFromEditAction } from './opencode-agents.js';
+import { listClaudeAgents } from './claude-agents.js';
 import {
   buildTurnAbortEvents,
   buildUserMessageEvents,
@@ -104,6 +110,8 @@ export function buildClaudePrompt(text, files, options = {}) {
  * @param {typeof detectClaudeCode} [deps.detect]
  * @param {(options?: { contextDirectory?: string | null, signal?: AbortSignal }) => Promise<Record<string, unknown> | null>} [deps.createOpenChamberMcpServers]
  * @param {(params: { name: string, args: string, directory: string }) => Promise<{ name: string, text: string }>} [deps.resolveOpenCodeCommand]
+ * @param {(params: { directory: string, agentName?: string }) => Promise<import('./opencode-agents.js').OpenCodeAgentInheritance>} [deps.resolveOpenCodeAgents]
+ * @param {typeof listClaudeAgents} [deps.listClaudeAgents]
  */
 export function createClaudeCodeTranslator(deps = {}) {
   /** @type {Map<string, { handle: object, ctx: object, aborting: boolean, idleEmitted: boolean }>} */
@@ -115,6 +123,12 @@ export function createClaudeCodeTranslator(deps = {}) {
   const resolveOpenCodeCommand = typeof deps.resolveOpenCodeCommand === 'function'
     ? deps.resolveOpenCodeCommand
     : null;
+  const resolveOpenCodeAgents = typeof deps.resolveOpenCodeAgents === 'function'
+    ? deps.resolveOpenCodeAgents
+    : null;
+  const listAgents = typeof deps.listClaudeAgents === 'function'
+    ? deps.listClaudeAgents
+    : listClaudeAgents;
 
   /**
    * @param {object} body
@@ -204,6 +218,13 @@ export function createClaudeCodeTranslator(deps = {}) {
       },
       capabilitySnapshot: capabilities,
       seedFromSessionId: typeof body?.seedFromSessionId === 'string' ? body.seedFromSessionId : undefined,
+      // Recorded so server-driven continuations (session goal) can reuse the
+      // same agent inheritance instead of falling back to asking for everything.
+      agentsMode: body?.agentsMode === 'claude' || body?.agentsMode === 'opencode'
+        ? body.agentsMode
+        : undefined,
+      agentName: typeof body?.agent === 'string' ? body.agent : undefined,
+      claudeAgentName: typeof body?.claudeAgent === 'string' ? body.claudeAgent : undefined,
     });
 
     const userMessageId = typeof body?.messageId === 'string' && body.messageId
@@ -240,11 +261,74 @@ export function createClaudeCodeTranslator(deps = {}) {
 
     emitHarnessEvents(broadcast, directory, buildUserMessageEvents(ctx, text, files));
 
+    const agentsMode = body?.agentsMode === 'claude' || body?.agentsMode === 'opencode'
+      ? body.agentsMode
+      : 'opencode';
+    const requestedAgentName = typeof body?.agent === 'string' ? body.agent.trim() : '';
+    // Claude agents mode selects a *native* Claude agent for the main thread
+    // (`.claude/agents` + built-ins). OpenCode mode never sets it: the OpenCode
+    // agent is inherited as prompt + permissions on the default main thread.
+    const requestedClaudeAgent = agentsMode === 'claude' && typeof body?.claudeAgent === 'string'
+      ? body.claudeAgent.trim()
+      : '';
+    // The SDK fails the whole turn on an unknown `agent`, and the name comes
+    // from a client whose picker may be stale (agent files change on disk).
+    // Verify it against the same discovery the picker reads before forwarding.
+    let claudeAgentName = '';
+    if (requestedClaudeAgent) {
+      try {
+        const { agents: knownAgents } = await listAgents({ directory });
+        const match = knownAgents.find((entry) => (
+          typeof entry?.name === 'string'
+          && entry.name.toLowerCase() === requestedClaudeAgent.toLowerCase()
+        ));
+        if (match) {
+          claudeAgentName = match.name;
+        } else {
+          console.warn(
+            `[harness/claude-code] unknown Claude agent "${requestedClaudeAgent}" — running the default main-thread agent`,
+          );
+        }
+      } catch (error) {
+        // Discovery failure must not fail the turn; the default agent still runs.
+        console.warn(
+          '[harness/claude-code] Claude agent discovery failed:',
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
+
+    // OpenCode agents mode inherits the selected agent's prompt, permission
+    // ruleset and custom subagents. The ruleset is re-read from OpenCode here
+    // rather than trusted from the prompt body — see opencode-agents.js.
+    /** @type {import('./opencode-agents.js').OpenCodeAgentInheritance | null} */
+    let inheritance = null;
+    if (agentsMode === 'opencode' && resolveOpenCodeAgents) {
+      try {
+        inheritance = await resolveOpenCodeAgents({
+          directory,
+          agentName: requestedAgentName,
+        });
+      } catch (error) {
+        // Degrade to native Claude prompting instead of failing the turn: the
+        // fallback is stricter (every tool asks), never a silent allow.
+        console.warn(
+          '[harness/claude-code] OpenCode agent inheritance unavailable:',
+          error instanceof Error ? error.message : error,
+        );
+        inheritance = null;
+      }
+    }
+
     const canUseTool = createCanUseTool({
       sessionId,
       directory,
       getBroadcast,
       assistantMessageId,
+      ...(inheritance ? {
+        resolveToolPolicy: inheritance.resolveToolPolicy,
+        policySourceLabel: inheritance.agentName || requestedAgentName,
+      } : {}),
     });
 
     // Bridge user/project OpenChamber MCP configs, then merge the in-process
@@ -277,12 +361,11 @@ export function createClaudeCodeTranslator(deps = {}) {
     // Agent/Task/Skill remain available via Claude defaults + skills:'all'.
     const allowedTools = buildMcpAllowedToolPatterns(mcpServers);
 
-    const agentsMode = body?.agentsMode === 'claude' || body?.agentsMode === 'opencode'
-      ? body.agentsMode
-      : 'opencode';
-    const systemPromptAppend = typeof body?.systemPromptAppend === 'string'
-      ? body.systemPromptAppend.trim()
-      : '';
+    // The server-resolved prompt wins over the client's copy; the client value
+    // only covers runtimes with no OpenCode URL builder (no resolver at all).
+    const systemPromptAppend = inheritance
+      ? inheritance.systemPromptAppend
+      : (typeof body?.systemPromptAppend === 'string' ? body.systemPromptAppend.trim() : '');
 
     // OpenCode agents mode: keep Claude Code preset and append the OpenChamber
     // agent prompt. Claude agents mode: leave systemPrompt unset so the SDK
@@ -297,10 +380,26 @@ export function createClaudeCodeTranslator(deps = {}) {
       };
     }
 
+    // User-authored OpenCode subagents, registered so Claude's Task tool spawns
+    // them instead of only its own set. Built-in OpenCode agents are excluded
+    // (see opencode-agents.js) and native `.claude/agents` still load.
+    const agentDefinitions = agentsMode === 'opencode' && inheritance
+      ? inheritance.agentDefinitions
+      : null;
+
     // Claude agents mode must not inherit a sticky OpenCode-derived permissionMode.
+    //
+    // In OpenCode mode the server-resolved ruleset outranks the client's copy:
+    // `acceptEdits` makes the SDK auto-accept edits *without* calling
+    // canUseTool, so a stale or forged client value could otherwise skip an
+    // agent whose `edit` rule is `ask`. Derive it from the same ruleset the
+    // policy uses, and only fall back to the client target when nothing was
+    // resolved (no OpenCode URL builder / lookup failure).
     const permissionMode = agentsMode === 'claude'
       ? undefined
-      : binding.target?.permissionMode;
+      : inheritance
+        ? claudePermissionModeFromEditAction(inheritance.resolveToolPolicy('Edit', {}))
+        : binding.target?.permissionMode;
 
     let handle;
     try {
@@ -315,6 +414,10 @@ export function createClaudeCodeTranslator(deps = {}) {
         canUseTool,
         includePartialMessages: true,
         ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
+        ...(agentDefinitions && Object.keys(agentDefinitions).length > 0
+          ? { agents: agentDefinitions }
+          : {}),
+        ...(claudeAgentName ? { agent: claudeAgentName } : {}),
         ...(allowedTools.length > 0 ? { allowedTools } : {}),
         skills: 'all',
         settingSources: ['user', 'project', 'local'],
@@ -395,7 +498,8 @@ export function createClaudeCodeTranslator(deps = {}) {
         ]);
       } finally {
         try {
-          rejectPendingForSession(sessionId);
+          rejectPendingPermissions(sessionId);
+          rejectPendingQuestions(sessionId);
         } catch {
           // cleanup must still close the turn and clear busy status
         }
@@ -509,10 +613,17 @@ export function createClaudeCodeTranslator(deps = {}) {
    */
   const replyPermission = async (body) => replyPendingPermission(body);
 
+  /**
+   * Resolve a bridged AskUserQuestion prompt.
+   * @param {object} body
+   */
+  const replyQuestion = async (body) => replyPendingQuestion(body);
+
   return {
     prompt,
     abort,
     replyPermission,
+    replyQuestion,
     /** @internal test helper */
     _activeTurns: activeTurns,
   };

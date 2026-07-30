@@ -14,6 +14,7 @@ const {
   listClaudeImportCandidates,
   importClaudeSessions,
   harnessSessionBinding,
+  harnessClaudeAgents,
   HarnessClientError,
 } = await import(`./client?cache-test=${Date.now()}`);
 
@@ -95,6 +96,159 @@ describe('buildHarnessPromptBody', () => {
       target: { harnessId: 'opencode', providerId: 'anthropic', modelId: 'claude' },
       text: 'hi',
     })).toThrow(HarnessClientError);
+  });
+
+  test('includes a trimmed agent when present', () => {
+    const body = buildHarnessPromptBody({
+      sessionId: 'ses_1',
+      directory: '/project',
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      text: 'hi',
+      agent: '  build  ',
+    });
+    expect(body.agent).toBe('build');
+  });
+
+  test('omits a blank agent entirely', () => {
+    const body = buildHarnessPromptBody({
+      sessionId: 'ses_1',
+      directory: '/project',
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      text: 'hi',
+      agent: '   ',
+    });
+    expect(Object.prototype.hasOwnProperty.call(body, 'agent')).toBe(false);
+  });
+
+  test('includes a trimmed claudeAgent when present and omits it when blank', () => {
+    const withAgent = buildHarnessPromptBody({
+      sessionId: 'ses_1',
+      directory: '/project',
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      text: 'hi',
+      claudeAgent: 'code-reviewer',
+    });
+    expect(withAgent.claudeAgent).toBe('code-reviewer');
+
+    const blank = buildHarnessPromptBody({
+      sessionId: 'ses_1',
+      directory: '/project',
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      text: 'hi',
+      claudeAgent: '   ',
+    });
+    expect(Object.prototype.hasOwnProperty.call(blank, 'claudeAgent')).toBe(false);
+  });
+
+  test('omits agent and claudeAgent when the params do not include them', () => {
+    const body = buildHarnessPromptBody({
+      sessionId: 'ses_1',
+      directory: '/project',
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      text: 'hi',
+    });
+    expect(Object.prototype.hasOwnProperty.call(body, 'agent')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(body, 'claudeAgent')).toBe(false);
+  });
+});
+
+describe('harnessClaudeAgents', () => {
+  test('sanitizes agents: drops unnamed entries, dedupes case-insensitively, and defaults source/description/model', async () => {
+    runtimeFetchMock.mockImplementation(async () => new Response(JSON.stringify({
+      agents: [
+        { name: 'Reviewer', description: 'Reviews code', model: 'sonnet', source: 'project' },
+        { name: 'reviewer', description: 'duplicate, should be dropped', model: 'opus', source: 'user' },
+        { name: '   ' },
+        { description: 'no name field at all' },
+        { name: 'Builder', source: 'weird-value' },
+      ],
+      roots: { user: '/home/u/.claude/agents', project: '/tmp/app/.claude/agents' },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    const result = await harnessClaudeAgents('/tmp/app');
+
+    expect(result.agents).toEqual([
+      { name: 'Reviewer', description: 'Reviews code', model: 'sonnet', source: 'project' },
+      { name: 'Builder', description: '', model: '', source: 'builtin' },
+    ]);
+  });
+
+  test('normalizes roots.user/project to null when absent, blank, or non-string', async () => {
+    runtimeFetchMock.mockImplementation(async () => new Response(JSON.stringify({
+      agents: [],
+      roots: { user: '   ', project: 42 },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    const result = await harnessClaudeAgents('/tmp/app');
+    expect(result.roots).toEqual({ user: null, project: null });
+
+    runtimeFetchMock.mockImplementation(async () => new Response(JSON.stringify({
+      agents: [],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    const withoutRoots = await harnessClaudeAgents('/tmp/app');
+    expect(withoutRoots.roots).toEqual({ user: null, project: null });
+  });
+
+  test('forwards directory as a runtimeFetch query param', async () => {
+    runtimeFetchMock.mockImplementation(async () => new Response(JSON.stringify({
+      agents: [],
+      roots: { user: null, project: null },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    await harnessClaudeAgents('/tmp/app');
+    const [path, init] = runtimeFetchMock.mock.calls[0];
+    expect(path).toBe('/api/harness/claude-code/agents');
+    expect(init.query).toEqual({ directory: '/tmp/app' });
+  });
+
+  test('non-ok response throws HarnessClientError with the payload code/status and does not resolve to an empty agent list', async () => {
+    runtimeFetchMock.mockImplementation(async () => new Response(JSON.stringify({
+      error: 'Claude Code is not ready',
+      code: 'CLAUDE_MISSING_CLI',
+    }), { status: 503 }));
+
+    let caught = null;
+    let resolved;
+    try {
+      resolved = await harnessClaudeAgents('/tmp/app');
+    } catch (error) {
+      caught = error;
+    }
+
+    // Failure must surface as a thrown error, never as a silently-empty agent list.
+    expect(resolved).toBeUndefined();
+    expect(caught).toBeInstanceOf(HarnessClientError);
+    expect(caught.code).toBe('CLAUDE_MISSING_CLI');
+    expect(caught.statusCode).toBe(503);
+  });
+
+  test('a network throw becomes a HarnessClientError with code HARNESS_NETWORK', async () => {
+    runtimeFetchMock.mockImplementation(async () => {
+      throw new Error('offline');
+    });
+
+    let caught = null;
+    try {
+      await harnessClaudeAgents('/tmp/app');
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(HarnessClientError);
+    expect(caught.code).toBe('HARNESS_NETWORK');
   });
 });
 

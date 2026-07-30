@@ -136,6 +136,18 @@ export function findClaudeTranscriptPath(foreignSessionId, options = {}) {
 }
 
 /**
+ * Harness-injected `<task-notification>` user records (orphaned background
+ * shell tasks surfaced on resume) are model context, not user turns —
+ * replaying them renders system XML as a user bubble on every refetch.
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+function isTaskNotificationText(text) {
+  return text.trimStart().startsWith('<task-notification>');
+}
+
+/**
  * @param {unknown} content
  * @returns {string}
  */
@@ -275,11 +287,12 @@ export function parseClaudeTranscript(params) {
     if (record.type === 'user') {
       const blocks = Array.isArray(content) ? content : [];
       const textParts = [];
-      if (typeof content === 'string' && content.trim()) {
+      if (typeof content === 'string' && content.trim() && !isTaskNotificationText(content)) {
         textParts.push(content);
       } else if (Array.isArray(content)) {
         for (const block of blocks) {
-          if (block && block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+          if (block && block.type === 'text' && typeof block.text === 'string' && block.text.trim()
+            && !isTaskNotificationText(block.text)) {
             textParts.push(block.text);
           }
         }

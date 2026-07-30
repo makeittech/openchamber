@@ -442,6 +442,20 @@ export const createSessionGoalRuntime = ({
         : (typeof lastAssistantInfo?.modelID === 'string' && lastAssistantInfo.modelID
           ? lastAssistantInfo.modelID
           : 'sonnet');
+      // Reuse the agent selection recorded on the binding by the last user
+      // turn. Without it the continuation inherits no OpenCode agent, so a
+      // goal loop would silently start prompting for every tool halfway
+      // through — the session's own permission rules must not lapse just
+      // because the turn was machine-driven.
+      const bindingAgentsMode = harnessBinding.agentsMode === 'claude' || harnessBinding.agentsMode === 'opencode'
+        ? harnessBinding.agentsMode
+        : undefined;
+      const bindingAgentName = typeof harnessBinding.agentName === 'string' && harnessBinding.agentName
+        ? harnessBinding.agentName
+        : undefined;
+      const bindingClaudeAgentName = typeof harnessBinding.claudeAgentName === 'string' && harnessBinding.claudeAgentName
+        ? harnessBinding.claudeAgentName
+        : undefined;
       await promptHarness({
         sessionId,
         directory,
@@ -451,6 +465,9 @@ export const createSessionGoalRuntime = ({
           ...(typeof target.permissionMode === 'string' ? { permissionMode: target.permissionMode } : {}),
           ...(typeof target.effort === 'string' ? { effort: target.effort } : {}),
         },
+        ...(bindingAgentsMode ? { agentsMode: bindingAgentsMode } : {}),
+        ...(bindingAgentName ? { agent: bindingAgentName } : {}),
+        ...(bindingClaudeAgentName ? { claudeAgent: bindingClaudeAgentName } : {}),
         text: buildContinuationPrompt(goal),
       });
       return;

@@ -60,6 +60,155 @@ describe('sanitizeSessionBinding', () => {
   });
 });
 
+describe('agent selection persistence', () => {
+  it('bindSession on a new session persists agentsMode, agentName, and claudeAgentName', () => {
+    const { binding, created } = bindSession({
+      sessionId: 'ses_new_agent',
+      harnessId: 'claude-code',
+      directory: '/project',
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      agentsMode: 'claude',
+      agentName: 'build',
+      claudeAgentName: 'Explore',
+    });
+
+    expect(created).toBe(true);
+    expect(binding).toMatchObject({
+      agentsMode: 'claude',
+      agentName: 'build',
+      claudeAgentName: 'Explore',
+    });
+  });
+
+  it('drops an invalid agentsMode value', () => {
+    const { binding } = bindSession({
+      sessionId: 'ses_bad_mode',
+      harnessId: 'claude-code',
+      directory: '/project',
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      agentsMode: 'bogus',
+    });
+
+    expect(binding.agentsMode).toBeUndefined();
+  });
+
+  it('trims agentName and caps it at 200 characters', () => {
+    const long = `  ${'a'.repeat(250)}  `;
+    const { binding } = bindSession({
+      sessionId: 'ses_long_name',
+      harnessId: 'claude-code',
+      directory: '/project',
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      agentName: long,
+    });
+
+    expect(binding.agentName).toBe('a'.repeat(200));
+    expect(binding.agentName).toHaveLength(200);
+  });
+
+  it('replaces agentName when re-binding the same session with a new value', () => {
+    bindSession({
+      sessionId: 'ses_restamp',
+      harnessId: 'claude-code',
+      directory: '/project',
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      agentName: 'build',
+    });
+
+    const { binding, created } = bindSession({
+      sessionId: 'ses_restamp',
+      harnessId: 'claude-code',
+      directory: '/project',
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      agentName: 'plan',
+    });
+
+    expect(created).toBe(false);
+    expect(binding.agentName).toBe('plan');
+  });
+
+  it('removes the stored agentName when re-binding with a whitespace-only value', () => {
+    bindSession({
+      sessionId: 'ses_clear',
+      harnessId: 'claude-code',
+      directory: '/project',
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      agentName: 'build',
+    });
+
+    const { binding } = bindSession({
+      sessionId: 'ses_clear',
+      harnessId: 'claude-code',
+      directory: '/project',
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      agentName: '   ',
+    });
+
+    expect(binding.agentName).toBeUndefined();
+    expect('agentName' in binding).toBe(false);
+  });
+
+  it('leaves previously stored agent fields intact when re-binding without them', () => {
+    bindSession({
+      sessionId: 'ses_keep',
+      harnessId: 'claude-code',
+      directory: '/project',
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      agentsMode: 'claude',
+      agentName: 'build',
+      claudeAgentName: 'Explore',
+    });
+
+    const { binding } = bindSession({
+      sessionId: 'ses_keep',
+      harnessId: 'claude-code',
+      directory: '/project2',
+      target: { harnessId: 'claude-code', modelRef: 'opus' },
+    });
+
+    expect(binding).toMatchObject({
+      directory: '/project2',
+      agentsMode: 'claude',
+      agentName: 'build',
+      claudeAgentName: 'Explore',
+    });
+  });
+
+  it('round-trips agent fields through sanitizeSessionBinding and drops a non-string agentName', () => {
+    const clean = sanitizeSessionBinding({
+      sessionId: 'ses_roundtrip',
+      harnessId: 'claude-code',
+      directory: '/project',
+      target: { harnessId: 'claude-code' },
+      createdAt: 1,
+      updatedAt: 2,
+      agentsMode: 'opencode',
+      agentName: 'build',
+      claudeAgentName: 'Explore',
+    });
+
+    expect(clean).toMatchObject({
+      agentsMode: 'opencode',
+      agentName: 'build',
+      claudeAgentName: 'Explore',
+    });
+
+    const dirty = sanitizeSessionBinding({
+      sessionId: 'ses_roundtrip2',
+      harnessId: 'claude-code',
+      directory: '/project',
+      target: { harnessId: 'claude-code' },
+      createdAt: 1,
+      updatedAt: 2,
+      agentName: 42,
+      claudeAgentName: { nested: true },
+    });
+
+    expect(dirty.agentName).toBeUndefined();
+    expect(dirty.claudeAgentName).toBeUndefined();
+  });
+});
+
 describe('durable session bindings', () => {
   it('round-trips persist and load', () => {
     const dir = makeTempDir();

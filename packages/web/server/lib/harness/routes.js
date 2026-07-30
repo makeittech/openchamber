@@ -21,6 +21,8 @@ import {
   listClaudeImportCandidates,
 } from './translators/claude-code/import-from-disk.js';
 import { createOpenCodeCommandResolver } from './translators/claude-code/opencode-command.js';
+import { createOpenCodeAgentResolver } from './translators/claude-code/opencode-agents.js';
+import { listClaudeAgents } from './translators/claude-code/claude-agents.js';
 
 /**
  * @param {import('express').Express} app
@@ -34,6 +36,7 @@ import { createOpenCodeCommandResolver } from './translators/claude-code/opencod
  * @param {boolean} [deps.initBindings]
  * @param {(path: string, directory?: string) => string} [deps.buildOpenCodeUrl]
  * @param {() => Record<string, string>} [deps.getOpenCodeAuthHeaders]
+ * @param {typeof listClaudeAgents} [deps.listClaudeAgents]
  * @param {typeof listClaudeImportCandidates} [deps.listClaudeImportCandidates]
  * @param {typeof importClaudeSessions} [deps.importClaudeSessions]
  * @param {(directory: string, title?: string | null) => Promise<string>} [deps.createOpenCodeSession]
@@ -57,9 +60,14 @@ export function registerHarnessRoutes(app, deps = {}) {
     buildOpenCodeUrl,
     getOpenCodeAuthHeaders,
   });
+  const resolveOpenCodeAgents = createOpenCodeAgentResolver({
+    buildOpenCodeUrl,
+    getOpenCodeAuthHeaders,
+  });
   const router = deps.router || createHarnessRouter({
     getBroadcast,
     ...(resolveOpenCodeCommand ? { resolveOpenCodeCommand } : {}),
+    ...(resolveOpenCodeAgents ? { resolveOpenCodeAgents } : {}),
   });
 
   if (deps.initBindings !== false) {
@@ -190,8 +198,22 @@ export function registerHarnessRoutes(app, deps = {}) {
     });
   });
 
-  // Claude Code local import — list candidates and bind OpenCode shells.
+  // Claude-native agents for the composer picker when agents mode is `claude`.
   // Registered before /api/harness/:id so path segments stay unambiguous.
+  app.get('/api/harness/claude-code/agents', async (req, res) => {
+    try {
+      const listAgents = typeof deps.listClaudeAgents === 'function'
+        ? deps.listClaudeAgents
+        : listClaudeAgents;
+      const directory = typeof req.query?.directory === 'string' ? req.query.directory : '';
+      const payload = await listAgents({ directory });
+      res.json(payload);
+    } catch (error) {
+      sendError(res, error);
+    }
+  });
+
+  // Claude Code local import — list candidates and bind OpenCode shells.
   app.get('/api/harness/claude-code/import/candidates', async (_req, res) => {
     try {
       const listCandidates = typeof deps.listClaudeImportCandidates === 'function'
@@ -277,15 +299,15 @@ export function registerHarnessRoutes(app, deps = {}) {
     }
   });
 
-  app.post('/api/harness/permission/reply', json, async (req, res) => {
+  app.post('/api/harness/question/reply', json, async (req, res) => {
     try {
-      if (typeof router.replyPermission !== 'function') {
-        const error = new Error('Permission reply is unavailable');
-        error.code = 'PERMISSION_UNAVAILABLE';
+      if (typeof router.replyQuestion !== 'function') {
+        const error = new Error('Question reply is unavailable');
+        error.code = 'QUESTION_UNAVAILABLE';
         error.statusCode = 503;
         throw error;
       }
-      const result = await router.replyPermission(req.body || {});
+      const result = await router.replyQuestion(req.body || {});
       res.json(result);
     } catch (error) {
       sendError(res, error);

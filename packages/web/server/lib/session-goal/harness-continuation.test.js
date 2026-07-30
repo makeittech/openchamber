@@ -100,4 +100,181 @@ describe('session goal Claude harness continuation', () => {
     expect(fetchImpl.mock.calls.some(([url]) => String(url).includes('prompt_async'))).toBe(false);
     runtime.stop();
   });
+
+  it('forwards agentsMode: opencode and agent from the binding to promptHarness', async () => {
+    const promptHarness = vi.fn(async () => ({ ok: true, status: 'started' }));
+    const service = {
+      generateSmallModelText: vi.fn(async () => ({
+        text: '{"verdict":"continue","note":"Keep going"}',
+        providerID: 'provider',
+        modelID: 'model',
+      })),
+    };
+    const fetchImpl = vi.fn(async (input, init = {}) => {
+      const pathname = requestPath(input);
+      if (pathname === `/session/${SESSION_ID}` && init.method === 'PATCH') return jsonResponse(session);
+      if (pathname === `/session/${SESSION_ID}`) return jsonResponse(session);
+      throw new Error(`Unexpected OpenCode request: ${pathname}`);
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const runtime = createSessionGoalRuntime({
+      buildOpenCodeUrl: (pathname) => `http://opencode.test${pathname}`,
+      getOpenCodeAuthHeaders: () => ({}),
+      getSmallModelService: async () => service,
+      idleQuietMs: 10,
+      getHarnessBinding: () => ({
+        harnessId: 'claude-code',
+        directory: DIRECTORY,
+        target: { harnessId: 'claude-code', modelRef: 'sonnet', permissionMode: 'acceptEdits' },
+        agentsMode: 'opencode',
+        agentName: 'build',
+      }),
+      isHarnessSessionWorking: () => false,
+      getHarnessRecentMessages: () => ([{
+        info: {
+          id: 'msg_assistant',
+          sessionID: SESSION_ID,
+          role: 'assistant',
+          providerID: 'claude-code',
+          modelID: 'sonnet',
+          time: { completed: 2 },
+          tokens: { input: 0, output: 0, cache: { read: 0 } },
+        },
+        parts: [{ type: 'text', text: 'Working on the objective.' }],
+      }]),
+      promptHarness,
+    });
+
+    runtime.processPayload({
+      type: 'session.status',
+      properties: { sessionID: SESSION_ID, status: { type: 'idle' }, directory: DIRECTORY },
+    });
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(promptHarness).toHaveBeenCalledOnce();
+    expect(promptHarness.mock.calls[0][0]).toMatchObject({
+      agentsMode: 'opencode',
+      agent: 'build',
+    });
+    expect(promptHarness.mock.calls[0][0].claudeAgent).toBeUndefined();
+    runtime.stop();
+  });
+
+  it('forwards agentsMode: claude and claudeAgent from the binding to promptHarness', async () => {
+    const promptHarness = vi.fn(async () => ({ ok: true, status: 'started' }));
+    const service = {
+      generateSmallModelText: vi.fn(async () => ({
+        text: '{"verdict":"continue","note":"Keep going"}',
+        providerID: 'provider',
+        modelID: 'model',
+      })),
+    };
+    const fetchImpl = vi.fn(async (input, init = {}) => {
+      const pathname = requestPath(input);
+      if (pathname === `/session/${SESSION_ID}` && init.method === 'PATCH') return jsonResponse(session);
+      if (pathname === `/session/${SESSION_ID}`) return jsonResponse(session);
+      throw new Error(`Unexpected OpenCode request: ${pathname}`);
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const runtime = createSessionGoalRuntime({
+      buildOpenCodeUrl: (pathname) => `http://opencode.test${pathname}`,
+      getOpenCodeAuthHeaders: () => ({}),
+      getSmallModelService: async () => service,
+      idleQuietMs: 10,
+      getHarnessBinding: () => ({
+        harnessId: 'claude-code',
+        directory: DIRECTORY,
+        target: { harnessId: 'claude-code', modelRef: 'sonnet', permissionMode: 'acceptEdits' },
+        agentsMode: 'claude',
+        claudeAgentName: 'Explore',
+      }),
+      isHarnessSessionWorking: () => false,
+      getHarnessRecentMessages: () => ([{
+        info: {
+          id: 'msg_assistant',
+          sessionID: SESSION_ID,
+          role: 'assistant',
+          providerID: 'claude-code',
+          modelID: 'sonnet',
+          time: { completed: 2 },
+          tokens: { input: 0, output: 0, cache: { read: 0 } },
+        },
+        parts: [{ type: 'text', text: 'Working on the objective.' }],
+      }]),
+      promptHarness,
+    });
+
+    runtime.processPayload({
+      type: 'session.status',
+      properties: { sessionID: SESSION_ID, status: { type: 'idle' }, directory: DIRECTORY },
+    });
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(promptHarness).toHaveBeenCalledOnce();
+    expect(promptHarness.mock.calls[0][0]).toMatchObject({
+      agentsMode: 'claude',
+      claudeAgent: 'Explore',
+    });
+    expect(promptHarness.mock.calls[0][0].agent).toBeUndefined();
+    runtime.stop();
+  });
+
+  it('forwards none of agentsMode/agent/claudeAgent for a binding without them (backward compat)', async () => {
+    const promptHarness = vi.fn(async () => ({ ok: true, status: 'started' }));
+    const service = {
+      generateSmallModelText: vi.fn(async () => ({
+        text: '{"verdict":"continue","note":"Keep going"}',
+        providerID: 'provider',
+        modelID: 'model',
+      })),
+    };
+    const fetchImpl = vi.fn(async (input, init = {}) => {
+      const pathname = requestPath(input);
+      if (pathname === `/session/${SESSION_ID}` && init.method === 'PATCH') return jsonResponse(session);
+      if (pathname === `/session/${SESSION_ID}`) return jsonResponse(session);
+      throw new Error(`Unexpected OpenCode request: ${pathname}`);
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const runtime = createSessionGoalRuntime({
+      buildOpenCodeUrl: (pathname) => `http://opencode.test${pathname}`,
+      getOpenCodeAuthHeaders: () => ({}),
+      getSmallModelService: async () => service,
+      idleQuietMs: 10,
+      getHarnessBinding: () => ({
+        harnessId: 'claude-code',
+        directory: DIRECTORY,
+        target: { harnessId: 'claude-code', modelRef: 'sonnet', permissionMode: 'acceptEdits' },
+      }),
+      isHarnessSessionWorking: () => false,
+      getHarnessRecentMessages: () => ([{
+        info: {
+          id: 'msg_assistant',
+          sessionID: SESSION_ID,
+          role: 'assistant',
+          providerID: 'claude-code',
+          modelID: 'sonnet',
+          time: { completed: 2 },
+          tokens: { input: 0, output: 0, cache: { read: 0 } },
+        },
+        parts: [{ type: 'text', text: 'Working on the objective.' }],
+      }]),
+      promptHarness,
+    });
+
+    runtime.processPayload({
+      type: 'session.status',
+      properties: { sessionID: SESSION_ID, status: { type: 'idle' }, directory: DIRECTORY },
+    });
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(promptHarness).toHaveBeenCalledOnce();
+    const call = promptHarness.mock.calls[0][0];
+    expect(call.agentsMode).toBeUndefined();
+    expect(call.agent).toBeUndefined();
+    expect(call.claudeAgent).toBeUndefined();
+    runtime.stop();
+  });
 });

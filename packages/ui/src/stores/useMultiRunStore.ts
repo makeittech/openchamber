@@ -325,7 +325,11 @@ export const useMultiRunStore = create<MultiRunStore>()(
                       providerID: run.providerID,
                       modelID: run.modelID,
                       variant: run.variant,
-                      agent: executionTarget.harnessId === 'opencode' ? agent : undefined,
+                      // Sent for Claude targets too: the harness resolves that
+                      // OpenCode agent's prompt + permission ruleset from the
+                      // name, so withholding it makes the run ask for
+                      // every tool instead of following the agent.
+                      agent,
                       files: filesForMessage,
                       executionTarget,
                     });

@@ -421,6 +421,28 @@ describe('routeMessage skill invocation', () => {
     expect(sendCommandCalls[0].arguments).toBe('focus on auth');
   });
 
+  test('forwards an argument written on the next line', async () => {
+    useCommandsStore.setState({
+      commands: [{ name: 'pr-review', description: 'review a PR', scope: 'project' }],
+    });
+
+    await routeMessage({
+      sessionId: 'session-skill',
+      directory: '/skills/project',
+      content: '/pr-review\nhttps://github.com/openchamber/openchamber/pull/2513',
+      providerID: 'provider-a',
+      modelID: 'model-a',
+    });
+
+    // The name ends at the first whitespace of any kind. Splitting on " " alone
+    // made the whole message the command name, so it matched nothing and was
+    // sent to the model as literal text.
+    expect(sendCommandCalls).toHaveLength(1);
+    expect(sendCommandCalls[0].command).toBe('pr-review');
+    expect(sendCommandCalls[0].arguments).toBe('https://github.com/openchamber/openchamber/pull/2513');
+    expect(sendMessageCalls).toHaveLength(0);
+  });
+
   test('sends an unknown slash token as a plain message', async () => {
     await routeMessage({
       sessionId: 'session-skill',

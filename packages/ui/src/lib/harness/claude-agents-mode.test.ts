@@ -42,4 +42,43 @@ describe('resolveClaudeAgentsSendOptions', () => {
       },
     });
   });
+
+  test('opencode mode forwards the agent name for server-side resolution', () => {
+    const resolved = resolveClaudeAgentsSendOptions({
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      agentsMode: 'opencode',
+      agentName: '  build  ',
+      // A Claude agent selection belongs to the other mode and must not leak.
+      claudeAgentName: 'code-reviewer',
+    });
+
+    expect(resolved.agent).toBe('build');
+    expect(resolved.claudeAgent).toBe(undefined);
+  });
+
+  test('claude mode forwards the native Claude agent and no OpenCode agent', () => {
+    const resolved = resolveClaudeAgentsSendOptions({
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      agentsMode: 'claude',
+      agentName: 'build',
+      claudeAgentName: '  code-reviewer  ',
+    });
+
+    expect(resolved.claudeAgent).toBe('code-reviewer');
+    expect(resolved.agent).toBe(undefined);
+  });
+
+  test('blank agent names are omitted rather than sent as empty strings', () => {
+    expect(resolveClaudeAgentsSendOptions({
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      agentsMode: 'opencode',
+      agentName: '   ',
+    }).agent).toBe(undefined);
+
+    expect(resolveClaudeAgentsSendOptions({
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      agentsMode: 'claude',
+      claudeAgentName: '   ',
+    }).claudeAgent).toBe(undefined);
+  });
 });

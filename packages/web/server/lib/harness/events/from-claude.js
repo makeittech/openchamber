@@ -81,6 +81,7 @@ export function resetOpenCodeIdState() {
  * @property {string} [accumulatedReasoning]
  * @property {boolean} [needsNewReasoningSegment]
  * @property {boolean} [reasoningPartStarted]
+ * @property {Set<string>} [askUserQuestionCallIds]
  * @property {Map<string, {
  *   sessionId: string,
  *   assistantMessageId: string,
@@ -155,6 +156,7 @@ export function createClaudeMapperContext(input) {
       || Boolean(input.accumulatedReasoning),
     subagentByToolUseId: input.subagentByToolUseId || new Map(),
     lastInitCapabilities: input.lastInitCapabilities || null,
+    askUserQuestionCallIds: input.askUserQuestionCallIds || new Set(),
     tokens: input.tokens && typeof input.tokens === 'object'
       ? input.tokens
       : { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
@@ -615,17 +617,29 @@ function mapContentBlock(ctx, block) {
 
   if (block.type === 'tool_use') {
     const callId = typeof block.id === 'string' ? block.id : createOpenCodeId('call');
+    const toolName = typeof block.name === 'string' && block.name.trim() ? block.name.trim() : 'tool';
+
+    // The AskUserQuestion tool is bridged to OpenCode question cards via the
+    // canUseTool callback; do not render a generic tool part for it.
+    if (toolName === 'AskUserQuestion') {
+      ctx.askUserQuestionCallIds.add(callId);
+      ctx.needsNewTextSegment = true;
+      ctx.needsNewReasoningSegment = true;
+      return [];
+    }
+
     let entry = ctx.toolParts.get(callId);
     if (!entry) {
       entry = {
         partId: createOpenCodeId('prt'),
-        toolName: typeof block.name === 'string' && block.name.trim() ? block.name.trim() : 'tool',
+        toolName,
         input: {},
       };
       ctx.toolParts.set(callId, entry);
-    } else if (typeof block.name === 'string' && block.name.trim()) {
-      entry.toolName = block.name.trim();
+    } else if (toolName !== 'tool') {
+      entry.toolName = toolName;
     }
+
     const input = block.input && typeof block.input === 'object' ? block.input : {};
     // Retained so the completed/error state can echo the same arguments — the UI
     // reducer replaces `part.state` wholesale, so omitting them blanks the args.
@@ -696,6 +710,9 @@ function mapToolResultBlock(ctx, block) {
   if (!block || block.type !== 'tool_result') return [];
   const callId = typeof block.tool_use_id === 'string' ? block.tool_use_id : '';
   if (!callId) return [];
+  if (ctx.askUserQuestionCallIds?.has(callId)) {
+    return [];
+  }
   let entry = ctx.toolParts.get(callId);
   if (!entry) {
     entry = { partId: createOpenCodeId('prt'), toolName: 'tool', input: {} };

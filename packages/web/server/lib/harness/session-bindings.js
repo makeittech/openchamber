@@ -125,6 +125,19 @@ export function sanitizeSessionBinding(raw) {
   if (typeof input.seedFromSessionId === 'string' && input.seedFromSessionId) {
     binding.seedFromSessionId = input.seedFromSessionId;
   }
+  // Agent selection of the last user-driven turn. Server-side continuations
+  // (session goal) have no composer to read it from, and a Claude assistant
+  // message carries no agent, so without this the continuation would inherit
+  // nothing and start asking for every tool mid-goal.
+  if (input.agentsMode === 'claude' || input.agentsMode === 'opencode') {
+    binding.agentsMode = input.agentsMode;
+  }
+  if (typeof input.agentName === 'string' && input.agentName.trim()) {
+    binding.agentName = input.agentName.trim().slice(0, 200);
+  }
+  if (typeof input.claudeAgentName === 'string' && input.claudeAgentName.trim()) {
+    binding.claudeAgentName = input.claudeAgentName.trim().slice(0, 200);
+  }
   const lastError = sanitizeLastError(input.lastError);
   if (lastError) binding.lastError = lastError;
 
@@ -318,6 +331,9 @@ export function getSessionBinding(sessionId) {
  * @param {object} [input.capabilitySnapshot]
  * @param {string} [input.seedFromSessionId]
  * @param {string} [input.foreignSessionId]
+ * @param {'claude' | 'opencode'} [input.agentsMode]
+ * @param {string} [input.agentName] Selected OpenCode agent (opencode mode).
+ * @param {string} [input.claudeAgentName] Selected native Claude agent (claude mode).
  * @returns {{ binding: object, created: boolean, conflict?: boolean }}
  */
 export function bindSession(input) {
@@ -348,6 +364,21 @@ export function bindSession(input) {
       }
       if (input.foreignSessionId) next.foreignSessionId = input.foreignSessionId;
       if (input.seedFromSessionId) next.seedFromSessionId = input.seedFromSessionId;
+      // Re-stamped every user turn so a continuation always reuses the agent
+      // the session is actually running under, not the one it started with.
+      if (input.agentsMode === 'claude' || input.agentsMode === 'opencode') {
+        next.agentsMode = input.agentsMode;
+      }
+      if (typeof input.agentName === 'string') {
+        const agentName = input.agentName.trim().slice(0, 200);
+        if (agentName) next.agentName = agentName;
+        else delete next.agentName;
+      }
+      if (typeof input.claudeAgentName === 'string') {
+        const claudeAgentName = input.claudeAgentName.trim().slice(0, 200);
+        if (claudeAgentName) next.claudeAgentName = claudeAgentName;
+        else delete next.claudeAgentName;
+      }
       bindings.set(sessionId, next);
       return { binding: next, created: false, conflict: false };
     }
@@ -363,6 +394,9 @@ export function bindSession(input) {
       capabilitySnapshot: input.capabilitySnapshot || null,
       foreignSessionId: input.foreignSessionId,
       seedFromSessionId: input.seedFromSessionId,
+      agentsMode: input.agentsMode,
+      agentName: input.agentName,
+      claudeAgentName: input.claudeAgentName,
     });
     bindings.set(sessionId, binding);
     return { binding, created: true, conflict: false };

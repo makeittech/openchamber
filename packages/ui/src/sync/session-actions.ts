@@ -28,7 +28,7 @@ import { withContextObligatoryMessage, type ContextObligatoryMessage } from "@/l
 import { getImperativeSessionMessageLoader } from "./session-message-loader"
 import { cleanupPersistedSessionState } from "./session-deletion-cleanup"
 import { getRuntimeKey } from "@/lib/runtime-switch"
-import { harnessAbort, harnessPermissionReply } from "@/lib/harness/client"
+import { harnessAbort, harnessPermissionReply, harnessQuestionReply } from "@/lib/harness/client"
 import { useSelectionStore } from "./selection-store"
 import { applyGlobalSessionStatusEvent } from "./global-session-status"
 
@@ -1197,12 +1197,25 @@ export async function respondToQuestion(
   const directory = resolveDirectoryForBlockingRequest("question", sessionId, requestId)
     || getSessionDirectory(sessionId)
     || dir()
+  const target = useSelectionStore.getState().getSessionTarget(sessionId)
   try {
     const normalizedAnswers = answers.length === 0
       ? []
       : Array.isArray(answers[0])
         ? answers as string[][]
         : [answers as string[]]
+    if (target?.harnessId === "claude-code") {
+      const result = await harnessQuestionReply({
+        sessionId,
+        requestId,
+        answers: normalizedAnswers,
+        ...(directory ? { directory } : {}),
+      })
+      if (!result.ok) {
+        throw new Error("Question reply failed")
+      }
+      return
+    }
     const result = await getRequestReplyClient("question", sessionId, requestId).question.reply({
       requestID: requestId,
       answers: normalizedAnswers,
@@ -1227,7 +1240,20 @@ export async function rejectQuestion(
   const directory = resolveDirectoryForBlockingRequest("question", sessionId, requestId)
     || getSessionDirectory(sessionId)
     || dir()
+  const target = useSelectionStore.getState().getSessionTarget(sessionId)
   try {
+    if (target?.harnessId === "claude-code") {
+      const result = await harnessQuestionReply({
+        sessionId,
+        requestId,
+        reject: true,
+        ...(directory ? { directory } : {}),
+      })
+      if (!result.ok) {
+        throw new Error("Question rejection failed")
+      }
+      return
+    }
     const result = await getRequestReplyClient("question", sessionId, requestId).question.reject({
       requestID: requestId,
       ...(directory ? { directory } : {}),

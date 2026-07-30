@@ -10,6 +10,7 @@ import { createOpenCodeTranslator } from './translators/opencode/index.js';
  * @param {() => ((payload: object, options?: object) => void) | null | undefined} [deps.getBroadcast]
  * @param {(options?: object) => Promise<Record<string, unknown> | null>} [deps.createOpenChamberMcpServers]
  * @param {(params: { name: string, args: string, directory: string }) => Promise<{ name: string, text: string }>} [deps.resolveOpenCodeCommand]
+ * @param {(params: { directory: string, agentName?: string }) => Promise<import('./translators/claude-code/opencode-agents.js').OpenCodeAgentInheritance>} [deps.resolveOpenCodeAgents]
  */
 export function createHarnessRouter(deps = {}) {
   const getBroadcast = deps.getBroadcast || (() => null);
@@ -17,6 +18,7 @@ export function createHarnessRouter(deps = {}) {
     getBroadcast,
     createOpenChamberMcpServers: deps.createOpenChamberMcpServers,
     resolveOpenCodeCommand: deps.resolveOpenCodeCommand,
+    resolveOpenCodeAgents: deps.resolveOpenCodeAgents,
   });
   const opencode = deps.opencodeTranslator || createOpenCodeTranslator();
 
@@ -62,5 +64,19 @@ export function createHarnessRouter(deps = {}) {
     return claude.replyPermission(body);
   };
 
-  return { prompt, abort, replyPermission, claude, opencode };
+  /**
+   * Resolve a bridged Claude question prompt.
+   * @param {object} body
+   */
+  const replyQuestion = async (body) => {
+    if (typeof claude.replyQuestion !== 'function') {
+      const error = new Error('Question reply is unavailable');
+      error.code = 'QUESTION_UNAVAILABLE';
+      error.statusCode = 503;
+      throw error;
+    }
+    return claude.replyQuestion(body);
+  };
+
+  return { prompt, abort, replyPermission, replyQuestion, claude, opencode };
 }

@@ -2065,7 +2065,7 @@ export const settingsDict = {
   'settings.harness.claudeCode.section.agents': '에이전트',
   'settings.harness.claudeCode.agentsMode.label': '사용할 에이전트',
   'settings.harness.claudeCode.agentsMode.aria': 'Claude Code 세션에 Claude 또는 OpenCode 에이전트 선택',
-  'settings.harness.claudeCode.agentsMode.info': 'Claude는 Claude Code 네이티브 시스템 프롬프트와 권한을 사용합니다. OpenCode는 Claude 세션에서 OpenChamber 에이전트의 권한과 시스템 프롬프트를 사용합니다.',
+  'settings.harness.claudeCode.agentsMode.info': 'Claude는 자체 에이전트, 프롬프트, 권한 설정을 사용합니다. OpenCode는 대신 선택한 OpenCode 에이전트로 Claude 세션을 실행시킵니다. 이 에이전트의 권한 규칙이 모든 도구 호출을 결정하고, 이 에이전트의 프롬프트가 Claude의 프롬프트에 추가되며, 사용자가 만든 OpenCode 서브에이전트도 Claude에서 사용할 수 있게 됩니다. 입력창의 에이전트 선택기도 이에 맞춰 전환됩니다.',
   'settings.harness.claudeCode.agentsMode.claude': 'Claude',
   'settings.harness.claudeCode.agentsMode.opencode': 'OpenCode',
   'settings.harness.claudeCode.section.warnings': '경고',

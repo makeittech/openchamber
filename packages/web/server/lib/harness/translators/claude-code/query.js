@@ -155,6 +155,8 @@ export function killProcessTree(pid, options = {}) {
  * @param {Record<string, string | undefined>} [params.env]
  * @param {boolean} [params.includePartialMessages]
  * @param {Record<string, unknown>} [params.mcpServers]
+ * @param {Record<string, object>} [params.agents]
+ * @param {string} [params.agent]
  * @param {string[]} [params.allowedTools]
  * @param {string[] | 'all'} [params.skills]
  * @param {Array<'user' | 'project' | 'local'>} [params.settingSources]
@@ -245,6 +247,21 @@ export async function startClaudeQuery(params) {
     if (names.length > 0) {
       options.mcpServers = params.mcpServers;
     }
+  }
+  // Programmatic subagents (OpenCode agents inherited for this turn). The SDK
+  // merges these with on-disk `.claude/agents`, so registering none leaves the
+  // native Claude set untouched.
+  if (params.agents && typeof params.agents === 'object' && !Array.isArray(params.agents)) {
+    const names = Object.keys(params.agents);
+    if (names.length > 0) {
+      options.agents = params.agents;
+    }
+  }
+  // Main-thread agent by name. Only forwarded when the agent is registered
+  // above or expected in settings — an unknown name would fail the turn.
+  const mainAgent = typeof params.agent === 'string' ? params.agent.trim() : '';
+  if (mainAgent) {
+    options.agent = mainAgent;
   }
   if (Array.isArray(params.allowedTools) && params.allowedTools.length > 0) {
     options.allowedTools = params.allowedTools.filter((tool) => typeof tool === 'string' && tool.trim());

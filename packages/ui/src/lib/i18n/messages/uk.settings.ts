@@ -2065,7 +2065,7 @@ export const settingsDict = {
   "settings.harness.claudeCode.section.agents": "Агенти",
   "settings.harness.claudeCode.agentsMode.label": "Якими агентами користуватися",
   "settings.harness.claudeCode.agentsMode.aria": "Оберіть агентів Claude або OpenCode для сесій Claude Code",
-  "settings.harness.claudeCode.agentsMode.info": "Claude використовує нативні системні промпти та дозволи Claude Code. OpenCode використовує агентів OpenChamber для дозволів і системних промптів у сесіях Claude.",
+  "settings.harness.claudeCode.agentsMode.info": "Claude використовує власних агентів, промпти та налаштування дозволів. Натомість OpenCode змушує сесії Claude виконуватися від імені вибраного агента OpenCode: його правила дозволів вирішують кожен виклик інструмента, його промпт додається до промпту Claude, а ваші власні субагенти OpenCode стають доступними для Claude. Селектор агента в полі вводу перемикається відповідно.",
   "settings.harness.claudeCode.agentsMode.claude": "Claude",
   "settings.harness.claudeCode.agentsMode.opencode": "OpenCode",
   "settings.harness.claudeCode.section.warnings": "Попередження",

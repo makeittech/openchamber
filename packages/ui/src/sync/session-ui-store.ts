@@ -25,6 +25,7 @@ import { useDirectoryStore } from "@/stores/useDirectoryStore"
 import { useSessionFoldersStore } from "@/stores/useSessionFoldersStore"
 import { useCommandsStore } from "@/stores/useCommandsStore"
 import { useSkillsStore } from "@/stores/useSkillsStore"
+import { useClaudeAgentsStore } from "@/stores/useClaudeAgentsStore"
 import {
   CLAUDE_BUILTIN_SLASH_COMMANDS,
   useClaudeSessionCapabilitiesStore,
@@ -94,6 +95,26 @@ export type { AttachedFile }
 const CLAUDE_NOT_READY_MESSAGE =
   "Claude Code is not ready. Open Settings → Engines to install, log in, or re-detect."
 
+/**
+ * Split "/name rest" into the command name and its arguments.
+ *
+ * The name ends at the first run of ANY whitespace, not just a space: users
+ * routinely put the argument on its own line (`/pr-review\n<url>`), and
+ * splitting on `" "` alone swallowed the whole message into the name, so the
+ * command matched nothing and was sent to the model as literal text.
+ *
+ * The composer has its own parser for OpenChamber magic-prompt commands
+ * (`components/chat/composer/submit/slashCommands.ts`) — which is why those
+ * kept working across newlines while OpenCode/Claude commands did not. It is
+ * not reused here to keep the sync layer independent of composer internals;
+ * match its whitespace behavior when changing either one.
+ */
+function parseSlashCommand(content: string): { name: string; args: string } | null {
+  const match = /^\/(\S+)\s*([\s\S]*)$/.exec(content)
+  if (!match) return null
+  return { name: match[1], args: match[2].trim() }
+}
+
 // ---------------------------------------------------------------------------
 // Send routing — shell mode, slash commands, or normal prompt
 // ---------------------------------------------------------------------------
@@ -105,6 +126,8 @@ export function routeMessage(params: {
   providerID: string
   modelID: string
   agent?: string
+  /** Native Claude agent for the main thread when agents mode is `claude`. */
+  claudeAgent?: string
   agentMentionName?: string
   variant?: string
   inputMode?: "normal" | "shell"
@@ -129,16 +152,25 @@ export function routeMessage(params: {
   // Claude agents mode decides whether OpenCode agents own permissionMode +
   // system-prompt append, or Claude Code runs with native prompts/permissions.
   let systemPromptAppend: string | undefined
+  let inheritedAgent: string | undefined
+  let claudeAgent: string | undefined
   let agentsMode = getCachedClaudeAgentsMode()
   if (target.harnessId === "claude-code") {
     const resolved = resolveClaudeAgentsSendOptions({
       target,
       agentsMode,
       agentName: params.agent,
+      // Session-scoped, not global-mutable: falling back to the store reads
+      // *this session's* Claude agent, so a queued follow-up still sends the
+      // agent the session was configured with rather than a global default.
+      claudeAgentName: params.claudeAgent
+        ?? useClaudeAgentsStore.getState().getSelected(params.sessionId),
     })
     target = resolved.target
     agentsMode = resolved.agentsMode
     systemPromptAppend = resolved.systemPromptAppend
+    inheritedAgent = resolved.agent
+    claudeAgent = resolved.claudeAgent
   }
 
   if (params.sessionId) {
@@ -164,9 +196,9 @@ export function routeMessage(params: {
     // the server resolves the command template from OpenCode and expands it into
     // prompt text for this turn (see harness/translators/claude-code).
     let openCodeCommand: HarnessOpenCodeCommand | undefined
-    if (params.content.startsWith("/")) {
-      const [head, ...tail] = params.content.split(" ")
-      const cmdName = head.slice(1)
+    const claudeSlashInput = parseSlashCommand(params.content)
+    if (claudeSlashInput) {
+      const cmdName = claudeSlashInput.name
       const claudeSlash = new Set(
         useClaudeSessionCapabilitiesStore.getState().getSlashCommands(params.sessionId)
           .map((name) => name.toLowerCase()),
@@ -188,7 +220,7 @@ export function routeMessage(params: {
           || storeCommands.find((c) => c.name === cmdName)
           || useSkillsStore.getState().skills.some((s) => s.name === cmdName)
         if (isOpenCodeCommand) {
-          openCodeCommand = { name: cmdName, arguments: tail.join(" ") }
+          openCodeCommand = { name: cmdName, arguments: claudeSlashInput.args }
         }
       }
       // Claude-native /command (or unknown token) continues as a harness prompt.
@@ -257,6 +289,8 @@ export function routeMessage(params: {
         messageId: messageID,
         seedFromSessionId: params.seedFromSessionId,
         agentsMode,
+        agent: inheritedAgent,
+        claudeAgent,
         systemPromptAppend,
         ...(openCodeCommand ? { command: openCodeCommand } : {}),
       }).then(() => {}),
@@ -264,9 +298,9 @@ export function routeMessage(params: {
   }
 
   // Slash commands — fire and forget, SSE delivers messages and status
-  if (params.content.startsWith("/")) {
-    const [head, ...tail] = params.content.split(" ")
-    const cmdName = head.slice(1)
+  const slashInput = parseSlashCommand(params.content)
+  if (slashInput) {
+    const cmdName = slashInput.name
 
     const dirState = getDirectoryState(requestDirectory)
     const syncCommands = dirState?.command ?? []
@@ -295,7 +329,7 @@ export function routeMessage(params: {
           providerID: params.providerID,
           modelID: params.modelID,
           command: cmdName,
-          arguments: tail.join(" "),
+          arguments: slashInput.args,
           agent: params.agent,
           variant: params.variant,
           files: params.files,
@@ -1377,8 +1411,14 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
         content,
         providerID: handoffProviderID,
         modelID: handoffModelID,
-        agent: pendingHandoff.harnessId === "opencode" ? effectiveAgent : undefined,
+        // The agent name travels for every harness: a Claude destination uses
+        // it to inherit that OpenCode agent's prompt and permission ruleset
+        // (see lib/harness/claude-agents-mode.ts). Dropping it here left the
+        // first turn after a handoff asking for every tool.
+        agent: effectiveAgent,
         agentMentionName,
+        // `variant` stays OpenCode-only — it selects an OpenCode model variant,
+        // which has no meaning for a Claude target.
         variant: pendingHandoff.harnessId === "opencode" ? variant : undefined,
         inputMode,
         files,

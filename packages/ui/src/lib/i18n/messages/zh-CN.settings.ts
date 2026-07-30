@@ -2065,7 +2065,7 @@ export const settingsDict = {
   'settings.harness.claudeCode.section.agents': '代理',
   'settings.harness.claudeCode.agentsMode.label': '使用的代理',
   'settings.harness.claudeCode.agentsMode.aria': '为 Claude Code 会话选择 Claude 或 OpenCode 代理',
-  'settings.harness.claudeCode.agentsMode.info': 'Claude 使用 Claude Code 原生系统提示与权限。OpenCode 在 Claude 会话中使用 OpenChamber 代理的权限与系统提示。',
+  'settings.harness.claudeCode.agentsMode.info': 'Claude 使用自己的代理、提示词与权限设置。OpenCode 则让 Claude 会话改为运行所选的 OpenCode 代理：它的权限规则决定每一次工具调用，它的提示词会附加到 Claude 的提示词之后，你自定义的 OpenCode 子代理也会对 Claude 可用。输入框中的代理选择器也会相应切换。',
   'settings.harness.claudeCode.agentsMode.claude': 'Claude',
   'settings.harness.claudeCode.agentsMode.opencode': 'OpenCode',
   'settings.harness.claudeCode.section.warnings': '警告',

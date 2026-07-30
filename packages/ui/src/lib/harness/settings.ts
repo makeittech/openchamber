@@ -48,12 +48,33 @@ export function setCachedWarnOnHarnessSwitch(enabled: boolean): void {
 let cachedClaudeAgentsMode: ClaudeAgentsMode =
   HARNESS_SETTINGS_DEFAULTS.harnessClaudeCodeAgentsMode;
 
+/**
+ * Subscribers for the React-facing view of the same value.
+ *
+ * The cache stays the single source of truth — the composer picker has to swap
+ * its whole agent list when the mode changes, and a second copy in a store
+ * would drift from what the send path actually uses.
+ */
+const claudeAgentsModeListeners = new Set<() => void>();
+
 export function getCachedClaudeAgentsMode(): ClaudeAgentsMode {
   return cachedClaudeAgentsMode;
 }
 
 export function setCachedClaudeAgentsMode(mode: ClaudeAgentsMode): void {
+  if (cachedClaudeAgentsMode === mode) return;
   cachedClaudeAgentsMode = mode;
+  for (const listener of claudeAgentsModeListeners) {
+    listener();
+  }
+}
+
+/** `useSyncExternalStore` subscribe fn for `getCachedClaudeAgentsMode`. */
+export function subscribeClaudeAgentsMode(listener: () => void): () => void {
+  claudeAgentsModeListeners.add(listener);
+  return () => {
+    claudeAgentsModeListeners.delete(listener);
+  };
 }
 
 export type SanitizedHarnessSettings = Partial<HarnessSettingsFields>;

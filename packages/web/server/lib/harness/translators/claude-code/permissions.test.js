@@ -8,9 +8,11 @@ import {
   extractPermissionPatterns,
   isOpenChamberInjectedTool,
 } from './permissions.js';
+import { resetPendingQuestions, replyQuestion } from './questions.js';
 
 afterEach(() => {
   resetPendingPermissions();
+  resetPendingQuestions();
 });
 
 describe('isOpenChamberInjectedTool', () => {
@@ -57,6 +59,76 @@ describe('createCanUseTool / replyPermission', () => {
       updatedInput: { action: 'projects.list', parameters: {} },
     });
     expect(events).toEqual([]);
+  });
+
+  it('honors an inherited OpenCode agent policy without prompting', async () => {
+    const events = [];
+    const canUseTool = createCanUseTool({
+      sessionId: 'ses_1',
+      directory: '/repo',
+      getBroadcast: () => (event) => events.push(event),
+      policySourceLabel: 'build',
+      resolveToolPolicy: (toolName) => {
+        if (toolName === 'Bash') return 'allow';
+        if (toolName === 'WebFetch') return 'deny';
+        return 'ask';
+      },
+    });
+
+    await expect(canUseTool('Bash', { command: 'git status' })).resolves.toEqual({
+      behavior: 'allow',
+      updatedInput: { command: 'git status' },
+    });
+    await expect(canUseTool('WebFetch', { url: 'https://example.com' })).resolves.toEqual({
+      behavior: 'deny',
+      message: 'Denied by OpenCode agent "build" permission rules',
+    });
+
+    // Neither decision involved the user, so nothing was broadcast and no
+    // request is left pending.
+    expect(events).toEqual([]);
+    expect(getPendingPermissionCount()).toBe(0);
+
+    // `ask` still reaches the PermissionCard bridge.
+    const pending = canUseTool('Edit', { file_path: '/repo/a.ts' });
+    expect(getPendingPermissionCount()).toBe(1);
+    expect(events[0]?.type).toBe('permission.asked');
+    const requestId = events[0].properties.id;
+    replyPermission({ sessionId: 'ses_1', requestId, reply: 'reject' });
+    await expect(pending).resolves.toMatchObject({ behavior: 'deny' });
+  });
+
+  it('falls back to asking when the inherited policy throws', async () => {
+    const events = [];
+    const canUseTool = createCanUseTool({
+      sessionId: 'ses_1',
+      directory: '/repo',
+      getBroadcast: () => (event) => events.push(event),
+      resolveToolPolicy: () => { throw new Error('broken policy'); },
+    });
+
+    const pending = canUseTool('Bash', { command: 'git status' });
+    expect(getPendingPermissionCount()).toBe(1);
+    const requestId = events[0].properties.id;
+    replyPermission({ sessionId: 'ses_1', requestId, reply: 'reject' });
+    await expect(pending).resolves.toMatchObject({ behavior: 'deny' });
+  });
+
+  it('never lets an inherited policy override the AskUserQuestion bridge', async () => {
+    const events = [];
+    const canUseTool = createCanUseTool({
+      sessionId: 'ses_1',
+      directory: '/repo',
+      getBroadcast: () => (event) => events.push(event),
+      resolveToolPolicy: () => 'allow',
+    });
+
+    const pending = canUseTool('AskUserQuestion', {
+      questions: [{ question: 'Which?', header: 'Pick', options: [{ label: 'A' }, { label: 'B' }], multiSelect: false }],
+    });
+    expect(events[0]?.type).toBe('question.asked');
+    replyQuestion({ sessionId: 'ses_1', requestId: events[0].properties.id, reject: true });
+    await expect(pending).resolves.toMatchObject({ behavior: 'deny' });
   });
 
   it('allows once and emits asked + replied events with always patterns + tool linkage', async () => {
@@ -120,6 +192,46 @@ describe('createCanUseTool / replyPermission', () => {
       behavior: 'allow',
       updatedInput: { file_path: '/a.ts' },
       updatedPermissions: suggestions,
+    });
+  });
+
+  it('routes AskUserQuestion to the question bridge instead of a permission prompt', async () => {
+    const events = [];
+    const canUseTool = createCanUseTool({
+      sessionId: 'ses_q',
+      directory: '/project',
+      getBroadcast: () => (payload) => events.push(payload),
+      createId: () => 'qst_canuse',
+      assistantMessageId: 'msg_assistant',
+    });
+
+    const input = {
+      questions: [{
+        question: 'Pick one',
+        header: 'Choice',
+        options: [{ label: 'A', description: 'Option A' }],
+        multiSelect: false,
+      }],
+    };
+    const pending = canUseTool('AskUserQuestion', input, { toolUseID: 'toolu_q' });
+
+    expect(events[0]?.type).toBe('question.asked');
+    expect(events[0]?.properties).toMatchObject({
+      id: 'qst_canuse',
+      sessionID: 'ses_q',
+      tool: { messageID: 'msg_assistant', callID: 'toolu_q' },
+    });
+
+    replyQuestion({
+      sessionId: 'ses_q',
+      requestId: 'qst_canuse',
+      answers: [['A']],
+    });
+
+    const result = await pending;
+    expect(result).toMatchObject({
+      behavior: 'allow',
+      updatedInput: { answers: { 'Pick one': 'A' } },
     });
   });
 

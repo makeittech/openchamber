@@ -8,6 +8,7 @@ const worktreeMetadataCalls: Array<{ sessionId: string; path: string }> = [];
 const worktreeCreateCalls: Array<{ project: { id?: string; path: string }; args: Record<string, unknown>; options: unknown }> = [];
 const worktreeBootstrapWaitCalls: string[] = [];
 const operationOrder: string[] = [];
+const routeMessageCalls: Array<Record<string, unknown>> = [];
 let isGitRepository = false;
 let waitForWorktreeSetup = false;
 const createWorktreeWithDefaultsMock = mock((project: { id?: string; path: string }, args: Record<string, unknown>, options: unknown) => {
@@ -33,7 +34,10 @@ const childState = {
 let currentDirectory = '/repo';
 
 mock.module('@/sync/session-ui-store', () => ({
-  routeMessage: mock(() => Promise.resolve()),
+  routeMessage: mock((params: Record<string, unknown>) => {
+    routeMessageCalls.push(params);
+    return Promise.resolve();
+  }),
   useSessionUIStore: {
     getState: () => ({
       markSessionAsOpenChamberCreated: mock(() => undefined),
@@ -156,6 +160,7 @@ describe('useMultiRunStore', () => {
     worktreeCreateCalls.length = 0;
     worktreeBootstrapWaitCalls.length = 0;
     operationOrder.length = 0;
+    routeMessageCalls.length = 0;
     isGitRepository = false;
     waitForWorktreeSetup = false;
     childState.session = [];
@@ -224,5 +229,51 @@ describe('useMultiRunStore', () => {
       'wait:/repo-worktrees/fix-thing',
       'createSession:/repo-worktrees/fix-thing',
     ]);
+  });
+
+  test('forwards the agent name to routeMessage for Claude Code execution targets', async () => {
+    const result = await useMultiRunStore.getState().createMultiRun({
+      name: 'Fix thing',
+      isolateRuns: false,
+      agent: 'build',
+      groups: [{
+        prompt: 'Fix it',
+        models: [{ providerID: 'claude-code', modelID: 'claude-opus-5' }],
+      }],
+    });
+
+    expect(result?.sessionIds).toEqual(['ses_multirun']);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(routeMessageCalls.length).toBe(1);
+    expect(routeMessageCalls[0]?.agent).toBe('build');
+    expect(routeMessageCalls[0]?.executionTarget).toEqual({
+      harnessId: 'claude-code',
+      modelRef: 'claude-opus-5',
+    });
+  });
+
+  test('still forwards the agent name to routeMessage for OpenCode execution targets', async () => {
+    const result = await useMultiRunStore.getState().createMultiRun({
+      name: 'Fix thing',
+      isolateRuns: false,
+      agent: 'build',
+      groups: [{
+        prompt: 'Fix it',
+        models: [{ providerID: 'anthropic', modelID: 'claude-sonnet-4-5' }],
+      }],
+    });
+
+    expect(result?.sessionIds).toEqual(['ses_multirun']);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(routeMessageCalls.length).toBe(1);
+    expect(routeMessageCalls[0]?.agent).toBe('build');
+    expect(routeMessageCalls[0]?.executionTarget).toEqual({
+      harnessId: 'opencode',
+      providerId: 'anthropic',
+      modelId: 'claude-sonnet-4-5',
+      agentName: 'build',
+    });
   });
 });
