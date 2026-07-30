@@ -1,4 +1,5 @@
 import React from 'react';
+import { focusChatInput } from '@/components/chat/composer/editor/dom';
 import { canUseElectronDesktopIPC, invokeDesktop } from '@/lib/desktop';
 import { eventMatchesShortcut, getEffectiveShortcutCombo } from '@/lib/shortcuts';
 import { useConfigStore } from '@/stores/useConfigStore';
@@ -9,11 +10,6 @@ import { useSelectionStore } from '@/sync/selection-store';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { applyFavoriteExecutionTarget } from '@/lib/harness/apply-favorite-target';
 import { executionTargetsMatchIdentity } from '@/lib/harness/favorite-targets';
-
-const focusChatInput = () => {
-  const textarea = document.querySelector<HTMLTextAreaElement>('textarea[data-chat-input="true"]');
-  textarea?.focus();
-};
 
 export const useMiniChatKeyboardShortcuts = () => {
   const shortcutOverrides = useUIStore((state) => state.shortcutOverrides);

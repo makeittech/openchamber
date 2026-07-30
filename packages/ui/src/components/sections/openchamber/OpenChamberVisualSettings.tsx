@@ -24,6 +24,7 @@ import {
     isWebRuntime,
     usesFramelessElectronChrome,
     type DesktopWindowControlsPosition,
+    type DesktopWindowControlsStyle,
 } from '@/lib/desktop';
 import { useDeviceInfo } from '@/lib/device';
 import { usePwaDetection } from '@/hooks/usePwaDetection';
@@ -285,6 +286,11 @@ const WINDOW_CONTROLS_POSITION_OPTIONS: Array<{ id: DesktopWindowControlsPositio
     { id: 'right', labelKey: 'settings.openchamber.desktopNetwork.option.windowControlsRight' },
 ];
 
+const WINDOW_CONTROLS_STYLE_OPTIONS: Array<{ id: DesktopWindowControlsStyle; labelKey: string }> = [
+    { id: 'classic', labelKey: 'settings.openchamber.desktopNetwork.option.windowControlsClassic' },
+    { id: 'traffic-lights', labelKey: 'settings.openchamber.desktopNetwork.option.windowControlsTrafficLights' },
+];
+
 interface OpenChamberVisualSettingsProps {
     /** Which settings to show. If undefined, shows all. */
     visibleSettings?: VisibleSetting[];
@@ -425,6 +431,8 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     const showWindowControlsPosition = usesFramelessElectronChrome();
     const desktopWindowControlsPosition = useUIStore((state) => state.desktopWindowControlsPosition);
     const setDesktopWindowControlsPosition = useUIStore((state) => state.setDesktopWindowControlsPosition);
+    const desktopWindowControlsStyle = useUIStore((state) => state.desktopWindowControlsStyle);
+    const setDesktopWindowControlsStyle = useUIStore((state) => state.setDesktopWindowControlsStyle);
     const [chatRenderPreviewTick, setChatRenderPreviewTick] = React.useState(0);
     const reportUsage = useUIStore(state => state.reportUsage);
     const setReportUsage = useUIStore(state => state.setReportUsage);
@@ -439,6 +447,11 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         setDesktopWindowControlsPosition(value);
         void updateDesktopSettings({ desktopWindowControlsPosition: value });
     }, [setDesktopWindowControlsPosition]);
+
+    const handleWindowControlsStyleChange = React.useCallback((value: DesktopWindowControlsStyle) => {
+        setDesktopWindowControlsStyle(value);
+        void updateDesktopSettings({ desktopWindowControlsStyle: value });
+    }, [setDesktopWindowControlsStyle]);
 
     const shouldAnimateChatPreview = (isSettingsDialogOpen || isMobile || isVSCodeRuntime())
         && (visibleSettings ? visibleSettings.includes('chatRenderMode') : true);
@@ -1010,20 +1023,40 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
 
                         {showWindowControlsPositionSetting && (
                             <SettingsSection
-                                title={t('settings.openchamber.desktopNetwork.field.windowControlsPosition')}
-                                description={t('settings.openchamber.desktopNetwork.field.windowControlsPositionDescription')}
+                                title={t('settings.openchamber.desktopNetwork.field.windowControls')}
+                                info={t('settings.openchamber.desktopNetwork.field.windowControlsPositionDescription')}
                                 divider={hasThemeSettings}
-                                settingsItem="sessions.desktop-window-controls-position"
                             >
-                                <SettingsChipGroup
-                                    value={desktopWindowControlsPosition}
-                                    options={WINDOW_CONTROLS_POSITION_OPTIONS.map((option) => ({
-                                        value: option.id,
-                                        label: tUnsafe(option.labelKey),
-                                    }))}
-                                    onChange={handleWindowControlsPositionChange}
-                                    aria-label={t('settings.openchamber.desktopNetwork.field.windowControlsPositionAria')}
-                                />
+                                <SettingsTwoColumn>
+                                    <SettingsStackedField
+                                        label={t('settings.openchamber.desktopNetwork.field.windowControlsPosition')}
+                                        settingsItem="sessions.desktop-window-controls-position"
+                                    >
+                                        <SettingsChipGroup
+                                            value={desktopWindowControlsPosition}
+                                            options={WINDOW_CONTROLS_POSITION_OPTIONS.map((option) => ({
+                                                value: option.id,
+                                                label: tUnsafe(option.labelKey),
+                                            }))}
+                                            onChange={handleWindowControlsPositionChange}
+                                            aria-label={t('settings.openchamber.desktopNetwork.field.windowControlsPositionAria')}
+                                        />
+                                    </SettingsStackedField>
+                                    <SettingsStackedField
+                                        label={t('settings.openchamber.desktopNetwork.field.windowControlsStyle')}
+                                        settingsItem="sessions.desktop-window-controls-style"
+                                    >
+                                        <SettingsChipGroup
+                                            value={desktopWindowControlsStyle}
+                                            options={WINDOW_CONTROLS_STYLE_OPTIONS.map((option) => ({
+                                                value: option.id,
+                                                label: tUnsafe(option.labelKey),
+                                            }))}
+                                            onChange={handleWindowControlsStyleChange}
+                                            aria-label={t('settings.openchamber.desktopNetwork.field.windowControlsStyleAria')}
+                                        />
+                                    </SettingsStackedField>
+                                </SettingsTwoColumn>
                             </SettingsSection>
                         )}
 
