@@ -113,6 +113,7 @@ function parseSlashCommand(content: string): { name: string; args: string } | nu
   const match = /^\/(\S+)\s*([\s\S]*)$/.exec(content)
   if (!match) return null
   return { name: match[1], args: match[2].trim() }
+}
 
 type GoalCommand = { name: string; template?: string }
 
