@@ -47,14 +47,46 @@ describe('buildHarnessOptions', () => {
         expect(options[1]?.statusLabel).toBe('settings.harness.sidebar.status.loading');
     });
 
-    test('maps a failed detect status through to the label', () => {
+    test('omits the status label when Claude is ready', () => {
+        const options = buildHarnessOptions({
+            t,
+            pickerHarnessId: 'opencode',
+            harnessClaudeCodeEnabled: true,
+            claudeCatalog: catalog('ready'),
+        });
+        expect(options[1]?.statusLabel).toBe(undefined);
+    });
+
+    test('hides the Claude tab when detection reports a missing CLI', () => {
         const options = buildHarnessOptions({
             t,
             pickerHarnessId: 'opencode',
             harnessClaudeCodeEnabled: true,
             claudeCatalog: catalog('missing-cli'),
         });
-        expect(options[1]?.statusLabel).toBe('settings.harness.sidebar.status.missingCli');
+        expect(options.map((o) => o.id)).toEqual(['opencode']);
+    });
+
+    test('hides the Claude tab when detection requires login', () => {
+        const options = buildHarnessOptions({
+            t,
+            pickerHarnessId: 'opencode',
+            harnessClaudeCodeEnabled: true,
+            claudeCatalog: catalog('needs-login'),
+        });
+        expect(options.map((o) => o.id)).toEqual(['opencode']);
+    });
+
+    test('hides the Claude tab for unsupported-host and error states', () => {
+        for (const status of ['unsupported-host', 'error'] as const) {
+            const options = buildHarnessOptions({
+                t,
+                pickerHarnessId: 'opencode',
+                harnessClaudeCodeEnabled: true,
+                claudeCatalog: catalog(status),
+            });
+            expect(options.map((o) => o.id)).toEqual(['opencode']);
+        }
     });
 });
 

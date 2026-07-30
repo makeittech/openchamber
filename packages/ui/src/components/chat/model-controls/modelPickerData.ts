@@ -10,25 +10,10 @@ import type {
     ModelPickerLabels,
     ModelPickerProvider,
 } from '@/components/model-picker/ModelPickerList';
-import type { HarnessCatalog, HarnessCatalogModel, HarnessId, HarnessRuntimeStatus } from '@/types/harness';
+import type { HarnessCatalog, HarnessCatalogModel, HarnessId } from '@/types/harness';
 import type { I18nContextValue } from '@/lib/i18n/react-context';
 
 type Translate = I18nContextValue['t'];
-
-export const HARNESS_STATUS_LABEL_KEYS: Record<
-    HarnessRuntimeStatus,
-    | 'settings.harness.sidebar.status.ready'
-    | 'settings.harness.sidebar.status.needsLogin'
-    | 'settings.harness.sidebar.status.missingCli'
-    | 'settings.harness.sidebar.status.unsupportedHost'
-    | 'settings.harness.sidebar.status.error'
-> = {
-    ready: 'settings.harness.sidebar.status.ready',
-    'needs-login': 'settings.harness.sidebar.status.needsLogin',
-    'missing-cli': 'settings.harness.sidebar.status.missingCli',
-    'unsupported-host': 'settings.harness.sidebar.status.unsupportedHost',
-    error: 'settings.harness.sidebar.status.error',
-};
 
 export function buildModelPickerLabels(t: Translate): ModelPickerLabels {
     return {
@@ -57,9 +42,11 @@ export function buildModelPickerLabels(t: Translate): ModelPickerLabels {
 }
 
 /**
- * Claude only appears when the harness is enabled in settings; its status label
- * falls back to "loading" until the catalog resolves, so the picker never
- * implies Claude is ready before detection has answered.
+ * Claude only appears when the harness is enabled in settings and detection
+ * has either resolved to "ready" or is still loading. Any unusable state —
+ * missing CLI, needs login, unsupported host, or error — drops the Claude
+ * tab entirely so the harness switcher (rendered only above 2 tabs via
+ * `HarnessTabs`) hides itself rather than advertising a broken engine.
  */
 export function buildHarnessOptions(args: {
     t: Translate;
@@ -73,13 +60,13 @@ export function buildHarnessOptions(args: {
         name: t('chat.harness.opencode'),
         selected: pickerHarnessId === 'opencode',
     }];
-    if (harnessClaudeCodeEnabled) {
+    if (harnessClaudeCodeEnabled && (claudeCatalog == null || claudeCatalog.status === 'ready')) {
         options.push({
             id: 'claude-code',
             name: t('chat.harness.claudeCode'),
-            statusLabel: claudeCatalog
-                ? t(HARNESS_STATUS_LABEL_KEYS[claudeCatalog.status])
-                : t('settings.harness.sidebar.status.loading'),
+            statusLabel: claudeCatalog == null
+                ? t('settings.harness.sidebar.status.loading')
+                : undefined,
             selected: pickerHarnessId === 'claude-code',
         });
     }
