@@ -47,6 +47,7 @@ import type { SkillAutocompleteHandle } from './SkillAutocomplete';
 import type { SnippetAutocompleteHandle } from './SnippetAutocomplete';
 import { cn } from "@/lib/utils";
 import { ModelControls } from './ModelControls';
+import { resolveComposerSendAgentName } from './model-controls/composerAgents';
 import { parseAgentMentions } from '@/lib/messages/agentMentions';
 import { StatusRow } from './StatusRow';
 import { PendingChangesBar } from './PendingChangesBar';
@@ -401,6 +402,13 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     ]);
     const currentVariant = useConfigStore((state) => state.currentVariant);
     const currentAgentName = useConfigStore((state) => state.currentAgentName);
+    const sessionAgentName = useSelectionStore((state) => (
+        currentSessionId ? state.sessionAgentSelections.get(currentSessionId) ?? null : null
+    ));
+    const composerSendAgentName = resolveComposerSendAgentName({
+        sessionAgentName,
+        currentAgentName,
+    });
     const setAgent = useConfigStore((state) => state.setAgent);
     const getVisibleAgents = useConfigStore((state) => state.getVisibleAgents);
     const agents = getVisibleAgents();
@@ -981,7 +989,8 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
             sendConfig: currentProviderId && currentModelId ? {
                 providerID: currentProviderId,
                 modelID: currentModelId,
-                agent: currentAgentName ?? undefined,
+                // Match the agent chip (session selection before directory-scoped current).
+                agent: composerSendAgentName,
                 variant: currentVariant ?? undefined,
             } : undefined,
         });
@@ -1009,7 +1018,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         if (!isMobile) {
             composerRef.current?.focus();
         }
-    }, [getCurrentInputSnapshot, currentSessionId, messageQueueTarget, inlineDraftTarget, attachedFiles, sanitizeAttachmentsForSend, addToQueue, clearAttachedFiles, isMobile, consumeDrafts, currentProviderId, currentModelId, currentAgentName, currentVariant, t]);
+    }, [getCurrentInputSnapshot, currentSessionId, messageQueueTarget, inlineDraftTarget, attachedFiles, sanitizeAttachmentsForSend, addToQueue, clearAttachedFiles, isMobile, consumeDrafts, currentProviderId, currentModelId, composerSendAgentName, currentVariant, t]);
 
     const handleQueuedMessageEdit = React.useCallback((content: string) => {
         setMessage(content);
@@ -1081,7 +1090,9 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         const capturedSendConfig = queuedOnly ? queuedMessagesToSend[0]?.sendConfig : undefined;
         const providerIdToSend = capturedSendConfig?.providerID ?? currentProviderId;
         const modelIdToSend = capturedSendConfig?.modelID ?? currentModelId;
-        const agentNameToSend = capturedSendConfig?.agent ?? currentAgentName;
+        // Prefer session agent selection so the turn matches the composer chip
+        // even when directory-scoped currentAgentName was reset to a default.
+        const agentNameToSend = capturedSendConfig?.agent ?? composerSendAgentName;
         const variantToSend = capturedSendConfig?.variant ?? currentVariant;
 
         if (!providerIdToSend || !modelIdToSend) {

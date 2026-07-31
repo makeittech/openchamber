@@ -97,6 +97,7 @@ import {
   getHarnessRecentMessages,
   isHarnessSessionWorking,
   translateOpenCodeCommandForClaude,
+  createOpenCodeAgentResolver,
 } from './lib/harness/index.js';
 import { createGracefulShutdownRuntime } from './lib/opencode/shutdown-runtime.js';
 import { createProjectConfigRuntime } from './lib/projects/project-config.js';
@@ -474,6 +475,14 @@ const harnessRouter = createHarnessRouter({
     ...params,
     buildOpenCodeUrl,
     getOpenCodeAuthHeaders,
+  }),
+  // Same lazy binding for OpenCode agent inheritance (prompt + permissions +
+  // custom subagents). A pre-built harnessRouter is shared with route
+  // registration, so the resolver must live here — not only inside
+  // registerHarnessRoutes — or agentsMode=opencode silently inherits nothing.
+  resolveOpenCodeAgents: createOpenCodeAgentResolver({
+    buildOpenCodeUrl: (requestPath, prefixOverride) => buildOpenCodeUrl(requestPath, prefixOverride),
+    getOpenCodeAuthHeaders: () => getOpenCodeAuthHeaders(),
   }),
 });
 const broadcastUiNotification = (...args) => notificationEmitterRuntime.broadcastUiNotification(...args);

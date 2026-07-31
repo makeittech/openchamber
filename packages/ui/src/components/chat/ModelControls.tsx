@@ -48,7 +48,8 @@ import { useOpenCodeReadiness } from '@/hooks/useOpenCodeReadiness';
 import { eventMatchesShortcut, getEffectiveShortcutCombo, normalizeCombo } from '@/lib/shortcuts';
 import { markStartupTrace } from '@/lib/startupTrace';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { withHarnessSettingsDefaults, setCachedClaudeAgentsMode, getCachedClaudeAgentsMode, type ClaudeAgentsMode } from '@/lib/harness/settings';
+import { withHarnessSettingsDefaults, setCachedClaudeAgentsMode } from '@/lib/harness/settings';
+import { useClaudeAgentsMode } from '@/lib/harness/use-claude-agents-mode';
 import { buildOpenCodeExecutionTarget, persistSessionExecutionTarget } from '@/lib/harness/resolve-execution-target';
 import { CLAUDE_FAVORITE_PROVIDER_ID } from '@/lib/harness/favorite-targets';
 import {
@@ -389,7 +390,9 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     })));
     const claudeCatalog = harnessCatalogsById['claude-code'];
     const [harnessClaudeCodeEnabled, setHarnessClaudeCodeEnabled] = React.useState(true);
-    const [claudeAgentsMode, setClaudeAgentsMode] = React.useState<ClaudeAgentsMode>(getCachedClaudeAgentsMode());
+    // Same cache the send path + Settings page write — local state would keep
+    // showing Claude agents after the user switches Agents-to-use to OpenCode.
+    const claudeAgentsMode = useClaudeAgentsMode();
     const [pickerHarnessId, setPickerHarnessId] = React.useState<HarnessId>('opencode');
     const [claudeModelRef, setClaudeModelRef] = React.useState('sonnet');
     // Displayed effort is derived from the persisted ExecutionTarget (below) —
@@ -524,7 +527,6 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                             : undefined,
                 });
                 setHarnessClaudeCodeEnabled(resolved.harnessClaudeCodeEnabled);
-                setClaudeAgentsMode(resolved.harnessClaudeCodeAgentsMode);
                 setCachedClaudeAgentsMode(resolved.harnessClaudeCodeAgentsMode);
             } catch {
                 // keep default

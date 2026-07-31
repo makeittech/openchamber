@@ -4,6 +4,7 @@ import {
     resolveActiveComposerAgentName,
     resolveComposerAgents,
     resolveComposerDefaultAgentName,
+    resolveComposerSendAgentName,
     type ComposerAgentOption,
 } from './composerAgents';
 import type { Agent } from '@opencode-ai/sdk/v2';
@@ -208,6 +209,33 @@ describe('resolveActiveComposerAgentName', () => {
             openCodeAgentName: undefined,
         });
         expect(result).toBe('');
+    });
+});
+
+describe('resolveComposerSendAgentName', () => {
+    test('prefers the per-session selection over the directory-scoped current agent', () => {
+        expect(resolveComposerSendAgentName({
+            sessionAgentName: 'perm-smoke',
+            currentAgentName: 'build',
+        })).toBe('perm-smoke');
+    });
+
+    test('falls back to currentAgentName when no session selection exists', () => {
+        expect(resolveComposerSendAgentName({
+            sessionAgentName: null,
+            currentAgentName: 'plan',
+        })).toBe('plan');
+    });
+
+    test('trims blank session / current names and returns undefined when both empty', () => {
+        expect(resolveComposerSendAgentName({
+            sessionAgentName: '   ',
+            currentAgentName: '  build  ',
+        })).toBe('build');
+        expect(resolveComposerSendAgentName({
+            sessionAgentName: '   ',
+            currentAgentName: null,
+        })).toBe(undefined);
     });
 });
 

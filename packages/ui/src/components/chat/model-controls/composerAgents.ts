@@ -85,6 +85,26 @@ export function resolveActiveComposerAgentName(params: {
 }
 
 /**
+ * OpenCode agent name the send / queue paths must forward.
+ *
+ * The composer chip prefers the per-session selection over the directory-scoped
+ * `currentAgentName`. Send and queue used to read only `currentAgentName`, so a
+ * directory reload (or any other global reset to `build`) could keep the chip on
+ * e.g. `perm-smoke` while Claude harness turns still inherited `build` —
+ * wrong prompt append, wrong `permissionMode`, and OpenCode permission rules
+ * that never matched what the user selected.
+ */
+export function resolveComposerSendAgentName(params: {
+  sessionAgentName?: string | null;
+  currentAgentName?: string | null;
+}): string | undefined {
+  const session = params.sessionAgentName?.trim();
+  if (session) return session;
+  const current = params.currentAgentName?.trim();
+  return current || undefined;
+}
+
+/**
  * Filter + order the picker list for a search query.
  *
  * Sorting is applied before filtering so the visible order does not shuffle as

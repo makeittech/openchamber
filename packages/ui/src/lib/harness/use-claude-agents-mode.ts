@@ -11,7 +11,7 @@ import {
  * Reads the same module cache the send path uses, so the composer picker and
  * the turn it produces can never disagree about which agent set is in effect.
  */
-function useClaudeAgentsMode(): ClaudeAgentsMode {
+export function useClaudeAgentsMode(): ClaudeAgentsMode {
   return useSyncExternalStore(
     subscribeClaudeAgentsMode,
     getCachedClaudeAgentsMode,

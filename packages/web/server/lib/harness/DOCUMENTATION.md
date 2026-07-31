@@ -374,6 +374,7 @@ PermissionCard for every command. Now the whole ruleset participates.
 | Step | Where |
 | --- | --- |
 | Composer sends only the agent **name** (`agent` in the prompt body) | `lib/harness/claude-agents-mode.ts` → `lib/harness/client.ts` |
+| Shared `harnessRouter` must be constructed with `resolveOpenCodeAgents` | `packages/web/server/index.js` (`createOpenCodeAgentResolver` + lazy `buildOpenCodeUrl`). `registerHarnessRoutes` skips creating its own router when this shared instance is passed — without the resolver, `agentsMode: opencode` inherits nothing. |
 | Server re-reads `GET /agent?directory=` from OpenCode | `fetchOpenCodeAgents` |
 | Ruleset → per-tool decision | `createOpenCodeToolPolicy` |
 | Subagents → Claude `AgentDefinition`s | `buildClaudeAgentDefinitions` |
