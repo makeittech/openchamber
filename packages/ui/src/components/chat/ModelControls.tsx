@@ -494,12 +494,6 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         setAgentMenuOpen(false);
         closeMobilePanel();
     }, [setSelectedProvider, setSettingsPage, setSettingsDialogOpen, setAgentMenuOpen, closeMobilePanel]);
-    const openHarnessSettings = React.useCallback(() => {
-        setSettingsPage('harness');
-        setSettingsDialogOpen(true);
-        setAgentMenuOpen(false);
-        closeMobilePanel();
-    }, [setSettingsPage, setSettingsDialogOpen, setAgentMenuOpen, closeMobilePanel]);
 
     React.useEffect(() => {
         void refreshHarnessCatalog();
@@ -2361,16 +2355,8 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                         );
                     })}
 
-                    <div className="flex flex-col gap-1 pt-1">
-                        <button
-                            type="button"
-                            onClick={openHarnessSettings}
-                            className="typography-meta flex w-full items-center gap-2 rounded-xl border border-border/40 bg-[var(--surface-elevated)] px-3 py-2 text-left hover:bg-interactive-hover/50"
-                        >
-                            <Icon name="settings-3" className="size-4 text-muted-foreground" />
-                            <span className="font-medium text-foreground">{t('chat.harness.manageHarnesses')}</span>
-                        </button>
-                        {pickerHarnessId === 'opencode' ? (
+                    {pickerHarnessId === 'opencode' ? (
+                        <div className="flex flex-col gap-1 pt-1">
                             <button
                                 type="button"
                                 onClick={openAddProviderSettings}
@@ -2379,8 +2365,8 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                 <Icon name="add" className="size-4 text-muted-foreground" />
                                 <span className="font-medium text-foreground">{t('chat.modelControls.addNewProvider')}</span>
                             </button>
-                        ) : null}
-                    </div>
+                        </div>
+                    ) : null}
                 </div>
             </MobileOverlayPanel>
         );
@@ -2699,32 +2685,18 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             setAgentMenuOpen(nextOpen);
         };
 
-        const pickerActionsFooter = (
-            <>
-                <button
-                    type="button"
-                    onClick={openHarnessSettings}
-                    className="typography-meta group flex w-full items-center gap-1 rounded-md px-2 py-1.5 cursor-pointer hover:bg-interactive-hover/50"
-                >
-                    <span className="flex size-4 items-center justify-center text-muted-foreground">
-                        <Icon name="settings-3" className="size-4" />
-                    </span>
-                    <span className="font-medium text-foreground">{t('chat.harness.manageHarnesses')}</span>
-                </button>
-                {pickerHarnessId === 'opencode' ? (
-                    <button
-                        type="button"
-                        onClick={openAddProviderSettings}
-                        className="typography-meta group flex w-full items-center gap-1 rounded-md px-2 py-1.5 cursor-pointer hover:bg-interactive-hover/50"
-                    >
-                        <span className="flex size-4 items-center justify-center text-muted-foreground">
-                            <Icon name="add" className="size-4 -mr-0.5" />
-                        </span>
-                        <span className="font-medium text-foreground">{t('chat.modelControls.addNewProvider')}</span>
-                    </button>
-                ) : null}
-            </>
-        );
+        const pickerActionsFooter = pickerHarnessId === 'opencode' ? (
+            <button
+                type="button"
+                onClick={openAddProviderSettings}
+                className="typography-meta group flex w-full items-center gap-1 rounded-md px-2 py-1.5 cursor-pointer hover:bg-interactive-hover/50"
+            >
+                <span className="flex size-4 items-center justify-center text-muted-foreground">
+                    <Icon name="add" className="size-4 -mr-0.5" />
+                </span>
+                <span className="font-medium text-foreground">{t('chat.modelControls.addNewProvider')}</span>
+            </button>
+        ) : null;
 
         const renderThinkingSlot = (entry: ModelPickerEntry, { isHighlighted, isSelected }: { isHighlighted: boolean; isSelected: boolean }) => {
             const hasThinkingVariants = getModelVariantOptions(entry.providerID, entry.modelID).length > 0;

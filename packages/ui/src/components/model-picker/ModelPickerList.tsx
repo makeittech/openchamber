@@ -412,7 +412,7 @@ interface ModelPickerListProps {
   /** Harness tabs rendered above the search field; hidden when only one harness exists. */
   harnesses?: ModelPickerHarnessOption[];
   onSelectHarness?: (harnessId: string) => void;
-  /** Actions rendered under the model list (e.g. Manage harnesses…, Add provider…). */
+  /** Actions rendered under the model list (e.g. Add provider…). */
   actionsFooter?: React.ReactNode;
   footerContent?: React.ReactNode | ((activeEntry: ModelPickerEntry | undefined) => React.ReactNode);
   renderVersion?: number;
