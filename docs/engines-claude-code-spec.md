@@ -387,14 +387,59 @@ Rationale:
 | post-tool assistant text | **new** text part (ascending id) so UI order is chronological |
 | permission via canUseTool | `permission.asked` / `permission.replied` |
 | result / completion | finalize open text part + `message.updated` + `session.status=idle` |
-| rate_limit / overloaded | assistant error with retryable flag when applicable |
+| structured rejected `rate_limit_event` + parent `rate_limit` error | durable OpenChamber hard-quota `retry`; no intermediate idle/error |
+| `system/api_retry` | transient SDK-owned `retry`; OpenChamber projects countdown, then busy, without launching another request |
+| overloaded / uncorrelated errors | existing retryable or hard-error settlement |
 | session_id | persist `foreignSessionId` |
 
 **Part IDs:** OpenCode-compatible **ascending** `msg_*` / `prt_*` (timestamp + counter). The UI sorts parts by id via `Binary.search`; random UUIDs reorder tool/text blocks.
 
 Unknown event types: ignored safely (no throw). Thinking/reasoning parts are optional/not required for v1 display completeness.
 
-### 7.6 Catalog / detect API — as built
+English assistant/error text is never rate-limit authority. Durable scheduling
+requires parent-turn correlation between structured assistant
+`error: 'rate_limit'` and rejected structured quota metadata; warning/allowed
+windows and nested assistant failures do not schedule the parent.
+
+### 7.6 Claude session-limit recovery — as built
+
+Confirmed subscription hard limits use the private version-1 journal at
+`$OPENCHAMBER_DATA_DIR/harness-pending-retries.json` (fallback
+`~/.config/openchamber/harness-pending-retries.json`). It contains only bounded,
+allowlisted recovery identity/configuration and timing metadata, never prompt,
+attachment, tool-output, queue, token, credential, or environment content.
+Writes are synchronous, locked, temp+fsync+rename atomic snapshots; directories
+are `0700`, files `0600`, and invalid/insecure/unavailable storage fails closed
+with `RETRY_STORE_UNAVAILABLE`. The initial failure path emits normal hard
+error/idle rather than claiming a retry was saved.
+
+The canonical lifecycle is `busy -> retry -> busy -> idle`, or back to `retry`
+after another limit. Retry is authoritative in status polling/bootstrap and
+blocks direct prompt sends. Reset values normalize seconds, milliseconds, and
+small relative milliseconds to absolute milliseconds. More than eight days
+(`691_200_000` ms) ahead is invalid; future resets add grace/stable jitter, past
+resets get a minimum delay, and unknown resets use five-minute exponential
+fallback capped at one hour. Blocked recovery has no fake deadline and remains
+stoppable. The integrated runtime does not currently carry the policy's
+first-unknown timestamp, so its seven-day unknown-reset block is not reached.
+
+Recovery resumes the full foreign session with a strictly marked synthetic SDK
+user message, not the original prompt/attachments and not public `prompt()`.
+Replay hides only records with both `isSynthetic: true` and the exact versioned
+marker, without closing the original user turn. Raw JSONL must show settled
+tool results; a recovery-only `PreToolUse` hook denies exact canonical repeats,
+including prior error results. This is not semantic exactly-once: differently
+expressed commands may have equivalent external effects.
+
+Stop cancels waiting/launching recovery and preserves queued follow-ups;
+authoritative deletion removes harness retry/binding/snapshot/capability and
+callbacks without emitting into the deleted session. Startup reconstructs retry
+status and scheduling. Current startup behavior returns an unresolved persisted
+`launching` record to waiting rather than always blocking it. Web shutdown stops
+the harness before OpenCode/HTTP, preserving waiting obligations; Desktop awaits
+the in-process web stop before exit.
+
+### 7.7 Catalog / detect API — as built
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -676,6 +721,14 @@ Capability: `permissions: full`.
 - Claude **engine** readiness does **not** depend on OpenCode `auth.json` API keys.
 - Do not display API-credit usage as if it were Claude Code engine usage; label remains “Claude subscription”.
 - Context usage meters for Claude sessions use Claude catalog limits (`active-model-limits.ts`), not leftover OpenCode model limits.
+- Claude Agent SDK `system/api_retry` remains an SDK-owned short retry.
+  OpenChamber-owned durable waiting is reserved for a correlated rejected hard
+  subscription quota event; the two paths must not launch competing requests.
+
+The UI follow-up queue is persisted only for the same browser/Desktop profile.
+It survives local reload/restart and remains reorderable/deletable during retry,
+but it is explicitly not synchronized through the server to other clients or
+devices.
 
 ---
 

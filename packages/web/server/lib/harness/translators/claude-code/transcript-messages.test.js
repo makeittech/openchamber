@@ -15,6 +15,7 @@ import {
   readClaudeTranscriptTitle,
   resetClaudeTranscriptCaches,
 } from './transcript-messages.js';
+import { RECOVERY_MARKER } from './recovery-transcript.js';
 
 const FOREIGN_ID = '123e4567-e89b-42d3-a456-426614174000';
 
@@ -224,6 +225,140 @@ describe('parseClaudeTranscript', () => {
       .filter((message) => message.info.role === 'user')
       .flatMap((message) => message.parts.map((part) => part.text));
     expect(userTexts).toEqual(['first prompt', 'follow-up prompt']);
+  });
+});
+
+describe('parseClaudeTranscript recovery continuation hiding', () => {
+  it('hides synthetic recovery continuation records without closing the turn', () => {
+    const filePath = writeTranscript([
+      JSON.stringify(baseRecord({
+        type: 'user',
+        uuid: 'u_real',
+        timestamp: '2026-07-28T10:00:00.000Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'first prompt' }] },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a1',
+        timestamp: '2026-07-28T10:00:01.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Hi there' }] },
+      })),
+      // Synthetic recovery continuation: invisible — must NOT become a user
+      // bubble and must NOT close the open turn.
+      JSON.stringify(baseRecord({
+        type: 'user',
+        uuid: 'u_recovery',
+        isSynthetic: true,
+        timestamp: '2026-07-28T10:00:02.000Z',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: `${RECOVERY_MARKER}\nContinue the interrupted response.` }],
+        },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a2',
+        timestamp: '2026-07-28T10:00:03.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Continued answer' }] },
+      })),
+    ]);
+
+    const { messages } = parseClaudeTranscript({ sessionId: 'ses_shell', transcriptPath: filePath });
+
+    // 1 user + 1 assistant: the synthetic continuation is invisible.
+    expect(messages).toHaveLength(2);
+    const [user, assistant] = messages;
+    expect(user.info.role).toBe('user');
+    expect(user.parts.map((part) => part.text)).toEqual(['first prompt']);
+    // No user bubble was created for the continuation; its text never reaches
+    // any rendered user message in the transcript.
+    const userTexts = messages
+      .filter((m) => m.info.role === 'user')
+      .flatMap((m) => m.parts.map((part) => part.text));
+    expect(userTexts).toEqual(['first prompt']);
+    expect(userTexts.some((text) => text.startsWith(RECOVERY_MARKER))).toBe(false);
+
+    expect(assistant.info.role).toBe('assistant');
+    // Hiding does NOT close the turn: the post-recovery assistant stays
+    // grouped under the original real user turn.
+    expect(assistant.info.parentID).toBe(user.info.id);
+    // The pre-limit and post-recovery assistant texts merge into one bucket,
+    // proving the turn stayed open through the continuation.
+    expect(assistant.parts.filter((part) => part.type === 'text').map((part) => part.text))
+      .toEqual(['Hi there', 'Continued answer']);
+  });
+
+  it('keeps an ordinary user message that merely starts with similar text (non-synthetic) visible and closing its own turn', () => {
+    const filePath = writeTranscript([
+      JSON.stringify(baseRecord({
+        type: 'user',
+        uuid: 'u_real',
+        timestamp: '2026-07-28T10:00:00.000Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'first prompt' }] },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a1',
+        timestamp: '2026-07-28T10:00:01.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'answer 1' }] },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'user',
+        uuid: 'u_recovery',
+        isSynthetic: true,
+        timestamp: '2026-07-28T10:00:02.000Z',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: `${RECOVERY_MARKER}\ncont` }],
+        },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a2',
+        timestamp: '2026-07-28T10:00:03.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'resumed' }] },
+      })),
+      // An ordinary user record (NO isSynthetic) whose text merely *starts*
+      // with the marker — must remain visible and close the previous turn.
+      JSON.stringify(baseRecord({
+        type: 'user',
+        uuid: 'u_user_echo',
+        timestamp: '2026-07-28T10:00:04.000Z',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: `${RECOVERY_MARKER} echoed by the user` }],
+        },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a3',
+        timestamp: '2026-07-28T10:00:05.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'echo answer' }] },
+      })),
+    ]);
+
+    const { messages } = parseClaudeTranscript({ sessionId: 'ses_shell', transcriptPath: filePath });
+
+    // 2 user + 2 assistant — the synthetic continuation is hidden but
+    // u_user_echo's bubble is preserved.
+    expect(messages).toHaveLength(4);
+    const userMessages = messages.filter((m) => m.info.role === 'user');
+    expect(userMessages).toHaveLength(2);
+    expect(userMessages[0].parts[0].text).toBe('first prompt');
+    expect(userMessages[1].parts[0].text).toBe(`${RECOVERY_MARKER} echoed by the user`);
+
+    const assistantMessages = messages.filter((m) => m.info.role === 'assistant');
+    expect(assistantMessages).toHaveLength(2);
+    // Recovery continuation stayed invisible and did not close the original
+    // turn — pre/post-recovery assistant texts merge into one bucket under
+    // the original real user.
+    expect(assistantMessages[0].info.parentID).toBe(userMessages[0].info.id);
+    expect(assistantMessages[0].parts.filter((part) => part.type === 'text').map((part) => part.text))
+      .toEqual(['answer 1', 'resumed']);
+    // The follow-up user bubble then closed the turn normally; its assistant
+    // is grouped under u_user_echo.
+    expect(assistantMessages[1].info.parentID).toBe(userMessages[1].info.id);
+    expect(assistantMessages[1].parts[0].text).toBe('echo answer');
   });
 });
 

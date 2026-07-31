@@ -15,6 +15,7 @@ import {
   createAskUserQuestionHandler,
   resetPendingQuestions,
 } from './translators/claude-code/questions.js';
+import { applyHarnessEventToSnapshot, resetHarnessTurnSnapshots } from './turn-snapshot.js';
 
 beforeAll(() => {
   configureSessionBindings({ persist: false, load: true });
@@ -232,9 +233,110 @@ describe('harness routes', () => {
       expect(events.some((event) => event.type === 'question.replied')).toBe(true);
     });
   });
+
+  it('permission reply route resolves bridged canUseTool permission', async () => {
+    const events = [];
+    // Create a pending permission by invoking the canUseTool callback. The
+    // returned promise stays pending until the reply route resolves it; do
+    // not await it here — the assertion after the POST verifies the real
+    // resolution end-to-end through the route.
+    const canUseTool = createCanUseTool({
+      sessionId: 'ses_p',
+      directory: '/tmp/project',
+      getBroadcast: () => (payload) => events.push(payload),
+      createId: () => 'perm_route',
+    });
+    const pendingPermission = canUseTool('Bash', { command: 'ls' }, {});
+    // Swallow a potential rejection so a teardown race cannot surface as an
+    // unhandled rejection.
+    pendingPermission.catch(() => {});
+
+    const router = createHarnessRouter({
+      claudeTranslator: {
+        async prompt() {
+          return { ok: true };
+        },
+        async abort() {
+          return { ok: true, aborted: false };
+        },
+        async replyPermission(body) {
+          const { replyPermission } = await import('./translators/claude-code/permissions.js');
+          return replyPermission(body);
+        },
+        async replyQuestion() {
+          return { ok: true };
+        },
+      },
+    });
+
+    await withServer((app) => {
+      registerHarnessRoutes(app, { router, initBindings: false });
+    }, async (base) => {
+      const response = await fetch(`${base}/api/harness/permission/reply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: 'ses_p',
+          requestId: 'perm_route',
+          reply: 'once',
+          directory: '/tmp/project',
+        }),
+      });
+      expect(response.status).toBe(200);
+      const json = await response.json();
+      expect(json).toMatchObject({
+        ok: true,
+        sessionId: 'ses_p',
+        requestId: 'perm_route',
+        reply: 'once',
+      });
+      expect(events.some((event) => event.type === 'permission.replied')).toBe(true);
+      // The pending canUseTool promise should now resolve with allow.
+      const result = await pendingPermission;
+      expect(result).toMatchObject({ behavior: 'allow' });
+    });
+  });
+
+  it('permission reply route returns 404 for unknown request', async () => {
+    const router = createHarnessRouter({
+      claudeTranslator: {
+        async prompt() {
+          return { ok: true };
+        },
+        async abort() {
+          return { ok: true, aborted: false };
+        },
+        async replyPermission(body) {
+          const { replyPermission } = await import('./translators/claude-code/permissions.js');
+          return replyPermission(body);
+        },
+        async replyQuestion() {
+          return { ok: true };
+        },
+      },
+    });
+
+    await withServer((app) => {
+      registerHarnessRoutes(app, { router, initBindings: false });
+    }, async (base) => {
+      const response = await fetch(`${base}/api/harness/permission/reply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: 'ses_p',
+          requestId: 'perm_missing',
+          reply: 'once',
+        }),
+      });
+      expect(response.status).toBe(404);
+      const json = await response.json();
+      expect(json.code).toBe('PERMISSION_NOT_FOUND');
+    });
+  });
 });
 
 describe('OpenCode overlay proxy', () => {
+  afterEach(() => resetHarnessTurnSnapshots());
   const registerWithUpstream = (app, upstream) => {
     registerHarnessRoutes(app, {
       initBindings: false,
@@ -276,6 +378,28 @@ describe('OpenCode overlay proxy', () => {
           const res = await fetch(`${base}/api/session/status?directory=/proj`);
           expect(res.status).toBe(200);
           expect(await res.json()).toMatchObject({ ses_oc: { type: 'busy' } });
+        },
+      );
+    });
+  });
+
+  it('does not let polling clear a full retry status', async () => {
+    applyHarnessEventToSnapshot({
+      type: 'session.status',
+      properties: { sessionID: 'ses_retry', status: {
+        type: 'retry', attempt: 4, message: 'claude-session-limit', next: 4567,
+      } },
+    }, '/proj');
+    await withServer((app) => registerWithUpstream(app), async (base) => {
+      await withStubbedFetch(
+        async () => new Response(JSON.stringify({ ses_retry: { type: 'idle' } }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        }),
+        async () => {
+          const res = await fetch(`${base}/api/session/status?directory=/proj`);
+          expect(await res.json()).toEqual({ ses_retry: {
+            type: 'retry', attempt: 4, message: 'claude-session-limit', next: 4567,
+          } });
         },
       );
     });

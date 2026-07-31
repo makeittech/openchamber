@@ -136,6 +136,80 @@ afterEach(() => {
 });
 
 describe('createClaudeCodeTranslator', () => {
+  it('persists a confirmed rate limit without an idle or error edge', async () => {
+    const controller = createControlledStream();
+    const handle = createHandle(controller);
+    const schedule = mock(() => {});
+    const retryRuntime = {
+      schedule,
+      hasPending: () => false,
+      cancel: async () => null,
+      start: async () => {},
+      stop: async () => {},
+      deleteSession: async () => null,
+    };
+    const { events, translator } = createHarness(handle, { retryRuntime });
+    await translator.prompt(basePrompt('ses_limit'));
+    controller.push({
+      type: 'assistant', uuid: 'asst_limit', error: 'rate_limit',
+      message: { content: [{ type: 'text', text: 'limited' }] },
+    });
+    controller.push({
+      type: 'rate_limit_event', uuid: 'rl_limit',
+      rate_limit_info: {
+        status: 'rejected', resetsAt: Date.now() + 60_000, rateLimitType: 'five_hour',
+      },
+    });
+    controller.push({ type: 'result', subtype: 'error_during_execution', is_error: true });
+    controller.end();
+    await waitFor(() => !translator._activeTurns.has('ses_limit'));
+
+    expect(schedule).toHaveBeenCalledTimes(1);
+    expect(idleEvents(events, 'ses_limit')).toHaveLength(0);
+    expect(eventTypes(events)).not.toContain('session.error');
+  });
+
+  it('turns retry persistence failure into hard error and idle', async () => {
+    const controller = createControlledStream();
+    const handle = createHandle(controller);
+    const retryRuntime = {
+      schedule: () => { throw Object.assign(new Error('disk failed'), { code: 'RETRY_STORE_UNAVAILABLE' }); },
+      hasPending: () => false,
+      cancel: async () => null,
+      start: async () => {}, stop: async () => {}, deleteSession: async () => null,
+    };
+    const { events, translator } = createHarness(handle, { retryRuntime });
+    await translator.prompt(basePrompt('ses_limit_disk'));
+    controller.push({
+      type: 'assistant', uuid: 'asst_limit_disk', error: 'rate_limit',
+      message: { content: [{ type: 'text', text: 'limited' }] },
+    });
+    controller.push({
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'rejected', resetsAt: Date.now() + 60_000, rateLimitType: 'five_hour' },
+    });
+    controller.push({ type: 'result', subtype: 'error_during_execution', is_error: true });
+    controller.end();
+    await waitFor(() => !translator._activeTurns.has('ses_limit_disk'));
+
+    expect(eventTypes(events)).toContain('session.error');
+    expect(idleEvents(events, 'ses_limit_disk')).toHaveLength(1);
+    expect(getSessionBinding('ses_limit_disk')?.lastError?.code).toBe('RETRY_STORE_UNAVAILABLE');
+  });
+
+  it('rejects a public prompt while a durable retry is pending', async () => {
+    const controller = createControlledStream();
+    const retryRuntime = {
+      schedule: () => {}, hasPending: (id) => id === 'ses_pending',
+      cancel: async () => null, start: async () => {}, stop: async () => {}, deleteSession: async () => null,
+    };
+    const { startQuery, translator } = createHarness(createHandle(controller), { retryRuntime });
+    await expect(translator.prompt(basePrompt('ses_pending'))).rejects.toMatchObject({
+      code: 'TURN_IN_PROGRESS', statusCode: 409,
+    });
+    expect(startQuery).not.toHaveBeenCalled();
+  });
+
   it('rejects a second prompt while a turn is active', async () => {
     const controller = createControlledStream();
     const handle = createHandle(controller);

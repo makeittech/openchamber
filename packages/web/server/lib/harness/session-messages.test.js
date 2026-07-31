@@ -13,6 +13,7 @@ import {
 } from './turn-snapshot.js';
 import { resetClaudeTranscriptCaches } from './translators/claude-code/transcript-messages.js';
 import { mergeHarnessMessagesIntoSessionMessages } from './session-messages.js';
+import { RECOVERY_MARKER } from './translators/claude-code/recovery-transcript.js';
 
 describe('mergeHarnessMessagesIntoSessionMessages', () => {
   beforeEach(() => {
@@ -204,5 +205,50 @@ describe('mergeHarnessMessagesIntoSessionMessages + transcript replay', () => {
     expect(merged).toHaveLength(2);
     expect(new Set(merged.map((record) => record.info.id)))
       .toEqual(new Set(['msg_live_user', 'msg_live_asst']));
+  });
+
+  it('hides synthetic recovery continuation records in the merged result and keeps post-recovery assistant grouped under the original user turn', () => {
+    const recoveryText = `${RECOVERY_MARKER}\nContinue the interrupted response.`;
+    writeTranscript([
+      transcriptUser('u1', '2026-07-28T10:00:00.000Z', 'imported question'),
+      transcriptAssistant('a1', '2026-07-28T10:00:01.000Z', 'imported answer'),
+      // Synthetic recovery continuation injected by the recovery launch —
+      // must stay invisible in the merged chat surface.
+      JSON.stringify({
+        type: 'user',
+        uuid: 'u_recovery',
+        timestamp: '2026-07-28T10:00:02.000Z',
+        sessionId: FOREIGN_ID,
+        cwd: '/repo',
+        isSynthetic: true,
+        message: { role: 'user', content: [{ type: 'text', text: recoveryText }] },
+      }),
+      transcriptAssistant('a2', '2026-07-28T10:00:03.000Z', 'recovered continuation'),
+    ]);
+    bindSession({
+      sessionId: 'ses_recovery',
+      harnessId: 'claude-code',
+      directory: '/repo',
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      foreignSessionId: FOREIGN_ID,
+    });
+
+    const merged = mergeHarnessMessagesIntoSessionMessages([], 'ses_recovery');
+    // Only the original user + the (merged) assistant surface; the
+    // synthetic continuation is not a visible user bubble.
+    expect(merged).toHaveLength(2);
+    expect(merged[0].info.role).toBe('user');
+    expect(merged[0].parts?.[0]?.text).toBe('imported question');
+    // Verify no merged user message contains the hidden marker text.
+    const surfacedUserTexts = merged
+      .filter((record) => record.info.role === 'user')
+      .flatMap((record) => (record.parts || []).map((part) => part.text || ''));
+    expect(surfacedUserTexts.some((text) => text.startsWith(RECOVERY_MARKER))).toBe(false);
+    expect(merged[1].info.role).toBe('assistant');
+    // Hiding did not close the original user turn: the post-recovery
+    // assistant stays grouped under the original user.
+    expect(merged[1].info.parentID).toBe(merged[0].info.id);
+    expect(merged[1].parts.filter((part) => part.type === 'text').map((part) => part.text))
+      .toEqual(['imported answer', 'recovered continuation']);
   });
 });

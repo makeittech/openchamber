@@ -867,6 +867,16 @@ globalMessageStreamHub.subscribeEvent((event) => {
   const raw = event?.payload;
   const payload = raw?.payload && typeof raw.payload === 'object' ? raw.payload : raw;
   if (!payload || typeof payload !== 'object') return;
+  if (payload.type === 'session.deleted') {
+    const sessionId = typeof payload.properties?.info?.id === 'string'
+      ? payload.properties.info.id
+      : '';
+    if (sessionId) {
+      void harnessRouter.deleteSession(sessionId).catch((error) => {
+        console.warn('[harness] failed to clean deleted session:', error?.message || error);
+      });
+    }
+  }
   const directory = typeof event?.directory === 'string' && event.directory && event.directory !== 'global'
     ? event.directory
     : '';
@@ -1196,6 +1206,7 @@ const scheduledTaskService = createScheduledTaskService({
   sanitizeProjects,
   projectConfigRuntime,
   scheduledTasksRuntime,
+  harnessRuntime: harnessRouter,
 });
 const openChamberSessionService = createOpenChamberSessionService({
   readSettingsFromDiskMigrated,
@@ -1659,6 +1670,10 @@ async function main(options = {}) {
   });
   relayServiceInstance = relayService;
   relayService.registerRoutes(app);
+
+  // Rehydrate durable retry overlays before status routes can answer. A failed
+  // start is not converted to an empty journal: startup fails closed.
+  await harnessRouter.start();
 
   await featureRoutesRuntime.registerRoutes(app, {
     crypto,

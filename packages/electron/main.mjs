@@ -17,6 +17,7 @@ import { sanitizeRuntimeRequestHeaders } from './runtime-request-headers.mjs';
 import { assertUpdaterCapability } from './updater-capability.mjs';
 import { checkForDesktopUpdate } from './updater-check.mjs';
 import { resolveUpdaterFeed } from './updater-feed.mjs';
+import { stopInProcessServer } from './server-shutdown.mjs';
 import {
   buildLinuxInstalledApps,
   buildLinuxOpenSpecs,
@@ -243,6 +244,8 @@ const state = {
   quitInProgress: false,
   quitConfirmationPending: false,
   backgroundShutdownComplete: false,
+  backgroundShutdownPromise: null,
+  serverShutdownPromise: null,
   sshShutdownPromise: null,
   installingUpdate: false,
   pendingUpdate: null,
@@ -332,14 +335,16 @@ const quitConfirmationMessage = () => {
 };
 
 const shutdownBackgroundServices = () => {
-  if (state.backgroundShutdownComplete) return;
+  if (state.backgroundShutdownPromise) return state.backgroundShutdownPromise;
+  if (state.backgroundShutdownComplete) return Promise.resolve();
   state.backgroundShutdownComplete = true;
   setDesktopKeepAwakeActive(false);
-  if (state.installingUpdate) return;
-  killSidecar();
-  setImmediate(() => {
-    void shutdownSshSessions();
-  });
+  if (state.installingUpdate) return Promise.resolve();
+  state.backgroundShutdownPromise = Promise.all([
+    killSidecar(),
+    shutdownSshSessions(),
+  ]).then(() => undefined);
+  return state.backgroundShutdownPromise;
 };
 
 const shutdownSshSessions = async () => {
@@ -392,11 +397,12 @@ const prepareForQuit = ({ installingUpdate = false } = {}) => {
   shutdownBackgroundServices();
 };
 
-const performConfirmedQuit = () => {
-  if (state.quitInProgress) return;
+const performConfirmedQuit = async () => {
+  if (state.quitInProgress) return state.backgroundShutdownPromise;
   state.quitInProgress = true;
 
   prepareForQuit();
+  await shutdownBackgroundServices();
   app.exit(0);
 };
 
@@ -407,12 +413,9 @@ const performConfirmedQuit = () => {
 // reaper remains the backstop for an unhandled hard crash (SIGKILL).
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(signal, () => {
-    try {
-      shutdownBackgroundServices();
-    } catch (error) {
+    void shutdownBackgroundServices().catch((error) => {
       log.warn(`[electron] ${signal} shutdown failed:`, error);
-    }
-    app.exit(0);
+    }).finally(() => app.exit(0));
   });
 }
 
@@ -1544,16 +1547,21 @@ Stop-ProcessTree $targetPid $true
 };
 
 const killSidecar = () => {
+  if (state.serverShutdownPromise) return state.serverShutdownPromise;
   const handle = state.serverHandle;
-  state.serverHandle = null;
-  state.sidecarUrl = null;
-  if (!handle) return;
+  if (!handle) return Promise.resolve();
 
-  try {
-    launchDetachedOpenCodeKiller(handle.getOpenCodeProcessInfo?.());
-  } catch (error) {
-    log.warn('[electron] failed to launch OpenCode killer:', error);
-  }
+  state.serverShutdownPromise = stopInProcessServer({
+    handle,
+    launchFallback: launchDetachedOpenCodeKiller,
+    logger: log,
+  }).finally(() => {
+    if (state.serverHandle === handle) {
+      state.serverHandle = null;
+      state.sidecarUrl = null;
+    }
+  });
+  return state.serverShutdownPromise;
 };
 
 const macosMajorVersion = () => {
@@ -2287,8 +2295,9 @@ const openDevToolsForMenuTarget = () => {
   target.webContents.toggleDevTools();
 };
 
-const relaunchFromMenu = () => {
+const relaunchFromMenu = async () => {
   prepareForQuit();
+  await shutdownBackgroundServices();
   app.relaunch();
   app.exit(0);
 };
@@ -4156,9 +4165,10 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       await mutateSettingsRoot((root) => {
         root.desktopVibrancy = enabled;
       });
-      setImmediate(() => {
+      setImmediate(async () => {
         try {
           prepareForQuit();
+          await shutdownBackgroundServices();
           app.relaunch();
           app.exit(0);
         } catch (err) {
@@ -4268,13 +4278,14 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       // Defer so the IPC reply flushes before the app starts shutting down.
       // Without this, quitAndInstall() can race with the renderer's pending
       // invoke and the restart appears to do nothing from the UI side.
-      setImmediate(() => {
+      setImmediate(async () => {
         try {
           if (applyUpdate) {
-            killSidecar();
+            await killSidecar();
             autoUpdater.quitAndInstall();
           } else {
             prepareForQuit();
+            await shutdownBackgroundServices();
             app.relaunch();
             app.exit(0);
           }

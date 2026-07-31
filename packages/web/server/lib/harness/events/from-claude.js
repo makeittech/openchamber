@@ -8,6 +8,7 @@
  */
 
 import crypto from 'node:crypto';
+import { selectRejectedRateLimit } from '../retry-policy.js';
 
 const ID_RANDOM_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
 const ID_RANDOM_LENGTH = 14;
@@ -99,7 +100,44 @@ export function resetOpenCodeIdState() {
  *   created: boolean,
  * }>} [subagentByToolUseId]
  * @property {object | null} [lastInitCapabilities]
+ * @property {object | null} [latestRateLimitInfo]
+ * @property {{ uuid: string } | null} [parentRateLimitError]
+ * @property {boolean} [sdkRetryActive]
  */
+
+/**
+ * SDK `rate_limit_info` fields `selectRejectedRateLimit` consumes. The mapper
+ * only persists this sanitized superset on {@link ClaudeMapperContext} so
+ * later tasks (terminal correlation / scheduler) don't need to re-parse the
+ * raw event.
+ */
+const RATE_LIMIT_INFO_FIELDS = [
+  'status',
+  'resetsAt',
+  'rateLimitType',
+  'overageStatus',
+  'overageResetsAt',
+  'overageInUse',
+  'isUsingOverage',
+];
+
+/**
+ * Sanitize an SDK `rate_limit_info` payload down to the fields
+ * {@link selectRejectedRateLimit} consumes. Anything else on the message is
+ * dropped so unrelated keys never reach ctx or downstream consumers.
+ *
+ * @param {unknown} info
+ * @returns {object | null}
+ */
+function sanitizeRateLimitInfo(info) {
+  if (!info || typeof info !== 'object') return null;
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  for (const key of RATE_LIMIT_INFO_FIELDS) {
+    if (key in info) out[key] = info[key];
+  }
+  return out;
+}
 
 /**
  * Streamed assistant segments share one shape: an OpenCode part that grows by
@@ -156,6 +194,9 @@ export function createClaudeMapperContext(input) {
       || Boolean(input.accumulatedReasoning),
     subagentByToolUseId: input.subagentByToolUseId || new Map(),
     lastInitCapabilities: input.lastInitCapabilities || null,
+    latestRateLimitInfo: input.latestRateLimitInfo ?? null,
+    parentRateLimitError: input.parentRateLimitError ?? null,
+    sdkRetryActive: input.sdkRetryActive === true,
     askUserQuestionCallIds: input.askUserQuestionCallIds || new Set(),
     tokens: input.tokens && typeof input.tokens === 'object'
       ? input.tokens
@@ -886,9 +927,18 @@ export function buildTurnAbortEvents(ctx, reason = 'Aborted by user') {
  * Map one SDK message into zero or more canonical events.
  * Mutates ctx for streaming state (accumulated text, foreign id, tool ids).
  *
+ * The return shape extends the historical `{ events, foreignSessionId?, capabilities? }`
+ * surface with two optional fields used by later session-limit auto-resume tasks:
+ * - `terminal` — set when a terminal `result` correlates a parent rate_limit
+ *   assistant error with a structured rejected rate-limit window, signaling a
+ *   durable resumable rate-limit shutdown to the scheduler (later task).
+ * - `rateLimitInfo` — mirrors `ctx.latestRateLimitInfo` (null until a
+ *   `rate_limit_event` arrives) so callers can read the latest structured
+ *   metadata without inspecting ctx.
+ *
  * @param {ClaudeMapperContext} ctx
  * @param {object} message
- * @returns {{ events: object[], foreignSessionId?: string, capabilities?: object }}
+ * @returns {{ events: object[], foreignSessionId?: string, capabilities?: object, terminal?: { type: 'rate-limit', rateLimitType: string, resetAt: number, assistantUuid: string }, rateLimitInfo?: object | null }}
  */
 export function mapClaudeMessageToEvents(ctx, message) {
   if (!message || typeof message !== 'object') {
@@ -899,6 +949,8 @@ export function mapClaudeMessageToEvents(ctx, message) {
   let foreignSessionId;
   /** @type {object | undefined} */
   let capabilities;
+  /** @type {{ type: 'rate-limit', rateLimitType: string, resetAt: number, assistantUuid: string } | undefined} */
+  let terminal;
 
   if (typeof message.session_id === 'string' && message.session_id) {
     foreignSessionId = message.session_id;
@@ -959,6 +1011,26 @@ export function mapClaudeMessageToEvents(ctx, message) {
             status: { type: 'idle' },
           },
         });
+      } else if (message.subtype === 'api_retry') {
+        // Transient SDK-owned retry (e.g. an API hiccup), NOT a hard session-
+        // limit wait. The retry event lets the UI show a countdown, but the
+        // mapper never schedules a durable resume from this. The next content
+        // activity transitions the session back to `busy`.
+        const attempt = Number.isFinite(message.attempt) ? message.attempt : 1;
+        const retryDelayMs = Number.isFinite(message.retry_delay_ms) ? message.retry_delay_ms : 0;
+        ctx.sdkRetryActive = true;
+        events.push({
+          type: 'session.status',
+          properties: {
+            sessionID: ctx.sessionId,
+            status: {
+              type: 'retry',
+              attempt,
+              message: 'api-retry',
+              next: Date.now() + retryDelayMs,
+            },
+          },
+        });
       }
       break;
     }
@@ -966,6 +1038,21 @@ export function mapClaudeMessageToEvents(ctx, message) {
     case 'stream_event': {
       const event = message.event;
       if (!event || typeof event !== 'object') break;
+      // After an SDK api_retry, the first streamed content transitions the
+      // session from `retry` back to `busy` so the UI does not freeze on a
+      // countdown once work resumes. Only parent-level activity transitions;
+      // subagent streams do not own parent busy/idle.
+      if (
+        ctx.sdkRetryActive
+        && !parentToolUseId
+        && (event.type === 'content_block_delta' || event.type === 'content_block_start')
+      ) {
+        ctx.sdkRetryActive = false;
+        events.push({
+          type: 'session.status',
+          properties: { sessionID: ctx.sessionId, status: { type: 'busy' } },
+        });
+      }
       mapMaybeNested(() => {
         const nested = [];
         if (event.type === 'content_block_delta') {
@@ -997,19 +1084,49 @@ export function mapClaudeMessageToEvents(ctx, message) {
       break;
     }
 
+    case 'rate_limit_event': {
+      // Persist sanitized structured rate-limit metadata on ctx so the terminal
+      // result correlation can identify a hard rejected window. The event
+      // itself produces no visible transcript events and never schedules a
+      // durable retry — that is later-task behavior.
+      ctx.latestRateLimitInfo = sanitizeRateLimitInfo(message.rate_limit_info);
+      break;
+    }
+
     case 'assistant': {
+      const content = message.message?.content;
+      const hasContent = Array.isArray(content) && content.length > 0;
+      // After an SDK api_retry, the first content-bearing assistant message
+      // transitions the session from `retry` back to `busy`. Only parent-level
+      // activity owns the parent session's status.
+      if (ctx.sdkRetryActive && !parentToolUseId && hasContent) {
+        ctx.sdkRetryActive = false;
+        events.push({
+          type: 'session.status',
+          properties: { sessionID: ctx.sessionId, status: { type: 'busy' } },
+        });
+      }
       mapMaybeNested(() => {
         const nested = [];
-        const content = message.message?.content;
         if (Array.isArray(content)) {
           for (const block of content) {
             nested.push(...mapContentBlock(ctx, block));
           }
         }
         if (message.error) {
-          // Only the parent turn owns session busy/idle. A subagent error still
-          // has to land on its own message instead of vanishing silently.
-          if (!parentToolUseId) {
+          // A parent rate-limit error is correlated with the structured
+          // rate_limit_event + terminal result to surface a durable resumable
+          // rate-limit. While waiting for that terminal correlation, the
+          // session must NOT degenerate to idle — the next `result` decides.
+          // Other parent errors retain the existing idle + error emission.
+          // Subagent errors never set the parent's rate-limit correlation and
+          // never emit a parent idle.
+          const isParentRateLimit = !parentToolUseId && message.error === 'rate_limit';
+          if (isParentRateLimit) {
+            ctx.parentRateLimitError = {
+              uuid: typeof message.uuid === 'string' ? message.uuid : '',
+            };
+          } else if (!parentToolUseId) {
             nested.push({
               type: 'session.status',
               properties: {
@@ -1018,6 +1135,8 @@ export function mapClaudeMessageToEvents(ctx, message) {
               },
             });
           }
+          // Retain the existing APIError message.updated emission for every
+          // assistant error (parent rate-limit, other parent errors, subagent).
           nested.push({
             type: 'message.updated',
             properties: {
@@ -1077,21 +1196,42 @@ export function mapClaudeMessageToEvents(ctx, message) {
         });
       }
 
-      const isError = message.is_error === true || (typeof message.subtype === 'string' && message.subtype.startsWith('error_'));
-      events.push({
-        type: 'session.status',
-        properties: {
-          sessionID: ctx.sessionId,
-          status: { type: 'idle' },
-        },
-      });
-      if (isError) {
+      // A terminal result supersedes any transient SDK api_retry state: clear
+      // the marker without emitting a `busy` transition. The tail emissions
+      // below (idle/error, durable terminal rate-limit) own the final state.
+      ctx.sdkRetryActive = false;
+
+      const isError = message.is_error === true
+        || (typeof message.subtype === 'string' && message.subtype.startsWith('error_'));
+
+      // When the parent surfaced a rate_limit assistant error AND structured
+      // metadata reports a hard rejected window, surface a durable resumable
+      // terminal rate-limit signal so a later task can schedule the resume.
+      // Otherwise the turn settles to the existing idle (+ optional error).
+      const rejected = selectRejectedRateLimit(ctx.latestRateLimitInfo);
+      if (ctx.parentRateLimitError && rejected) {
+        terminal = {
+          type: 'rate-limit',
+          rateLimitType: rejected.rateLimitType,
+          resetAt: rejected.resetAt,
+          assistantUuid: ctx.parentRateLimitError.uuid,
+        };
+      } else {
         events.push({
-          type: 'session.error',
+          type: 'session.status',
           properties: {
             sessionID: ctx.sessionId,
+            status: { type: 'idle' },
           },
         });
+        if (isError) {
+          events.push({
+            type: 'session.error',
+            properties: {
+              sessionID: ctx.sessionId,
+            },
+          });
+        }
       }
       break;
     }
@@ -1101,5 +1241,5 @@ export function mapClaudeMessageToEvents(ctx, message) {
       break;
   }
 
-  return { events, foreignSessionId, capabilities };
+  return { events, foreignSessionId, capabilities, terminal, rateLimitInfo: ctx.latestRateLimitInfo ?? null };
 }

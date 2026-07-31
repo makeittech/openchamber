@@ -8,6 +8,7 @@ import {
 
 let visibleAgents: Agent[] = [];
 const sendMessageCalls: unknown[][] = [];
+let directoryState: { sessionStatusLoaded?: boolean; session_status: Record<string, { type: 'idle' | 'busy' | 'retry' }> } | undefined;
 
 const getVisibleAgentsMock = mock(() => visibleAgents);
 
@@ -29,6 +30,10 @@ mock.module('@/sync/session-ui-store', () => ({
       sessionAbortFlags: new Map(),
     }),
   },
+}));
+
+mock.module('@/sync/sync-refs', () => ({
+  getDirectoryState: () => directoryState,
 }));
 
 import {
@@ -58,11 +63,23 @@ describe('shouldDispatchQueuedAutoSend', () => {
   test('busy→idle with queued items still dispatches', () => {
     expect(shouldDispatchQueuedAutoSend('busy', 'idle', true)).toBe(true);
   });
+
+  test('retry→busy stays parked and the final busy→idle sends one first item', () => {
+    expect(shouldDispatchQueuedAutoSend('retry', 'busy', true)).toBe(false);
+    expect(shouldDispatchQueuedAutoSend('busy', 'idle', true)).toBe(true);
+    const payload = buildQueuedAutoSendPayload([
+      { id: 'first', content: 'first', createdAt: 1 },
+      { id: 'second', content: 'second', createdAt: 2 },
+    ]);
+    expect(payload?.queuedMessageId).toBe('first');
+  });
+
 });
 
 describe('resolveQueuedSessionStatusType', () => {
   beforeEach(() => {
     useGlobalSessionStatusStore.setState({ statusById: new Map() });
+    directoryState = undefined;
   });
 
   test('prefers global busy over directory absence', () => {
@@ -77,7 +94,23 @@ describe('resolveQueuedSessionStatusType', () => {
     expect(resolveQueuedSessionStatusType('ses_1', '/repo')).toBe('busy');
   });
 
-  test('reports idle when global and directory have no busy entry', () => {
+  test('reports unknown before the directory status snapshot is authoritative', () => {
+    expect(resolveQueuedSessionStatusType('ses_missing', '/repo')).toBe(undefined);
+    directoryState = { sessionStatusLoaded: false, session_status: {} };
+    expect(resolveQueuedSessionStatusType('ses_missing', '/repo')).toBe(undefined);
+  });
+
+  test('reports global retry before directory bootstrap', () => {
+    applyGlobalSessionStatusEvent('/repo', {
+      type: 'session.status',
+      properties: { sessionID: 'ses_1', status: { type: 'retry', attempt: 1, message: 'limit' } },
+    } as never);
+
+    expect(resolveQueuedSessionStatusType('ses_1', '/repo')).toBe('retry');
+  });
+
+  test('reports idle only after authoritative directory bootstrap', () => {
+    directoryState = { sessionStatusLoaded: true, session_status: {} };
     expect(resolveQueuedSessionStatusType('ses_missing', '/repo')).toBe('idle');
   });
 });

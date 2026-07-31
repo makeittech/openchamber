@@ -40,6 +40,18 @@ export {
 } from './session-bindings.js';
 
 export {
+  createPendingRetryStore,
+  resolvePendingRetryStorePath,
+  sanitizePendingRetryRecord,
+  initPendingRetryStore,
+  getPendingRetry,
+  listPendingRetries,
+  putPendingRetry,
+  deletePendingRetry,
+  replacePendingRetries,
+} from './pending-retry-store.js';
+
+export {
   createCanUseTool,
   replyPermission,
   rejectPendingForSession,
@@ -54,14 +66,16 @@ export {
   getHarnessTurnSnapshot,
   getHarnessRecentMessages,
   isHarnessSessionWorking,
-  listHarnessBusyStatuses,
+  listHarnessActiveStatuses,
+  clearHarnessTurnSnapshot,
   resetHarnessTurnSnapshots,
 } from './turn-snapshot.js';
 
-export { mergeHarnessBusyIntoSessionStatuses } from './session-status.js';
+export { mergeHarnessActiveIntoSessionStatuses } from './session-status.js';
 export { mergeHarnessMessagesIntoSessionMessages } from './session-messages.js';
 
 export { createHarnessRouter } from './router.js';
+export { createHarnessRetryRuntime } from './retry-runtime.js';
 export { registerHarnessRoutes } from './routes.js';
 export { createClaudeCodeTranslator, buildClaudePrompt } from './translators/claude-code/index.js';
 export { translateOpenCodeCommandForClaude } from './translators/claude-code/opencode-command.js';

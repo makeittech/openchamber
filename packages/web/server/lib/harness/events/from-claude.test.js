@@ -603,3 +603,384 @@ describe('from-claude slash / mcp / subagents', () => {
     expect(delta?.properties.delta).toBe('looking around');
   });
 });
+
+describe('claude session-limit auto-resume mapper', () => {
+  beforeEach(() => {
+    resetOpenCodeIdState();
+  });
+
+  function freshCtx(overrides = {}) {
+    return createClaudeMapperContext({
+      sessionId: 'ses_1',
+      directory: '/proj',
+      userMessageId: 'msg_u',
+      assistantMessageId: 'msg_a',
+      ...overrides,
+    });
+  }
+
+  it('initializes latestRateLimitInfo / parentRateLimitError / sdkRetryActive defaults', () => {
+    const ctx = createClaudeMapperContext({
+      sessionId: 'ses_1',
+      directory: '/proj',
+      userMessageId: 'msg_u',
+      assistantMessageId: 'msg_a',
+    });
+    expect(ctx.latestRateLimitInfo).toBeNull();
+    expect(ctx.parentRateLimitError).toBeNull();
+    expect(ctx.sdkRetryActive).toBe(false);
+  });
+
+  it('rate_limit_event stores sanitized structured rate-limit metadata on ctx and emits no events', () => {
+    const ctx = freshCtx();
+    const resetsAtMs = Date.now() + 60_000;
+    const mapped = mapClaudeMessageToEvents(ctx, {
+      type: 'rate_limit_event',
+      uuid: 'rl_1',
+      session_id: 'foreign_rl',
+      rate_limit_info: {
+        status: 'rejected',
+        resetsAt: resetsAtMs,
+        rateLimitType: 'five_hour',
+        overageStatus: 'allowed',
+        overageResetsAt: resetsAtMs + 60_000,
+        overageInUse: true,
+        isUsingOverage: false,
+        // unrelated extras filtered out by sanitization
+        extraNoise: 'should-not-survive',
+      },
+      randomField: 'also-noise',
+    });
+
+    // No visible events emitted by the rate-limit event itself.
+    expect(mapped.events).toEqual([]);
+    // Sanitized metadata keyed by the SDK fields selectRejectedRateLimit consumes.
+    expect(ctx.latestRateLimitInfo).toMatchObject({
+      status: 'rejected',
+      resetsAt: resetsAtMs,
+      rateLimitType: 'five_hour',
+      overageStatus: 'allowed',
+      overageResetsAt: resetsAtMs + 60_000,
+      overageInUse: true,
+      isUsingOverage: false,
+    });
+    // Sanitization: no foreign keys leaked onto ctx.
+    expect(ctx.latestRateLimitInfo).not.toHaveProperty('extraNoise');
+    // No scheduling, just remembering — flag not touched.
+    expect(ctx.sdkRetryActive).toBe(false);
+    // Return shape surfaces the structured info for downstream consumers.
+    expect(mapped.rateLimitInfo).toMatchObject({ status: 'rejected', rateLimitType: 'five_hour' });
+  });
+
+  it('rate_limit_event with missing rate_limit_info stores null on ctx and emits no events', () => {
+    const ctx = freshCtx();
+    const mapped = mapClaudeMessageToEvents(ctx, {
+      type: 'rate_limit_event',
+      uuid: 'rl_2',
+    });
+    expect(ctx.latestRateLimitInfo).toBeNull();
+    expect(mapped.events).toEqual([]);
+    expect(mapped.rateLimitInfo).toBeNull();
+  });
+
+  it('system api_retry emits canonical retry status and sets sdkRetryActive (no idle)', () => {
+    const ctx = freshCtx();
+    const before = Date.now();
+    const mapped = mapClaudeMessageToEvents(ctx, {
+      type: 'system',
+      subtype: 'api_retry',
+      attempt: 2,
+      retry_delay_ms: 5_000,
+    });
+    const after = Date.now();
+
+    expect(ctx.sdkRetryActive).toBe(true);
+    // Exactly one event: the canonical retry status.
+    expect(mapped.events).toHaveLength(1);
+    const status = mapped.events[0];
+    expect(status.type).toBe('session.status');
+    expect(status.properties.sessionID).toBe('ses_1');
+    expect(status.properties.status).toMatchObject({
+      type: 'retry',
+      attempt: 2,
+      message: 'api-retry',
+    });
+    // `next` is an absolute epoch-ms = Date.now() + retry_delay_ms.
+    expect(status.properties.status.next).toBeGreaterThanOrEqual(before + 5_000);
+    expect(status.properties.status.next).toBeLessThanOrEqual(after + 5_000);
+    // No idle emitted; no durable retry scheduled from this transient event.
+    expect(mapped.events.some((e) => e.type === 'session.status' && e.properties.status.type === 'idle')).toBe(false);
+    expect(mapped.terminal).toBeUndefined();
+  });
+
+  it('system api_retry without attempt/delay coalesces to finite canonical defaults', () => {
+    const ctx = freshCtx();
+    const mapped = mapClaudeMessageToEvents(ctx, { type: 'system', subtype: 'api_retry' });
+    expect(ctx.sdkRetryActive).toBe(true);
+    expect(mapped.events).toHaveLength(1);
+    expect(mapped.events[0].properties.status.type).toBe('retry');
+    expect(Number.isFinite(mapped.events[0].properties.status.attempt)).toBe(true);
+    expect(Number.isFinite(mapped.events[0].properties.status.next)).toBe(true);
+  });
+
+  it('stream text delta after api_retry transitions retry -> busy BEFORE content events', () => {
+    const ctx = freshCtx();
+    mapClaudeMessageToEvents(ctx, { type: 'system', subtype: 'api_retry', attempt: 1, retry_delay_ms: 100 });
+    expect(ctx.sdkRetryActive).toBe(true);
+
+    const mapped = mapClaudeMessageToEvents(ctx, {
+      type: 'stream_event',
+      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'yes' } },
+    });
+
+    // Clearing + busy transition before any content arrival.
+    expect(ctx.sdkRetryActive).toBe(false);
+    const statusIdx = mapped.events.findIndex((e) => e.type === 'session.status' && e.properties.status.type === 'busy');
+    const deltaIdx = mapped.events.findIndex((e) => e.type === 'message.part.delta');
+    expect(statusIdx).toBeGreaterThanOrEqual(0);
+    expect(deltaIdx).toBeGreaterThan(statusIdx);
+  });
+
+  it('assistant content after api_retry transitions retry -> busy BEFORE content events', () => {
+    const ctx = freshCtx();
+    mapClaudeMessageToEvents(ctx, { type: 'system', subtype: 'api_retry', attempt: 1, retry_delay_ms: 100 });
+    const mapped = mapClaudeMessageToEvents(ctx, {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'hello' }] },
+    });
+    expect(ctx.sdkRetryActive).toBe(false);
+    const statusIdx = mapped.events.findIndex((e) => e.type === 'session.status' && e.properties.status.type === 'busy');
+    const contentIdx = mapped.events.findIndex(
+      (e) => e.properties?.part?.type === 'text' || e.type === 'message.part.delta',
+    );
+    expect(statusIdx).toBeGreaterThanOrEqual(0);
+    expect(contentIdx).toBeGreaterThan(statusIdx);
+  });
+
+  it('subsequent activity after busy transition does NOT re-emit busy', () => {
+    const ctx = freshCtx();
+    mapClaudeMessageToEvents(ctx, { type: 'system', subtype: 'api_retry', attempt: 1, retry_delay_ms: 100 });
+    mapClaudeMessageToEvents(ctx, {
+      type: 'stream_event',
+      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'first' } },
+    });
+    expect(ctx.sdkRetryActive).toBe(false);
+
+    const second = mapClaudeMessageToEvents(ctx, {
+      type: 'stream_event',
+      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'second' } },
+    });
+    expect(second.events.some((e) => e.type === 'session.status')).toBe(false);
+  });
+
+  it('subagent content after api_retry does NOT emit a parent busy transition', () => {
+    const ctx = freshCtx();
+    mapClaudeMessageToEvents(ctx, { type: 'system', subtype: 'api_retry', attempt: 1, retry_delay_ms: 100 });
+    const mapped = mapClaudeMessageToEvents(ctx, {
+      type: 'assistant',
+      parent_tool_use_id: 'agent_call_1',
+      message: { content: [{ type: 'text', text: 'subagent activity' }] },
+    });
+    // The parent's session.status transitions are unaffected by nested activity.
+    expect(mapped.events.some((e) => e.type === 'session.status')).toBe(false);
+  });
+
+  it('parent assistant rate_limit error records parentRateLimitError and skips idle', () => {
+    const ctx = freshCtx();
+    const mapped = mapClaudeMessageToEvents(ctx, {
+      type: 'assistant',
+      uuid: 'asst_1',
+      message: { content: [{ type: 'text', text: "You've hit your session limit..." }] },
+      error: 'rate_limit',
+    });
+    expect(ctx.parentRateLimitError).toEqual({ uuid: 'asst_1' });
+    // No idle emits when correlating a parent rate-limit error.
+    expect(mapped.events.some((e) => e.type === 'session.status' && e.properties.status.type === 'idle')).toBe(false);
+    // Retains the existing error message.updated emission with the APIError.
+    const err = mapped.events.find((e) => e.type === 'message.updated' && e.properties.info.error);
+    expect(err).toBeDefined();
+    expect(err.properties.info.error.name).toBe('APIError');
+    expect(err.properties.info.error.data.message).toBe('rate_limit');
+    expect(err.properties.info.error.data.isRetryable).toBe(true);
+  });
+
+  it('parent non-rate_limit assistant error retains idle emission (regression)', () => {
+    const ctx = freshCtx();
+    const mapped = mapClaudeMessageToEvents(ctx, {
+      type: 'assistant',
+      uuid: 'asst_2',
+      message: { content: [] },
+      error: 'overloaded',
+    });
+    expect(ctx.parentRateLimitError).toBeNull();
+    expect(mapped.events.some((e) => e.type === 'session.status' && e.properties.status.type === 'idle')).toBe(true);
+    const err = mapped.events.find((e) => e.type === 'message.updated' && e.properties.info.error);
+    expect(err).toBeDefined();
+    expect(err.properties.info.error.data.message).toBe('overloaded');
+    expect(err.properties.info.error.data.isRetryable).toBe(true);
+  });
+
+  it('subagent (nested) rate_limit error does NOT set the parent rate-limit correlation', () => {
+    const ctx = freshCtx();
+    const mapped = mapClaudeMessageToEvents(ctx, {
+      type: 'assistant',
+      parent_tool_use_id: 'agent_call_1',
+      uuid: 'asst_sub',
+      message: { content: [{ type: 'text', text: 'subagent rate-limited branch' }] },
+      error: 'rate_limit',
+    });
+    expect(ctx.parentRateLimitError).toBeNull();
+    // Subagent errors never emit parent idle.
+    expect(mapped.events.some((e) => e.type === 'session.status' && e.properties.status.type === 'idle')).toBe(false);
+    // Still emits the subagent error message.updated (existing behavior).
+    const err = mapped.events.find((e) => e.type === 'message.updated' && e.properties.info.error);
+    expect(err).toBeDefined();
+    expect(err.properties.info.error.name).toBe('APIError');
+    expect(err.properties.info.error.data.message).toBe('rate_limit');
+  });
+
+  it('returns terminal rate-limit when parent error + rejected window are correlated', () => {
+    const ctx = freshCtx();
+    const resetsAtMs = Date.now() + 60_000;
+
+    // parent rate-limit error seen first
+    mapClaudeMessageToEvents(ctx, {
+      type: 'assistant',
+      uuid: 'asst_1',
+      message: { content: [{ type: 'text', text: "You've hit your session limit..." }] },
+      error: 'rate_limit',
+    });
+    // structured rate-limit event seen
+    mapClaudeMessageToEvents(ctx, {
+      type: 'rate_limit_event',
+      uuid: 'rl_1',
+      rate_limit_info: { status: 'rejected', resetsAt: resetsAtMs, rateLimitType: 'five_hour' },
+    });
+    // terminal result
+    const terminal = mapClaudeMessageToEvents(ctx, {
+      type: 'result',
+      subtype: 'error_during_execution',
+      is_error: true,
+    });
+
+    expect(terminal.terminal).toMatchObject({
+      type: 'rate-limit',
+      rateLimitType: 'five_hour',
+      assistantUuid: 'asst_1',
+    });
+    // resetAt equals the validated absolute epoch-ms from selectRejectedRateLimit.
+    expect(terminal.terminal.resetAt).toBe(resetsAtMs);
+    // No idle / session.error emitted when correlating a hard rejected window.
+    expect(terminal.events.some((e) => e.type === 'session.status')).toBe(false);
+    expect(terminal.events.some((e) => e.type === 'session.error')).toBe(false);
+    // Closure events for open segments/tools and final message.updated still
+    // land so the transcript surfaces the rate-limit error text.
+    expect(terminal.events.some((e) => e.type === 'message.part.updated')).toBe(true);
+    expect(terminal.events.some(
+      (e) => e.type === 'message.updated' && e.properties.info.finish === 'stop',
+    )).toBe(true);
+    // rateLimitInfo mirrored on the terminal return.
+    expect(terminal.rateLimitInfo).toMatchObject({ status: 'rejected', rateLimitType: 'five_hour' });
+  });
+
+  it('terminal rate-limit detects an overage rejected window via selectRejectedRateLimit', () => {
+    const ctx = freshCtx();
+    const overageResetsMs = Date.now() + 90_000;
+    mapClaudeMessageToEvents(ctx, {
+      type: 'assistant', uuid: 'asst_o1',
+      message: { content: [{ type: 'text', text: 'overage' }] },
+      error: 'rate_limit',
+    });
+    mapClaudeMessageToEvents(ctx, {
+      type: 'rate_limit_event', uuid: 'rl_o1',
+      rate_limit_info: { overageStatus: 'rejected', overageResetsAt: overageResetsMs },
+    });
+    const terminal = mapClaudeMessageToEvents(ctx, {
+      type: 'result', subtype: 'error_during_execution', is_error: true,
+    });
+    expect(terminal.terminal).toMatchObject({
+      type: 'rate-limit',
+      rateLimitType: 'overage',
+      assistantUuid: 'asst_o1',
+    });
+    expect(terminal.terminal.resetAt).toBe(overageResetsMs);
+    expect(terminal.events.some((e) => e.type === 'session.status')).toBe(false);
+  });
+
+  it('does NOT produce terminal when no parent rate-limit error is set (regression)', () => {
+    const ctx = freshCtx();
+    const resetsAtMs = Date.now() + 60_000;
+    mapClaudeMessageToEvents(ctx, {
+      type: 'rate_limit_event', uuid: 'rl_1',
+      rate_limit_info: { status: 'rejected', resetsAt: resetsAtMs, rateLimitType: 'five_hour' },
+    });
+    const mapped = mapClaudeMessageToEvents(ctx, {
+      type: 'result', subtype: 'error_during_execution', is_error: true,
+    });
+    expect(mapped.terminal).toBeUndefined();
+    expect(mapped.events.some((e) => e.type === 'session.status' && e.properties.status.type === 'idle')).toBe(true);
+    expect(mapped.events.some((e) => e.type === 'session.error')).toBe(true);
+  });
+
+  it('does NOT produce terminal when the window is not a hard rejected window (regression)', () => {
+    const ctx = freshCtx();
+    mapClaudeMessageToEvents(ctx, {
+      type: 'assistant', uuid: 'asst_3',
+      message: { content: [{ type: 'text', text: 'warned' }] },
+      error: 'rate_limit',
+    });
+    // allowed_warning is not a hard wait.
+    mapClaudeMessageToEvents(ctx, {
+      type: 'rate_limit_event', uuid: 'rl_ok',
+      rate_limit_info: { status: 'allowed_warning', resetsAt: Date.now() + 60_000, rateLimitType: 'five_hour' },
+    });
+    const mapped = mapClaudeMessageToEvents(ctx, {
+      type: 'result', subtype: 'error_during_execution', is_error: true,
+    });
+    expect(mapped.terminal).toBeUndefined();
+    expect(mapped.events.some((e) => e.type === 'session.status' && e.properties.status.type === 'idle')).toBe(true);
+    expect(mapped.events.some((e) => e.type === 'session.error')).toBe(true);
+  });
+
+  it('terminal rate-limit correlation wins regardless of is_error (parent error already on record)', () => {
+    const ctx = freshCtx();
+    const resetsAtMs = Date.now() + 60_000;
+    mapClaudeMessageToEvents(ctx, {
+      type: 'assistant', uuid: 'asst_1',
+      message: { content: [{ type: 'text', text: 'RL' }] },
+      error: 'rate_limit',
+    });
+    mapClaudeMessageToEvents(ctx, {
+      type: 'rate_limit_event', uuid: 'rl_1',
+      rate_limit_info: { status: 'rejected', resetsAt: resetsAtMs, rateLimitType: 'five_hour' },
+    });
+    // Even a nominally-success result still correlates: no idle, terminal set.
+    const mapped = mapClaudeMessageToEvents(ctx, { type: 'result', subtype: 'success' });
+    expect(mapped.terminal).toMatchObject({ type: 'rate-limit', rateLimitType: 'five_hour', assistantUuid: 'asst_1' });
+    expect(mapped.events.some((e) => e.type === 'session.status')).toBe(false);
+  });
+
+  it('clears sdkRetryActive on a terminal result without emitting busy', () => {
+    const ctx = freshCtx();
+    mapClaudeMessageToEvents(ctx, { type: 'system', subtype: 'api_retry', attempt: 1, retry_delay_ms: 100 });
+    const mapped = mapClaudeMessageToEvents(ctx, { type: 'result', subtype: 'success' });
+    expect(ctx.sdkRetryActive).toBe(false);
+    expect(mapped.events.some((e) => e.type === 'session.status' && e.properties.status.type === 'busy')).toBe(false);
+  });
+
+  it('rateLimitInfo is exposed on every return shape (null until set)', () => {
+    const ctx = freshCtx();
+    const before = mapClaudeMessageToEvents(ctx, {
+      type: 'stream_event',
+      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'hi' } },
+    });
+    expect(before.rateLimitInfo).toBeNull();
+    const resetsAtMs = Date.now() + 60_000;
+    mapClaudeMessageToEvents(ctx, {
+      type: 'rate_limit_event', uuid: 'rl_x',
+      rate_limit_info: { status: 'rejected', resetsAt: resetsAtMs, rateLimitType: 'five_hour' },
+    });
+    const after = mapClaudeMessageToEvents(ctx, { type: 'result', subtype: 'success' });
+    expect(after.rateLimitInfo).toMatchObject({ status: 'rejected', rateLimitType: 'five_hour' });
+  });
+});

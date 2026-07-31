@@ -34,10 +34,21 @@ import {
   setBindingError,
   setForeignSessionId,
   updateSessionBinding,
+  clearSessionBinding,
 } from '../../session-bindings.js';
 import { getHarnessCapabilities } from '../../registry.js';
 import { detectClaudeCode } from '../../detect.js';
-import { updateSessionCapabilities } from '../../session-capabilities.js';
+import { clearSessionCapabilities, updateSessionCapabilities } from '../../session-capabilities.js';
+import { clearHarnessTurnSnapshot } from '../../turn-snapshot.js';
+import { createHarnessRetryRuntime } from '../../retry-runtime.js';
+import {
+  initPendingRetryStore, getPendingRetry, listPendingRetries,
+  putPendingRetry, deletePendingRetry,
+} from '../../pending-retry-store.js';
+import {
+  buildRecoveryUserMessage, createRecoveryToolGuard, inspectRecoveryTranscript,
+} from './recovery-transcript.js';
+import { getClaudeTranscriptMessages } from './transcript-messages.js';
 
 const ABORT_INTERRUPT_TIMEOUT_MS = 2_000;
 
@@ -129,11 +140,21 @@ export function createClaudeCodeTranslator(deps = {}) {
   const listAgents = typeof deps.listClaudeAgents === 'function'
     ? deps.listClaudeAgents
     : listClaudeAgents;
+  const recoveryContexts = new Map();
+  const retryStore = deps.retryStore || {
+    init: initPendingRetryStore,
+    get: getPendingRetry,
+    list: listPendingRetries,
+    put: putPendingRetry,
+    delete: deletePendingRetry,
+  };
+  if (!deps.retryRuntime) retryStore.init();
+  let retryRuntime = deps.retryRuntime;
 
   /**
    * @param {object} body
    */
-  const prompt = async (body) => {
+  const startPreparedTurn = async (body, internal = null) => {
     const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : '';
     const directory = typeof body?.directory === 'string' ? body.directory : '';
     let text = typeof body?.text === 'string' ? body.text : '';
@@ -175,7 +196,7 @@ export function createClaudeCodeTranslator(deps = {}) {
       throw error;
     }
 
-    if (activeTurns.has(sessionId)) {
+    if (activeTurns.has(sessionId) || (!internal && retryRuntime?.hasPending(sessionId))) {
       const error = new Error('A Claude Code turn is already active for this session');
       error.code = 'TURN_IN_PROGRESS';
       error.statusCode = 409;
@@ -206,7 +227,9 @@ export function createClaudeCodeTranslator(deps = {}) {
     }
 
     const capabilities = getHarnessCapabilities('claude-code');
-    const { binding } = bindSession({
+    const { binding } = internal?.binding
+      ? { binding: internal.binding }
+      : bindSession({
       sessionId,
       harnessId: 'claude-code',
       directory,
@@ -234,7 +257,7 @@ export function createClaudeCodeTranslator(deps = {}) {
       ? body.assistantMessageId
       : createOpenCodeId('msg');
 
-    const ctx = createClaudeMapperContext({
+    const ctx = internal?.ctx || createClaudeMapperContext({
       sessionId,
       directory,
       userMessageId,
@@ -243,14 +266,14 @@ export function createClaudeCodeTranslator(deps = {}) {
     });
 
     const broadcast = getBroadcast();
-    const files = Array.isArray(body?.files) ? body.files : [];
+    const files = internal ? [] : (Array.isArray(body?.files) ? body.files : []);
 
     // Validate attachments before anything optimistic is broadcast. Emitting the
     // user message first would leave a sent-and-busy turn on screen that never
     // gets an assistant reply when attachment mapping rejects the payload.
     let promptInput;
     try {
-      promptInput = buildClaudePrompt(text, files, { cwd: directory });
+      promptInput = internal?.promptInput || buildClaudePrompt(text, files, { cwd: directory });
     } catch (error) {
       setBindingError(sessionId, {
         code: error.code || 'ATTACHMENT_ERROR',
@@ -259,7 +282,7 @@ export function createClaudeCodeTranslator(deps = {}) {
       throw error;
     }
 
-    emitHarnessEvents(broadcast, directory, buildUserMessageEvents(ctx, text, files));
+    if (!internal) emitHarnessEvents(broadcast, directory, buildUserMessageEvents(ctx, text, files));
 
     const agentsMode = body?.agentsMode === 'claude' || body?.agentsMode === 'opencode'
       ? body.agentsMode
@@ -423,6 +446,9 @@ export function createClaudeCodeTranslator(deps = {}) {
         settingSources: ['user', 'project', 'local'],
         forwardSubagentText: true,
         agentProgressSummaries: true,
+        ...(internal?.toolGuard ? {
+          hooks: { PreToolUse: [{ hooks: [internal.toolGuard] }] },
+        } : {}),
       });
     } catch (error) {
       // The turn never started; release anything the MCP bridge already began.
@@ -431,20 +457,27 @@ export function createClaudeCodeTranslator(deps = {}) {
       if (!wrapped.code) wrapped.code = 'CLAUDE_SDK_UNAVAILABLE';
       if (!wrapped.statusCode) wrapped.statusCode = 503;
       setBindingError(sessionId, { code: wrapped.code, message: wrapped.message });
-      emitHarnessEvents(broadcast, directory, [{
-        type: 'session.status',
-        properties: { sessionID: sessionId, status: { type: 'idle' } },
-      }]);
+      if (!internal) {
+        emitHarnessEvents(broadcast, directory, [{
+          type: 'session.status',
+          properties: { sessionID: sessionId, status: { type: 'idle' } },
+        }]);
+      }
       throw wrapped;
     }
 
-    const activeTurn = { handle, ctx, aborting: false, idleEmitted: false, turnAbort };
+    const activeTurn = { handle, ctx, aborting: false, idleEmitted: false, turnAbort, recovery: Boolean(internal) };
     activeTurns.set(sessionId, activeTurn);
     const emitEvents = (events) => {
-      if (events.some((event) => isIdleStatusEvent(event, sessionId))) {
+      // Recovery lifecycle is committed by the durable runtime. In particular,
+      // it must delete/update the journal before publishing idle/retry.
+      const ownedEvents = internal
+        ? events.filter((event) => !isIdleStatusEvent(event, sessionId))
+        : events;
+      if (ownedEvents.some((event) => isIdleStatusEvent(event, sessionId))) {
         activeTurn.idleEmitted = true;
       }
-      emitHarnessEvents(getBroadcast(), directory, events);
+      emitHarnessEvents(getBroadcast(), directory, ownedEvents);
     };
     const emitIdleOnce = () => {
       if (activeTurn.idleEmitted) return;
@@ -456,10 +489,12 @@ export function createClaudeCodeTranslator(deps = {}) {
     };
 
     // Stream in background; HTTP returns accepted immediately.
-    void (async () => {
+    const completion = (async () => {
+      let outcome = 'success';
+      let terminalResult;
       try {
         for await (const message of handle.stream) {
-          const { events, foreignSessionId, capabilities } = mapClaudeMessageToEvents(ctx, message);
+          const { events, foreignSessionId, capabilities, terminal } = mapClaudeMessageToEvents(ctx, message);
           if (foreignSessionId) {
             setForeignSessionId(sessionId, foreignSessionId);
           }
@@ -467,8 +502,27 @@ export function createClaudeCodeTranslator(deps = {}) {
             updateSessionCapabilities(sessionId, capabilities);
           }
           emitEvents(events);
+          if (terminal?.type === 'rate-limit') terminalResult = terminal;
         }
-        updateSessionBinding(sessionId, { lastError: undefined });
+        if (terminalResult) {
+          outcome = 'rate-limit';
+          if (!internal) {
+            try {
+              retryRuntime.schedule({
+                sessionId, directory, foreignSessionId: getSessionBinding(sessionId)?.foreignSessionId,
+                target: binding.target, agentsMode, agentName: requestedAgentName || undefined,
+                claudeAgentName: claudeAgentName || undefined, assistantUuid: terminalResult.assistantUuid,
+                expectedTailUuid: terminalResult.assistantUuid, rateLimitType: terminalResult.rateLimitType,
+                resetAt: terminalResult.resetAt, attempt: 1,
+              });
+              recoveryContexts.set(sessionId, ctx);
+            } catch (error) {
+              outcome = 'error';
+              setBindingError(sessionId, { code: error?.code || 'RETRY_STORE_UNAVAILABLE', message: error?.message || 'Retry persistence failed' });
+              emitEvents([{ type: 'session.error', properties: { sessionID: sessionId } }]);
+            }
+          }
+        } else updateSessionBinding(sessionId, { lastError: undefined });
       } catch (error) {
         const active = activeTurns.get(sessionId);
         if (active?.aborting || activeTurn.aborting) {
@@ -496,6 +550,7 @@ export function createClaudeCodeTranslator(deps = {}) {
             properties: { sessionID: sessionId },
           },
         ]);
+        outcome = 'error';
       } finally {
         try {
           rejectPendingPermissions(sessionId);
@@ -503,7 +558,7 @@ export function createClaudeCodeTranslator(deps = {}) {
         } catch {
           // cleanup must still close the turn and clear busy status
         }
-        emitIdleOnce();
+        if (!internal && (outcome !== 'rate-limit' || activeTurn.aborting)) emitIdleOnce();
         try {
           handle.close();
         } catch {
@@ -513,7 +568,11 @@ export function createClaudeCodeTranslator(deps = {}) {
         turnAbort.abort();
         activeTurns.delete(sessionId);
       }
+      return { outcome, terminal: terminalResult };
     })();
+    activeTurn.completion = completion;
+
+    if (internal) return completion;
 
     return {
       ok: true,
@@ -525,6 +584,62 @@ export function createClaudeCodeTranslator(deps = {}) {
       status: 'started',
     };
   };
+
+  const prompt = async (body) => startPreparedTurn(body);
+
+  if (!retryRuntime) {
+    retryRuntime = createHarnessRetryRuntime({
+      store: retryStore,
+      now: Date.now,
+      setTimer: (fn, ms) => setTimeout(fn, ms),
+      clearTimer: clearTimeout,
+      inspectTranscript: deps.inspectTranscript || (async (params) => inspectRecoveryTranscript(params)),
+      emitStatus: (sessionId, directory, status) => emitHarnessEvents(getBroadcast(), directory, [{
+        type: 'session.status', properties: { sessionID: sessionId, status },
+      }]),
+      sessionExists: deps.sessionExists || (async () => 'unknown'),
+      launchRecovery: async ({ record, toolGuard }) => {
+        const binding = getSessionBinding(record.sessionId) || record;
+        let ctx = recoveryContexts.get(record.sessionId);
+        if (!ctx) {
+          const replay = getClaudeTranscriptMessages(record.sessionId);
+          const lastUser = replay.findLast?.((entry) => entry?.info?.role === 'user');
+          const lastAssistant = replay.findLast?.((entry) => entry?.info?.role === 'assistant');
+          ctx = createClaudeMapperContext({
+            sessionId: record.sessionId,
+            directory: record.directory,
+            userMessageId: lastUser?.info?.id || createOpenCodeId('msg'),
+            assistantMessageId: lastAssistant?.info?.id || createOpenCodeId('msg'),
+            modelRef: record.target?.modelRef || 'sonnet',
+          });
+        }
+        // Reuse identity and accumulated visible parts in-process, but clear the
+        // previous terminal correlation so a successful continuation cannot be
+        // mistaken for the same rate limit again.
+        ctx.parentRateLimitError = null;
+        ctx.latestRateLimitInfo = null;
+        ctx.sdkRetryActive = false;
+        const message = buildRecoveryUserMessage(record.launchUuid);
+        const promptInput = (async function* recoveryInput() { yield message; })();
+        try {
+          return await startPreparedTurn({
+            sessionId: record.sessionId, directory: record.directory,
+            target: record.target, agentsMode: record.agentsMode,
+            agent: record.agentName, claudeAgent: record.claudeAgentName,
+          }, {
+            binding: { ...binding, foreignSessionId: record.foreignSessionId, target: record.target },
+            ctx, promptInput,
+            toolGuard: Array.isArray(toolGuard) ? createRecoveryToolGuard(toolGuard) : toolGuard,
+          });
+        } catch (error) {
+          emitHarnessEvents(getBroadcast(), record.directory, [{
+            type: 'session.error', properties: { sessionID: record.sessionId },
+          }]);
+          throw error;
+        }
+      },
+    });
+  }
 
   /**
    * @param {{ sessionId: string }} body
@@ -540,9 +655,29 @@ export function createClaudeCodeTranslator(deps = {}) {
 
     const active = activeTurns.get(sessionId);
     const binding = getSessionBinding(sessionId);
+    if (!active && retryRuntime?.hasPending(sessionId)) {
+      const pending = getSessionBinding(sessionId) || getPendingRetry(sessionId);
+      const result = await retryRuntime.cancel(sessionId);
+      if (result?.aborted && pending?.directory) {
+        const abortedAssistantId = createOpenCodeId('msg');
+        emitHarnessEvents(getBroadcast(), pending.directory, [{
+          type: 'message.updated', properties: { info: {
+            id: abortedAssistantId, sessionID: sessionId, role: 'assistant',
+            time: { created: Date.now(), completed: Date.now() }, providerID: 'claude-code',
+            modelID: pending.target?.modelRef || 'sonnet', agent: 'build', mode: 'build',
+            error: { name: 'MessageAbortedError', data: { message: 'Aborted by user' } },
+          } },
+        }]);
+      }
+      return { ok: true, sessionId, aborted: Boolean(result?.aborted) };
+    }
     if (!active) {
       return { ok: true, sessionId, aborted: false, reason: 'no-active-turn' };
     }
+
+    const canceledDurableRecovery = retryRuntime?.hasPending(sessionId)
+      ? Boolean((await retryRuntime.cancel(sessionId))?.aborted)
+      : false;
 
     active.aborting = true;
     active.idleEmitted = true;
@@ -554,7 +689,8 @@ export function createClaudeCodeTranslator(deps = {}) {
       // abort cleanup must still close and remove the active turn
     }
     try {
-      rejectPendingForSession(sessionId);
+      rejectPendingPermissions(sessionId);
+      rejectPendingQuestions(sessionId);
     } catch {
       // abort cleanup must still close and remove the active turn
     }
@@ -598,10 +734,10 @@ export function createClaudeCodeTranslator(deps = {}) {
             },
           },
         },
-        {
+        ...(canceledDurableRecovery ? [] : [{
           type: 'session.status',
           properties: { sessionID: sessionId, status: { type: 'idle' } },
-        },
+        }]),
       ]);
     }
 
@@ -619,11 +755,51 @@ export function createClaudeCodeTranslator(deps = {}) {
    */
   const replyQuestion = async (body) => replyPendingQuestion(body);
 
+  const stop = async () => {
+    await retryRuntime?.stop();
+    await Promise.all(Array.from(activeTurns.values(), async (active) => {
+      active.aborting = true;
+      active.turnAbort?.abort();
+      await interruptWithTimeout(active.handle);
+      active.handle.close?.();
+    }));
+    activeTurns.clear();
+  };
+
+  const deleteSession = async (sessionId) => {
+    if (typeof sessionId !== 'string' || !sessionId) return null;
+    const active = activeTurns.get(sessionId);
+    if (active) {
+      active.aborting = true;
+      active.idleEmitted = true;
+      active.turnAbort?.abort();
+      try { await interruptWithTimeout(active.handle); } catch {}
+      try { active.handle.close?.(); } catch {}
+      activeTurns.delete(sessionId);
+    }
+    try {
+      rejectPendingPermissions(sessionId);
+      rejectPendingQuestions(sessionId);
+      await retryRuntime?.deleteSession(sessionId, { authoritative: true });
+    } finally {
+      // A durable-journal failure must remain observable, but it must not leave
+      // unrelated in-memory state for an authoritatively deleted session.
+      clearSessionBinding(sessionId);
+      clearHarnessTurnSnapshot(sessionId);
+      clearSessionCapabilities(sessionId);
+    }
+    return { removed: true };
+  };
+
   return {
     prompt,
     abort,
     replyPermission,
     replyQuestion,
+    start: () => retryRuntime?.start(),
+    stop,
+    hasPendingRetry: (sessionId) => Boolean(retryRuntime?.hasPending(sessionId)),
+    deleteSession,
     /** @internal test helper */
     _activeTurns: activeTurns,
   };

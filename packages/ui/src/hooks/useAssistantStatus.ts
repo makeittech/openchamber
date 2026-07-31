@@ -28,7 +28,7 @@ interface WorkingSummary {
     abortActive: boolean;
     lastCompletionId: string | null;
     isComplete: boolean;
-    retryInfo: { attempt?: number; next?: number } | null;
+    retryInfo: { attempt?: number; message?: string; next?: number } | null;
 }
 
 interface FormingSummary {
@@ -352,6 +352,10 @@ export function useAssistantStatus(): AssistantStatusSnapshot {
         ? (currentSessionStatus as { type: 'retry'; next?: number }).next
         : undefined;
 
+    const sessionRetryMessage = currentSessionStatus?.type === 'retry'
+        ? (currentSessionStatus as { type: 'retry'; message?: string }).message
+        : undefined;
+
     const parsedStatus = React.useMemo<ParsedStatusResult>(() => {
         return decodeParsedStatus(lastAssistantStatusSignature);
     }, [lastAssistantStatusSignature]);
@@ -394,7 +398,7 @@ export function useAssistantStatus(): AssistantStatusSnapshot {
         }
 
         const retryInfo = isRetry
-            ? { attempt: sessionRetryAttempt, next: sessionRetryNext }
+            ? { attempt: sessionRetryAttempt, message: sessionRetryMessage, next: sessionRetryNext }
             : null;
 
         return {
@@ -418,7 +422,7 @@ export function useAssistantStatus(): AssistantStatusSnapshot {
             isComplete: false,
             retryInfo,
         };
-    }, [activityPhase, isPhaseWorking, parsedStatus, abortState, sessionRetryAttempt, sessionRetryNext]);
+    }, [activityPhase, isPhaseWorking, parsedStatus, abortState, sessionRetryAttempt, sessionRetryMessage, sessionRetryNext]);
 
     const forming = React.useMemo<FormingSummary>(() => {
         const isActive = isPhaseWorking && parsedStatus.activePartType === 'text';

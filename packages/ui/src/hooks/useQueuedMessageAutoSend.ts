@@ -133,7 +133,7 @@ const resolveSessionSendConfig = (sessionId: string) => {
 
 export const shouldDispatchQueuedAutoSend = (
   previousStatusType: SessionStatusType | undefined,
-  currentStatusType: SessionStatusType,
+  currentStatusType: SessionStatusType | undefined,
   hasQueuedItems: boolean = false,
 ): boolean => {
   if (hasQueuedItems && currentStatusType === 'idle') return true;
@@ -148,17 +148,17 @@ export const shouldDispatchQueuedAutoSend = (
 export const resolveQueuedSessionStatusType = (
   sessionId: string,
   directory: string,
-): SessionStatusType => {
+): SessionStatusType | undefined => {
   const globalEntry = useGlobalSessionStatusStore.getState().statusById.get(sessionId);
   if (globalEntry?.status?.type === 'busy' || globalEntry?.status?.type === 'retry') {
     return globalEntry.status.type;
   }
-  const directoryStatus = getDirectoryState(directory)?.session_status?.[sessionId]?.type;
+  const directoryState = getDirectoryState(directory);
+  const directoryStatus = directoryState?.session_status?.[sessionId]?.type;
   if (directoryStatus === 'busy' || directoryStatus === 'retry') {
     return directoryStatus;
   }
-  // Global absence means idle; directory absence also means idle.
-  return 'idle';
+  return directoryState?.sessionStatusLoaded === true ? 'idle' : undefined;
 };
 
 const isTurnInProgressError = (error: unknown): boolean => (
@@ -173,6 +173,7 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
   // some Claude turns land here first, while global absence alone does not
   // re-render when the directory flips busy→idle.
   const directorySessionStatus = useDirectorySync((state) => state.session_status);
+  const directorySessionStatusLoaded = useDirectorySync((state) => state.sessionStatusLoaded === true);
   const globalStatusById = useGlobalSessionStatusStore((state) => state.statusById);
 
   const inFlightSessionsRef = React.useRef<Set<string>>(new Set());
@@ -305,7 +306,9 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
         void dispatchSessionQueue(target, queue);
       }
 
-      nextStatusMap.set(sessionId, currentStatusType);
+      if (currentStatusType) {
+        nextStatusMap.set(sessionId, currentStatusType);
+      }
     });
 
     previousStatusRef.current = nextStatusMap;
@@ -313,5 +316,5 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
     return () => {
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [enabled, queuedMessages, directorySessionStatus, globalStatusById, autoReviewRuns, retryClock]);
+  }, [enabled, queuedMessages, directorySessionStatus, directorySessionStatusLoaded, globalStatusById, autoReviewRuns, retryClock]);
 }

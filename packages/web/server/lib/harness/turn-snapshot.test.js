@@ -82,6 +82,19 @@ describe('harness turn snapshot', () => {
     }, '/proj');
     expect(getHarnessTurnSnapshot('ses_b')?.aborted).toBe(true);
   });
+
+  it('stores the full retry payload and treats retry as working', () => {
+    applyHarnessEventToSnapshot({
+      type: 'session.status',
+      properties: { sessionID: 'ses_retry', status: {
+        type: 'retry', attempt: 3, message: 'claude-session-limit', next: 1234,
+      } },
+    }, '/proj');
+    expect(getHarnessTurnSnapshot('ses_retry')?.status).toEqual({
+      type: 'retry', attempt: 3, message: 'claude-session-limit', next: 1234,
+    });
+    expect(isHarnessSessionWorking('ses_retry')).toBe(true);
+  });
 });
 
 describe('snapshot eviction', () => {
@@ -104,6 +117,13 @@ describe('snapshot eviction', () => {
 
     expect(isHarnessSessionWorking('ses_busy')).toBe(true);
     expect(getHarnessTurnSnapshot('ses_busy')).not.toBeNull();
+  });
+
+  it('never evicts a retry session when over the limit', () => {
+    setStatus('ses_retry', 'retry');
+    for (let i = 0; i < 600; i += 1) setStatus(`ses_idle_${i}`, 'idle');
+    expect(isHarnessSessionWorking('ses_retry')).toBe(true);
+    expect(getHarnessTurnSnapshot('ses_retry')).not.toBeNull();
   });
 
   it('evicts the least recently updated idle session', () => {

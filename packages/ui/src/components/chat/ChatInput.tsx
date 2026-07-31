@@ -965,7 +965,9 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         const inputSnapshot = getCurrentInputSnapshot();
         if (!inputSnapshot.hasContent || !currentSessionId || !messageQueueTarget) return;
 
-        const drafts = inlineDraftTarget ? consumeDrafts(inlineDraftTarget) : [];
+        const drafts = inlineDraftTarget
+            ? useInlineCommentDraftStore.getState().getDrafts(inlineDraftTarget)
+            : [];
 
         let messageToQueue = inputSnapshot.message.replace(/^\n+|\n+$/g, '');
         if (drafts.length > 0) {
@@ -973,7 +975,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         }
         const attachmentsToQueue = sanitizeAttachmentsForSend(attachedFiles);
 
-        addToQueue(messageQueueTarget, {
+        const enqueueResult = addToQueue(messageQueueTarget, {
             content: messageToQueue,
             attachments: attachmentsToQueue.length > 0 ? attachmentsToQueue : undefined,
             sendConfig: currentProviderId && currentModelId ? {
@@ -983,6 +985,17 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 variant: currentVariant ?? undefined,
             } : undefined,
         });
+
+        if (!enqueueResult.ok) {
+            toast.error(t(enqueueResult.reason === 'queue-full'
+                ? 'chat.chatInput.toast.queueFull'
+                : 'chat.chatInput.toast.queueTargetsFull'));
+            return;
+        }
+
+        if (inlineDraftTarget && drafts.length > 0) {
+            consumeDrafts(inlineDraftTarget);
+        }
 
         // Clear input and attachments
         // Note: confirmedMentionsRef is NOT cleared here because queued messages
@@ -996,7 +1009,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         if (!isMobile) {
             composerRef.current?.focus();
         }
-    }, [getCurrentInputSnapshot, currentSessionId, messageQueueTarget, inlineDraftTarget, attachedFiles, sanitizeAttachmentsForSend, addToQueue, clearAttachedFiles, isMobile, consumeDrafts, currentProviderId, currentModelId, currentAgentName, currentVariant]);
+    }, [getCurrentInputSnapshot, currentSessionId, messageQueueTarget, inlineDraftTarget, attachedFiles, sanitizeAttachmentsForSend, addToQueue, clearAttachedFiles, isMobile, consumeDrafts, currentProviderId, currentModelId, currentAgentName, currentVariant, t]);
 
     const handleQueuedMessageEdit = React.useCallback((content: string) => {
         setMessage(content);
@@ -1391,7 +1404,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 // instead of surfacing TURN_IN_PROGRESS as a hard send failure.
                 if (error.code === 'TURN_IN_PROGRESS' && currentSessionId && messageQueueTarget) {
                     if (primaryText.trim() || allAttachments.length > 0) {
-                        addToQueue(messageQueueTarget, {
+                        const enqueueResult = addToQueue(messageQueueTarget, {
                             content: primaryText,
                             attachments: allAttachments.length > 0 ? allAttachments : undefined,
                             sendConfig: providerIdToSend && modelIdToSend ? {
@@ -1401,6 +1414,15 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                                 variant: variantToSend ?? undefined,
                             } : undefined,
                         });
+                        if (!enqueueResult.ok) {
+                            setMessage(primaryText);
+                            if (allAttachments.length > 0) {
+                                useInputStore.getState().setAttachedFiles(allAttachments);
+                            }
+                            toast.error(t(enqueueResult.reason === 'queue-full'
+                                ? 'chat.chatInput.toast.queueFull'
+                                : 'chat.chatInput.toast.queueTargetsFull'));
+                        }
                     }
                     return;
                 }

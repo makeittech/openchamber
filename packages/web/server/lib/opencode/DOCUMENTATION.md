@@ -289,6 +289,15 @@ Transport-triggered health checks share the periodic monitor's failure accountin
 - Returned API:
   - `gracefulShutdown(options?)`
 
+The composition root supplies the harness router as `harnessRuntime`. Graceful
+shutdown invokes/awaits its `stop()` before stopping OpenCode message transport,
+the managed OpenCode process, and the HTTP server. This preserves durable Claude
+session-limit waits while allowing active recovery children to be interrupted;
+the harness, not this module, owns journal state and recovery timers. Startup
+similarly starts harness recovery before the server exposes authoritative
+session status, and global `session.deleted` handling delegates cleanup to the
+harness owner.
+
 ## Public exports (server-startup-runtime.js)
 - `createServerStartupRuntime(dependencies)`: creates runtime for server bind/startup tunnel and process handler wiring.
 - Returned API:

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createGracefulShutdownRuntime } from './shutdown-runtime.js';
 
-const createRuntime = (server) => createGracefulShutdownRuntime({
+const createRuntime = (server, overrides = {}) => createGracefulShutdownRuntime({
   process: { exit: vi.fn() },
   shutdownTimeoutMs: 1000,
   getExitOnShutdown: () => false,
@@ -30,6 +30,7 @@ const createRuntime = (server) => createGracefulShutdownRuntime({
   getActiveTunnelController: () => null,
   setActiveTunnelController: vi.fn(),
   tunnelAuthController: { clearActiveTunnel: vi.fn() },
+  ...overrides,
 });
 
 describe('graceful shutdown runtime', () => {
@@ -50,9 +51,27 @@ describe('graceful shutdown runtime', () => {
     const runtime = createRuntime(server);
     await runtime.gracefulShutdown({ exitProcess: false });
 
-    await vi.advanceTimersByTimeAsync(1000);
+    vi.advanceTimersByTime(1000);
 
     expect(warnSpy).not.toHaveBeenCalledWith('Server close timeout reached, forcing shutdown');
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('awaits harness stop before message and OpenCode teardown', async () => {
+    const order = [];
+    let release;
+    const harnessStop = new Promise((resolve) => { release = resolve; });
+    const runtime = createRuntime(null, {
+      harnessRuntime: { stop: vi.fn(() => { order.push('harness'); return harnessStop; }) },
+      getMessageStreamRuntime: () => ({ close: vi.fn(() => order.push('message')) }),
+      shouldSkipOpenCodeStop: () => false,
+      getOpenCodeProcess: () => ({ close: vi.fn(() => order.push('opencode')) }),
+    });
+    const shutdown = runtime.gracefulShutdown({ exitProcess: false });
+    await Promise.resolve();
+    expect(order).toEqual(['harness']);
+    release();
+    await shutdown;
+    expect(order).toEqual(['harness', 'message', 'opencode']);
   });
 });

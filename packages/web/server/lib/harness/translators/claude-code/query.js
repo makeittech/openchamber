@@ -162,6 +162,11 @@ export function killProcessTree(pid, options = {}) {
  * @param {Array<'user' | 'project' | 'local'>} [params.settingSources]
  * @param {boolean} [params.forwardSubagentText]
  * @param {boolean} [params.agentProgressSummaries]
+ * @param {Partial<Record<import('@anthropic-ai/claude-agent-sdk').HookEvent, import('@anthropic-ai/claude-agent-sdk').HookCallbackMatcher[]>>} [params.hooks]
+ *   Server-internal SDK hook callbacks (e.g. the recovery `PreToolUse`
+ *   fingerprint guard). NOT sourced from any client body — only the translator
+ *   may supply it, so the public prompt route cannot inject hooks. Only
+ *   forwarded when non-empty.
  * @param {(mod: typeof import('@anthropic-ai/claude-agent-sdk')) => unknown} [params.queryImpl]
  * @returns {Promise<ClaudeQueryHandle>}
  */
@@ -271,6 +276,18 @@ export async function startClaudeQuery(params) {
   } else if (params.skills === undefined) {
     // Enable every discovered skill so /skill and Skill tool work on Claude sessions.
     options.skills = 'all';
+  }
+  // Internal SDK hook callbacks (e.g. the recovery PreToolUse fingerprint
+  // guard). This parameter is server-internal only: the public prompt route
+  // never supplies it, and `startClaudeQuery` reads it solely from the
+  // top-level `params.hooks` — never from a nested client body — so a client
+  // cannot inject hooks through the prompt route. Only forward when non-empty
+  // to avoid an accidental empty object overriding SDK defaults.
+  if (params.hooks && typeof params.hooks === 'object' && !Array.isArray(params.hooks)) {
+    const hookEvents = Object.keys(params.hooks);
+    if (hookEvents.length > 0) {
+      options.hooks = params.hooks;
+    }
   }
 
   let result;

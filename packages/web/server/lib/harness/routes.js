@@ -13,7 +13,7 @@ import {
   getOrCreateSessionCapabilities,
 } from './session-capabilities.js';
 import { createHarnessRouter } from './router.js';
-import { mergeHarnessBusyIntoSessionStatuses } from './session-status.js';
+import { mergeHarnessActiveIntoSessionStatuses } from './session-status.js';
 import { mergeHarnessMessagesIntoSessionMessages } from './session-messages.js';
 import {
   createOpenCodeSessionFactory,
@@ -129,7 +129,7 @@ export function registerHarnessRoutes(app, deps = {}) {
         const directory = typeof req.query?.directory === 'string' ? req.query.directory : '';
         const statuses = await getFromOpenCode('/session/status', { directory });
         if (statuses === null) return next();
-        res.json(mergeHarnessBusyIntoSessionStatuses(statuses, directory));
+        res.json(mergeHarnessActiveIntoSessionStatuses(statuses, directory));
       } catch {
         next();
       }
@@ -293,6 +293,21 @@ export function registerHarnessRoutes(app, deps = {}) {
   app.post('/api/harness/abort', json, async (req, res) => {
     try {
       const result = await router.abort(req.body || {});
+      res.json(result);
+    } catch (error) {
+      sendError(res, error);
+    }
+  });
+
+  app.post('/api/harness/permission/reply', json, async (req, res) => {
+    try {
+      if (typeof router.replyPermission !== 'function') {
+        const error = new Error('Permission reply is unavailable');
+        error.code = 'PERMISSION_UNAVAILABLE';
+        error.statusCode = 503;
+        throw error;
+      }
+      const result = await router.replyPermission(req.body || {});
       res.json(result);
     } catch (error) {
       sendError(res, error);

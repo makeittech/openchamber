@@ -34,6 +34,8 @@ Parent specs:
 | OpenCode command → Claude prompt text | `translators/claude-code/opencode-command.js` |
 | Claude local project/chat import | `translators/claude-code/import-from-disk.js` |
 | Claude transcript JSONL → message replay | `translators/claude-code/transcript-messages.js` |
+| Claude session-limit recovery analyzer + projection | `translators/claude-code/recovery-transcript.js` |
+| Durable Claude session-limit retry journal / policy / scheduler | `pending-retry-store.js`, `retry-policy.js`, `retry-runtime.js` |
 | OpenCode stub (SDK path stays in UI) | `translators/opencode/index.js` |
 | Claude → canonical events | `events/from-claude.js` |
 | Broadcaster wrapper | `events/emit.js` |
@@ -184,15 +186,20 @@ Claude JSONL into OpenCode-shaped `{ info, parts }` messages (text, reasoning
 from thinking blocks, tool parts settled by matching `tool_result`; tools left
 running at transcript end become `error`). Harness-injected
 `<task-notification>` user records (orphaned background shell tasks surfaced
-on resume) are model context, not user turns, and are skipped. Ids are
-deterministic and ascending
-from record timestamps, and results are cached per transcript mtime+size.
-`session-messages.js` merges, in ascending precedence: transcript replay →
-OpenCode shell messages → live turn snapshot. The live snapshot wins the tail
-turn it already covers (role+text match within a 15-minute window) so a turn
-flushed to disk mid-stream never renders twice. Replay is read-only — nothing
-is written to OpenCode storage — and a missing/malformed transcript degrades
-to the previous behavior instead of failing the route.
+on resume) are model context, not user turns, and are skipped. Synthetic
+recovery continuation records injected by the Claude session-limit recovery
+flow (`<openchamber-continuation …>` prefix, `isSynthetic: true`) are also
+skipped, but unlike task-notifications they do **not** close the current
+turn — the post-recovery assistant stays grouped under the original real
+user turn (see *Claude session-limit recovery*). Ids are deterministic and
+ascending from record timestamps, and results are cached per transcript
+mtime+size. `session-messages.js` merges, in ascending precedence:
+transcript replay → OpenCode shell messages → live turn snapshot. The live
+snapshot wins the tail turn it already covers (role+text match within a
+15-minute window) so a turn flushed to disk mid-stream never renders twice.
+Replay is read-only — nothing is written to OpenCode storage — and a
+missing/malformed transcript degrades to the previous behavior instead of
+failing the route.
 
 Import ids are client-supplied, so a well-formed UUID is not enough: each
 `foreignSessionId` must match a `<uuid>.jsonl` transcript actually present
@@ -580,10 +587,13 @@ Invariants that are easy to break here:
 ## Follow-ups while busy
 
 Claude rejects a second `prompt` for the same session with HTTP `409`
-`TURN_IN_PROGRESS` (no second Claude process). The UI must not steer into an
-active Claude turn. Follow-ups use the OpenChamber message queue (reorder +
-idle auto-send). Abort interrupts the active turn and always clears busy via
-`session.status: idle`.
+`TURN_IN_PROGRESS` (no second Claude process), including while a durable Claude
+session-limit retry exists. The UI must not steer into an active Claude turn.
+Follow-ups use the OpenChamber message queue (reorder + idle auto-send). That
+queue is durable only in the same browser/Desktop profile; it is not a server
+queue and does not synchronize across clients or devices. Abort/Stop interrupts
+an active turn or cancels a waiting recovery and clears activity via
+`session.status: idle` without deleting queued follow-ups.
 
 Harness events stamp `properties.directory` and SSE fan-out preserves the
 directory envelope so UI directory stores receive busy/idle (Stop + queue
@@ -621,7 +631,12 @@ Dependency: `@anthropic-ai/claude-agent-sdk` in `packages/web/package.json`.
 `query.js`:
 
 - Lazy-imports the SDK; caches load failures.
-- `startClaudeQuery({ prompt, cwd, model, resume, permissionMode, effort, systemPrompt, canUseTool, mcpServers, allowedTools, skills, settingSources, forwardSubagentText, agentProgressSummaries, env })`
+- `startClaudeQuery({ prompt, cwd, model, resume, permissionMode, effort, systemPrompt, canUseTool, mcpServers, allowedTools, skills, settingSources, forwardSubagentText, agentProgressSummaries, env, hooks })`
+  - `hooks` is **server-internal only** (`Partial<Record<HookEvent, HookCallbackMatcher[]>>`):
+    the translator forwards SDK hook callbacks such as the recovery
+    `PreToolUse` fingerprint guard. The public prompt route never supplies it
+    and the wrapper reads it only from the top-level `params.hooks`, never from a
+    client body, so a client cannot inject hooks. Only forwarded when non-empty.
 - Resolves `pathToClaudeCodeExecutable` via `executable-path.js` (PATH / env /
   `app.asar.unpacked` native package) so Electron does not spawn a path inside
   `app.asar` (that fails with `ENOTDIR`).
@@ -702,6 +717,141 @@ optimistic reconcile.
 - Reverse handoff billing notice (Claude → OpenCode)
 - MCP settings editor for Claude
 
+## Claude session-limit auto-resume
+
+Owning modules: `events/from-claude.js`, `pending-retry-store.js`,
+`retry-policy.js`, `retry-runtime.js`, and
+`translators/claude-code/recovery-transcript.js` / `index.js`.
+
+Scheduling never parses assistant prose. It requires the parent assistant's
+structured `error: 'rate_limit'` to correlate with a rejected structured
+`rate_limit_event`; English error text, warning/allowed metadata, and nested
+assistant failures are non-authoritative. `system/api_retry` is different: the
+SDK already owns that short retry. OpenChamber projects its `retry` status and
+the next SDK activity restores `busy`, but does not create a journal obligation
+or launch a competing request.
+
+The visible hard-quota lifecycle is `busy -> retry -> busy -> idle`; another
+limit produces `busy -> retry -> busy -> retry`. There is no idle edge while a
+persisted wait exists. The journal write precedes the first retry event, and a
+failed initial write makes the translator use normal hard-error/idle handling
+instead of claiming auto-resume. Retry snapshots and `/api/session/status`
+overlay both preserve the complete retry payload (`attempt`, stable `message`
+reason, and optional absolute-millisecond `next`).
+
+### Durable retry journal
+
+File: `$OPENCHAMBER_DATA_DIR/harness-pending-retries.json` (fallback
+`~/.config/openchamber/harness-pending-retries.json`). It is distinct from the
+debounced binding store.
+
+| Rule | Behavior |
+| --- | --- |
+| Format | Versioned JSON `{ version: 1, retries: [...] }`; states are `observed`, `waiting`, `launching`, or `blocked` |
+| Contents | Allowlisted session/directory/foreign-session identity, sanitized Claude target and agent selection, generation/attempt, rate-limit/reset/deadline metadata, transcript-tail/launch UUIDs, timestamps, and blocked reason |
+| Excluded | Prompts, attachments, tool output, queue bodies, credentials, tokens, and environment values |
+| Bounds | At most 500 records and 1 MiB; strings and numeric fields are clamped/validated |
+| Security | Parent directory `0700`, journal/temp files `0600`; ownership/mode checked on POSIX; no-follow opens where supported |
+| Durability | Synchronous process-coordinated lock, complete temp write + fsync + rename + parent-directory sync; memory publishes only after persistence |
+| Failure | Malformed, unsupported, oversized, insecure, contended, or failed I/O raises `RETRY_STORE_UNAVAILABLE`, never authoritative empty; failed critical writes retain/restore the prior snapshot where possible |
+
+Reset input accepts epoch seconds, epoch milliseconds, and the SDK's small
+relative-millisecond values, normalizing all of them to absolute epoch
+milliseconds. A reset more than eight days (`691_200_000` ms) in the future is
+rejected. Valid future resets receive five seconds of grace plus stable
+per-session jitter; past resets wait at least one second. Missing/invalid resets
+fall back to five-minute exponential delays capped at one hour. Timers use one
+earliest-deadline scheduler, chunk at `2_147_483_647` ms, and re-read the wall
+clock after wake. The policy contains a seven-day stale-unknown blocked result,
+but the integrated runtime does not currently persist/pass its unknown-reset
+age marker, so that age-based transition is not reached; transcript safety can
+still put a record in `blocked`. Blocked status has no invented deadline and
+remains stoppable.
+
+When a Claude Agent SDK turn is rejected mid-stream by a session-limit rate
+limit, the parent assistant message that hit the limit is what the user sees
+as the unfinished turn. Recovery resumes the same `foreignSessionId` so the
+SDK rebuilds model context from the durable transcript on disk. Resuming is
+only structurally safe when every `tool_use` that rate-limited assistant
+issued already has a matching `tool_result` on disk — otherwise the replayed
+context would hand the model a call whose effects it never observed settle.
+
+The transcript module implements analysis + projection + replay hiding. The
+scheduler persists `waiting -> launching` before invoking Claude, uses a maximum
+of two concurrent launches, deletes the obligation before final idle, and moves
+another confirmed limit back to waiting with an incremented attempt.
+
+API:
+
+- `buildRecoveryUserMessage(launchUuid)` — the synthetic SDK `user` message
+  that prompts the model to continue. `priority: 'now'`, `isSynthetic: true`,
+  and a single text block prefixed with
+  `<openchamber-continuation version="1" reason="claude-session-limit">`.
+- `fingerprintToolCall(toolName, input)` — canonical JSON `{ tool, input }`
+  fingerprint. Stable across object-key order; preserves array order and
+  value types so two structurally-equal tool calls produce the same string.
+- `inspectRecoveryTranscript({ foreignSessionId, expectedTailUuid, launchUuid })`
+  — reads the bounded transcript through the same `findClaudeTranscriptPath`
+  the replay parser uses, anchors the analysis at the last real (non-sidechain
+  / non-meta / non-internal) user turn, pairs every `tool_use` with a matching
+  `tool_result`, returns `{ safe: false, reason: 'unsettled-tool' }` if any
+  call is unmatched, otherwise
+  `{ safe: true, fingerprints: [{ toolName, fingerprint }], tailPresent: boolean }`
+  where `tailPresent` reports whether the caller-correlated rate-limit
+  assistant `uuid` appears in the window. Both success and error
+  `tool_result`s count as settled; missing / empty / oversize / unreadable
+  transcripts fail closed with `{ safe: false, reason: 'transcript-unreadable' }`.
+- `createRecoveryToolGuard(fingerprints)` — returns an SDK `PreToolUse` hook
+  callback that denies an exact pre-limit fingerprint replay
+  (`hookSpecificOutput.permissionDecision: 'deny'`) and allows everything
+  else (`{ continue: true }`). Accepts either `{ toolName, fingerprint }`
+  shapes or bare fingerprint strings.
+- `isRecoveryContinuationRecord(record)` — true only when the record is
+  `isSynthetic === true` AND the user text content exactly starts with the
+  marker. A real user message that merely starts with similar text but is
+  not synthetic stays visible — only both conditions trigger hiding.
+
+Invariants:
+
+- This module writes nothing — it is read-only with respect to Claude JSONL,
+  the durable binding store, and OpenCode message storage.
+- The analysis window never includes sidechain / meta / task-notification /
+  synthetic recovery continuation records; an unmatched tool from a prior,
+  pre-window turn is irrelevant to recovering the current rate-limited tail
+  and is not reported as unsafe.
+- The synthetic continuation this feature injects is invisible on the replay
+  surface (hidden by `transcript-messages.js`) and does not close the active
+  turn so the post-recovery assistant inherits the original user message as
+  its `parentID`.
+- The exact-fingerprint guard prevents literal duplicate tool calls, including
+  calls whose previous result was an error, but cannot guarantee semantic
+  exactly-once effects when Claude expresses an equivalent operation
+  differently. There is no transactional/idempotency boundary across arbitrary
+  shell, MCP, filesystem, or network tools.
+
+### Recovery lifecycle ownership and current limitations
+
+- Stop works while waiting or launching: harness ownership removes the journal
+  record, clears scheduling, aborts a launch, rejects pending permission/question
+  callbacks, emits the abort marker/idle through the translator, and leaves the
+  client queue intact. Generation checks make stale finalizers inert.
+- Authoritative session deletion delegates to harness ownership and removes the
+  retry, active recovery, binding, turn snapshot, capabilities, and callbacks
+  without emitting into the deleted session. Startup orphan checks preserve a
+  record on transient lookup failure and remove only a definitive deletion.
+- Server startup starts the harness recovery runtime before authoritative status
+  publication and reconstructs retry snapshots. Waiting records resume
+  scheduling. The current implementation converts an unresolved persisted
+  `launching` record back to `waiting` unless inspection reports a safe tail as
+  present (then it removes the record); it does not implement the design's
+  fail-closed `blocked` classification for every ambiguous crash state.
+- Graceful web shutdown stops the harness before OpenCode/message transport and
+  preserves waiting records. A launching record is synchronously rewritten to
+  waiting before its controller is aborted. The current runtime's `stop()` is
+  synchronous and persistence failures in that rewrite are swallowed, so
+  shutdown awaiting guarantees ordering, not proof that every failed write was
+  made restart-safe.
+
 ## Testing
 
 ```bash
@@ -715,6 +865,7 @@ bun test packages/web/server/lib/harness/translators/claude-code/attachments.tes
 bun test packages/web/server/lib/harness/translators/claude-code/permissions.test.js
 bun test packages/web/server/lib/harness/translators/claude-code/questions.test.js
 bun test packages/web/server/lib/harness/translators/claude-code/transcript-messages.test.js
+bun test packages/web/server/lib/harness/translators/claude-code/recovery-transcript.test.js
 bun test packages/web/server/lib/harness/translators/claude-code/opencode-command.test.js
 bun test packages/web/server/lib/harness/translators/claude-code/opencode-agents.test.js
 bun test packages/web/server/lib/harness/translators/claude-code/claude-agents.test.js

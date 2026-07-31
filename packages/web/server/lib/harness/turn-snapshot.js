@@ -6,7 +6,7 @@
 
 import { isClaudeSubagentSessionId } from './events/from-claude.js';
 
-/** @typedef {'busy' | 'idle'} HarnessSessionStatus */
+/** @typedef {{ type: 'busy' | 'idle' } | { type: 'retry', attempt: number, message: string, next?: number }} HarnessSessionStatus */
 
 /**
  * @typedef {object} HarnessTurnSnapshot
@@ -36,7 +36,7 @@ function evictOldestIdle() {
   /** @type {HarnessTurnSnapshot | null} */
   let oldest = null;
   for (const snap of snapshots.values()) {
-    if (snap.status === 'busy') continue;
+    if (snap.status.type !== 'idle') continue;
     if (!oldest || snap.updatedAt < oldest.updatedAt) oldest = snap;
   }
   if (oldest) snapshots.delete(oldest.sessionId);
@@ -57,7 +57,7 @@ function ensureSnapshot(sessionId, directory = '') {
     snap = {
       sessionId,
       directory: typeof directory === 'string' ? directory : '',
-      status: 'idle',
+      status: { type: 'idle' },
       updatedAt: Date.now(),
       lastUser: null,
       lastAssistant: null,
@@ -83,10 +83,17 @@ export function applyHarnessEventToSnapshot(event, directory = '') {
     const sessionId = typeof event.properties?.sessionID === 'string' ? event.properties.sessionID : '';
     if (!sessionId) return;
     const statusType = event.properties?.status?.type;
-    if (statusType !== 'busy' && statusType !== 'idle') return;
+    if (statusType !== 'busy' && statusType !== 'idle' && statusType !== 'retry') return;
     const snap = ensureSnapshot(sessionId, directory);
     if (!snap) return;
-    snap.status = statusType;
+    snap.status = statusType === 'retry'
+      ? {
+        type: 'retry',
+        attempt: Number.isFinite(event.properties.status.attempt) ? event.properties.status.attempt : 1,
+        message: typeof event.properties.status.message === 'string' ? event.properties.status.message : '',
+        ...(Number.isFinite(event.properties.status.next) ? { next: event.properties.status.next } : {}),
+      }
+      : { type: statusType };
     snap.updatedAt = Date.now();
     if (statusType === 'busy') snap.aborted = false;
     return;
@@ -179,7 +186,7 @@ export function getHarnessTurnSnapshot(sessionId) {
  */
 export function isHarnessSessionWorking(sessionId) {
   const snap = getHarnessTurnSnapshot(sessionId);
-  return snap?.status === 'busy';
+  return snap?.status.type === 'busy' || snap?.status.type === 'retry';
 }
 
 /**
@@ -189,16 +196,16 @@ export function isHarnessSessionWorking(sessionId) {
  * @param {string} [directory]
  * @returns {Record<string, { type: 'busy' }>}
  */
-export function listHarnessBusyStatuses(directory) {
+export function listHarnessActiveStatuses(directory) {
   const filter = typeof directory === 'string' && directory.trim()
     ? directory.trim()
     : '';
-  /** @type {Record<string, { type: 'busy' }>} */
+  /** @type {Record<string, HarnessSessionStatus>} */
   const result = {};
   for (const snap of snapshots.values()) {
-    if (snap.status !== 'busy') continue;
+    if (snap.status.type === 'idle') continue;
     if (filter && snap.directory && snap.directory !== filter) continue;
-    result[snap.sessionId] = { type: 'busy' };
+    result[snap.sessionId] = { ...snap.status };
   }
   return result;
 }
@@ -215,6 +222,10 @@ export function getHarnessRecentMessages(sessionId) {
   if (snap.lastUser) messages.push(snap.lastUser);
   if (snap.lastAssistant) messages.push(snap.lastAssistant);
   return messages;
+}
+
+export function clearHarnessTurnSnapshot(sessionId) {
+  if (typeof sessionId === 'string' && sessionId) snapshots.delete(sessionId);
 }
 
 /** Test helper */

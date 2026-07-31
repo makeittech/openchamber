@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 import {
   applyHarnessEventToSnapshot,
-  listHarnessBusyStatuses,
+  listHarnessActiveStatuses,
   resetHarnessTurnSnapshots,
 } from './turn-snapshot.js';
-import { mergeHarnessBusyIntoSessionStatuses } from './session-status.js';
+import { mergeHarnessActiveIntoSessionStatuses } from './session-status.js';
 import { withHarnessEventDirectory } from './events/emit.js';
 
 describe('withHarnessEventDirectory', () => {
@@ -33,7 +33,7 @@ describe('withHarnessEventDirectory', () => {
   });
 });
 
-describe('mergeHarnessBusyIntoSessionStatuses', () => {
+describe('mergeHarnessActiveIntoSessionStatuses', () => {
   beforeEach(() => {
     resetHarnessTurnSnapshots();
   });
@@ -44,7 +44,7 @@ describe('mergeHarnessBusyIntoSessionStatuses', () => {
       properties: { sessionID: 'ses_claude', status: { type: 'busy' } },
     }, '/repo');
 
-    const merged = mergeHarnessBusyIntoSessionStatuses(
+    const merged = mergeHarnessActiveIntoSessionStatuses(
       { ses_opencode: { type: 'busy' } },
       '/repo',
     );
@@ -52,7 +52,7 @@ describe('mergeHarnessBusyIntoSessionStatuses', () => {
       ses_opencode: { type: 'busy' },
       ses_claude: { type: 'busy' },
     });
-    expect(listHarnessBusyStatuses('/repo')).toEqual({
+    expect(listHarnessActiveStatuses('/repo')).toEqual({
       ses_claude: { type: 'busy' },
     });
   });
@@ -62,6 +62,22 @@ describe('mergeHarnessBusyIntoSessionStatuses', () => {
       type: 'session.status',
       properties: { sessionID: 'ses_claude', status: { type: 'idle' } },
     }, '/repo');
-    expect(mergeHarnessBusyIntoSessionStatuses({}, '/repo')).toEqual({});
+    expect(mergeHarnessActiveIntoSessionStatuses({}, '/repo')).toEqual({});
+  });
+
+  it('overlays full retry status over upstream idle and absence', () => {
+    applyHarnessEventToSnapshot({
+      type: 'session.status',
+      properties: { sessionID: 'ses_retry', status: {
+        type: 'retry', attempt: 2, message: 'claude-session-limit', next: 9000,
+      } },
+    }, '/repo');
+    expect(mergeHarnessActiveIntoSessionStatuses({
+      ses_retry: { type: 'idle', unrelated: true },
+      ses_other: { type: 'busy', since: 1 },
+    }, '/repo')).toEqual({
+      ses_retry: { type: 'retry', attempt: 2, message: 'claude-session-limit', next: 9000 },
+      ses_other: { type: 'busy', since: 1 },
+    });
   });
 });

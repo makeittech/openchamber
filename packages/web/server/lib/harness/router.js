@@ -78,5 +78,12 @@ export function createHarnessRouter(deps = {}) {
     return claude.replyQuestion(body);
   };
 
-  return { prompt, abort, replyPermission, replyQuestion, claude, opencode };
+  return {
+    prompt, abort, replyPermission, replyQuestion,
+    start: () => claude.start?.(),
+    stop: () => claude.stop?.(),
+    hasPendingRetry: (sessionId) => Boolean(claude.hasPendingRetry?.(sessionId)),
+    deleteSession: (sessionId) => claude.deleteSession?.(sessionId),
+    claude, opencode,
+  };
 }

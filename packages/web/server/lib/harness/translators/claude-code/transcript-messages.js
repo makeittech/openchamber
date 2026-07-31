@@ -16,10 +16,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getSessionBinding } from '../../session-bindings.js';
 import { resolveClaudeProjectsRoot } from './import-from-disk.js';
+import { isRecoveryContinuationRecord } from './recovery-transcript.js';
 
 const JSONL_EXT = '.jsonl';
 const MAX_TOOL_OUTPUT_CHARS = 64 * 1024;
-const MAX_TRANSCRIPT_BYTES = 32 * 1024 * 1024;
+export const MAX_TRANSCRIPT_BYTES = 32 * 1024 * 1024;
 const ID_RANDOM_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
 
 /** @type {Map<string, { path: string | null, resolvedAt: number }>} */
@@ -285,6 +286,15 @@ export function parseClaudeTranscript(params) {
     const content = message.content;
 
     if (record.type === 'user') {
+      // Synthetic recovery continuation injected by the Claude session-limit
+      // recovery flow is invisible context the model uses to resume, not a
+      // visible user turn. Skip it entirely (the continuation text starts
+      // with `<openchamber-continuation>` and the record is `isSynthetic`).
+      // Unlike `<task-notification>`, this MUST NOT close the current turn —
+      // the post-recovery assistant stays grouped under the original user.
+      if (isRecoveryContinuationRecord(record)) {
+        continue;
+      }
       const blocks = Array.isArray(content) ? content : [];
       const textParts = [];
       if (typeof content === 'string' && content.trim() && !isTaskNotificationText(content)) {
