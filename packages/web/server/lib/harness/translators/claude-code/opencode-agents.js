@@ -195,6 +195,45 @@ function isWildcardPattern(pattern) {
 }
 
 /**
+ * Claude tool names gated by an OpenCode permission key when that key is
+ * blanket-denied. Used for AgentDefinition.disallowedTools so the SDK refuses
+ * the tool before canUseTool — matching OpenCode's silent deny for subagents.
+ */
+const OPENCODE_KEY_TO_CLAUDE_DISALLOWED = Object.freeze({
+  bash: ['Bash', 'BashOutput', 'KillShell', 'KillBash'],
+  edit: ['Edit', 'MultiEdit', 'Write', 'NotebookEdit'],
+  read: ['Read', 'NotebookRead'],
+  glob: ['Glob'],
+  grep: ['Grep'],
+  webfetch: ['WebFetch'],
+  websearch: ['WebSearch'],
+  todowrite: ['TodoWrite', 'TodoRead'],
+  skill: ['Skill'],
+});
+
+/**
+ * Blanket `deny` rules → Claude `disallowedTools`. Patterned denies stay in
+ * canUseTool (the SDK allow/deny lists cannot express globs).
+ *
+ * @param {unknown} ruleset
+ * @returns {string[]}
+ */
+export function buildDisallowedToolsFromRuleset(ruleset) {
+  const rules = normalizePermissionRuleset(ruleset);
+  /** @type {Set<string>} */
+  const denied = new Set();
+  for (const rule of rules) {
+    if (rule.action !== 'deny') continue;
+    if (!isWildcardPattern(rule.pattern)) continue;
+    if (rule.permission === '*') continue;
+    const tools = OPENCODE_KEY_TO_CLAUDE_DISALLOWED[rule.permission];
+    if (!tools) continue;
+    for (const tool of tools) denied.add(tool);
+  }
+  return Array.from(denied);
+}
+
+/**
  * Last matching rule for one permission key, preferring a concrete pattern
  * over a catch-all one.
  *
@@ -352,11 +391,13 @@ export function buildClaudeAgentDefinitions(agents) {
     const model = entry.model && typeof entry.model === 'object'
       ? asTrimmedString(/** @type {{ modelID?: unknown }} */ (entry.model).modelID)
       : '';
+    const disallowedTools = buildDisallowedToolsFromRuleset(entry.permission);
 
     definitions[name] = {
       description,
       prompt,
       ...(tools ? { tools } : {}),
+      ...(disallowedTools.length > 0 ? { disallowedTools } : {}),
       // OpenCode model ids are provider-scoped; only a bare Claude alias/id is
       // meaningful to the Agent SDK, so anything else inherits the main model.
       ...(model && /^(fable|opus|sonnet|haiku|claude-)/i.test(model) ? { model } : {}),
@@ -434,6 +475,8 @@ export async function fetchOpenCodeAgents(params) {
  * @property {string} systemPromptAppend Selected agent's prompt (may be empty).
  * @property {(toolName: string, input?: Record<string, unknown>) => 'allow' | 'deny' | 'ask'} resolveToolPolicy
  * @property {Record<string, object>} agentDefinitions Claude subagent registrations.
+ * @property {Record<string, (toolName: string, input?: Record<string, unknown>) => 'allow' | 'deny' | 'ask'>} subagentPolicies
+ *   Lowercased OpenCode subagent name → tool policy (for nested canUseTool).
  */
 
 /**
@@ -453,6 +496,19 @@ export function buildOpenCodeAgentInheritance(agents, agentName) {
     ))
     : undefined;
 
+  /** @type {Record<string, (toolName: string, input?: Record<string, unknown>) => 'allow' | 'deny' | 'ask'>} */
+  const subagentPolicies = {};
+  for (const agent of list) {
+    if (!agent || typeof agent !== 'object') continue;
+    const entry = /** @type {Record<string, unknown>} */ (agent);
+    if (isOpenCodeShippedAgent(entry) || entry.hidden === true) continue;
+    const mode = asTrimmedString(entry.mode).toLowerCase();
+    if (mode !== 'subagent' && mode !== 'all') continue;
+    const name = asTrimmedString(entry.name);
+    if (!name || !readAgentPrompt(entry)) continue;
+    subagentPolicies[name.toLowerCase()] = createOpenCodeToolPolicy(entry.permission);
+  }
+
   return {
     agentName: selected ? asTrimmedString(/** @type {{ name?: unknown }} */ (selected).name) : '',
     systemPromptAppend: selected ? readAgentPrompt(selected) : '',
@@ -462,6 +518,7 @@ export function buildOpenCodeAgentInheritance(agents, agentName) {
       selected ? /** @type {{ permission?: unknown }} */ (selected).permission : null,
     ),
     agentDefinitions: buildClaudeAgentDefinitions(list),
+    subagentPolicies,
   };
 }
 

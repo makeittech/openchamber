@@ -15,6 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getSessionBinding } from '../../session-bindings.js';
+import { toOpenCodeToolName } from '../../events/from-claude.js';
 import { resolveClaudeProjectsRoot } from './import-from-disk.js';
 import { isRecoveryContinuationRecord } from './recovery-transcript.js';
 
@@ -405,7 +406,8 @@ export function parseClaudeTranscript(params) {
       }
       if (block.type === 'tool_use') {
         const callId = typeof block.id === 'string' && block.id ? block.id : transcriptId('call', createdMs, nextSeq(), `${seed}:call`);
-        const toolName = typeof block.name === 'string' && block.name.trim() ? block.name.trim() : 'tool';
+        const rawToolName = typeof block.name === 'string' && block.name.trim() ? block.name.trim() : 'tool';
+        const toolName = toOpenCodeToolName(rawToolName);
         const input = block.input && typeof block.input === 'object' && !Array.isArray(block.input) ? block.input : {};
         const part = {
           id: transcriptId('prt', createdMs, nextSeq(), `${seed}:tool:${callId}`),

@@ -213,9 +213,25 @@ const SUBAGENT_SESSION_PREFIX = 'ses_claude_sub_';
  * @param {string} toolUseId
  * @returns {string}
  */
-function claudeSubagentSessionId(parentSessionId, toolUseId) {
+export function claudeSubagentSessionId(parentSessionId, toolUseId) {
   const safeTool = String(toolUseId || 'agent').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24) || 'agent';
   return `${SUBAGENT_SESSION_PREFIX}${parentSessionId.slice(-12)}_${safeTool}`;
+}
+
+/**
+ * Map Claude tool names onto the OpenCode tool ids the shared UI already knows.
+ * Claude's Agent tool is OpenCode's `task` (standalone Agent Task row + nested
+ * summary). Without this the picker shows a generic "Agent" part and skips the
+ * Open-subtask chrome.
+ *
+ * @param {string} toolName
+ * @returns {string}
+ */
+export function toOpenCodeToolName(toolName) {
+  const raw = typeof toolName === 'string' ? toolName.trim() : '';
+  if (!raw) return 'tool';
+  if (raw === 'Agent' || raw === 'Task') return 'task';
+  return raw;
 }
 
 /**
@@ -658,16 +674,18 @@ function mapContentBlock(ctx, block) {
 
   if (block.type === 'tool_use') {
     const callId = typeof block.id === 'string' ? block.id : createOpenCodeId('call');
-    const toolName = typeof block.name === 'string' && block.name.trim() ? block.name.trim() : 'tool';
+    const rawToolName = typeof block.name === 'string' && block.name.trim() ? block.name.trim() : 'tool';
 
     // The AskUserQuestion tool is bridged to OpenCode question cards via the
     // canUseTool callback; do not render a generic tool part for it.
-    if (toolName === 'AskUserQuestion') {
+    if (rawToolName === 'AskUserQuestion') {
       ctx.askUserQuestionCallIds.add(callId);
       ctx.needsNewTextSegment = true;
       ctx.needsNewReasoningSegment = true;
       return [];
     }
+
+    const toolName = toOpenCodeToolName(rawToolName);
 
     let entry = ctx.toolParts.get(callId);
     if (!entry) {
@@ -718,8 +736,10 @@ function mapContentBlock(ctx, block) {
       },
     ];
 
-    // Claude Agent tool → nested OpenChamber child session (subagent UI).
-    const isAgentTool = entry.toolName === 'Agent' || entry.toolName === 'Task';
+    // Claude Agent/Task → OpenCode `task` + nested child session (subagent UI).
+    const isAgentTool = entry.toolName === 'task'
+      || rawToolName === 'Agent'
+      || rawToolName === 'Task';
     if (isAgentTool && callId) {
       const description = typeof input.description === 'string' && input.description.trim()
         ? input.description.trim()
@@ -730,10 +750,22 @@ function mapContentBlock(ctx, block) {
             : 'Subagent';
       const child = ensureSubagentContext(ctx, callId, description);
       events.unshift(...buildSubagentCreatedEvents(ctx, child));
-      events[events.length - 1].properties.part.state.metadata = {
+      const metadata = {
         sessionId: child.sessionId,
         title: child.title,
       };
+      // Keep metadata on the entry so tool_result completion does not wipe the
+      // child session link the TaskToolSummary / "Open … subtask" UI needs.
+      entry.metadata = metadata;
+      events[events.length - 1].properties.part.state.metadata = metadata;
+      const subagentType = typeof input.subagent_type === 'string' ? input.subagent_type.trim() : '';
+      if (typeof ctx.onAgentToolStarted === 'function') {
+        try {
+          ctx.onAgentToolStarted(callId, subagentType);
+        } catch {
+          // Permission-runtime bookkeeping must never break the transcript.
+        }
+      }
     }
 
     return events;
@@ -769,6 +801,7 @@ function mapToolResultBlock(ctx, block) {
   const isError = block.is_error === true;
   const endedAt = Date.now();
   const startedAt = typeof entry.startedAt === 'number' ? entry.startedAt : endedAt;
+  const metadata = entry.metadata && typeof entry.metadata === 'object' ? entry.metadata : {};
   return [
     {
       type: 'message.part.updated',
@@ -786,14 +819,15 @@ function mapToolResultBlock(ctx, block) {
               status: 'error',
               input,
               error: output || 'Tool error',
+              ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
               time: { start: startedAt, end: endedAt },
             }
             : {
               status: 'completed',
               input,
               output: output || '',
-              title: entry.toolName,
-              metadata: {},
+              title: entry.toolName === 'task' ? 'Agent Task' : entry.toolName,
+              metadata,
               time: { start: startedAt, end: endedAt },
             },
         },

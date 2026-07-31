@@ -316,6 +316,21 @@ describe('buildClaudeAgentDefinitions', () => {
     expect(result['other-model'].model).toBeUndefined();
   });
 
+  it('maps blanket permission denies onto Claude disallowedTools', () => {
+    const result = buildClaudeAgentDefinitions([
+      {
+        name: 'doc-writer',
+        mode: 'subagent',
+        prompt: 'Write docs.',
+        permission: [
+          { permission: 'bash', pattern: '*', action: 'deny' },
+          { permission: 'edit', pattern: '*', action: 'allow' },
+        ],
+      },
+    ]);
+    expect(result['doc-writer'].disallowedTools).toEqual(['Bash', 'BashOutput', 'KillShell', 'KillBash']);
+  });
+
   it('enforces the 50-definition cap', () => {
     const agents = Array.from({ length: 60 }, (_, i) => ({
       name: `agent-${i}`,
@@ -418,6 +433,12 @@ describe('buildOpenCodeAgentInheritance', () => {
   it('builds agentDefinitions from the whole agent list, not just the selected one', () => {
     const result = buildOpenCodeAgentInheritance(agents, 'reviewer');
     expect(Object.keys(result.agentDefinitions).sort()).toEqual(['reviewer', 'writer']);
+  });
+
+  it('exposes per-subagent policies keyed by lowercased name', () => {
+    const result = buildOpenCodeAgentInheritance(agents, 'reviewer');
+    expect(result.subagentPolicies.reviewer('Bash', { command: 'ls' })).toBe('allow');
+    expect(result.subagentPolicies.writer('Bash', { command: 'ls' })).toBe('ask');
   });
 });
 

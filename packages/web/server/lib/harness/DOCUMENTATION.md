@@ -377,7 +377,8 @@ PermissionCard for every command. Now the whole ruleset participates.
 | Shared `harnessRouter` must be constructed with `resolveOpenCodeAgents` | `packages/web/server/index.js` (`createOpenCodeAgentResolver` + lazy `buildOpenCodeUrl`). `registerHarnessRoutes` skips creating its own router when this shared instance is passed — without the resolver, `agentsMode: opencode` inherits nothing. |
 | Server re-reads `GET /agent?directory=` from OpenCode | `fetchOpenCodeAgents` |
 | Ruleset → per-tool decision | `createOpenCodeToolPolicy` |
-| Subagents → Claude `AgentDefinition`s | `buildClaudeAgentDefinitions` |
+| Subagents → Claude `AgentDefinition`s | `buildClaudeAgentDefinitions` (also maps blanket deny rules → `disallowedTools`) |
+| Subagent nested tool policy | `subagentPolicies` + `SubagentStart` / `subagent-permission-runtime.js` |
 | Policy consulted before any PermissionCard | `permissions.js` `createCanUseTool({ resolveToolPolicy })` |
 
 Tool mapping: Claude tool names are translated to OpenCode permission keys
@@ -516,7 +517,7 @@ Capabilities: `slash-commands: full`, `mcp: full`, `subagents: full`.
 | --- | --- |
 | Slash | Claude-native `/command` (from `system/init.slash_commands` + built-ins) is sent as harness prompt text. UI autocomplete switches to Claude commands on Claude sessions. OpenCode/OpenChamber commands are **translated** into prompt text (see below). `/compact` uses Claude compaction, not OpenCode summarize. |
 | MCP | OpenChamber MCP configs (`opencode` mcp entries) convert to Claude `mcpServers` (`stdio` / `http`). Project `.mcp.json` still loads via `settingSources`. Status from `system/init.mcp_servers` is stored in `session-capabilities.js`. |
-| Subagents | `Agent` is allowed; nested `parent_tool_use_id` streams map into synthetic child sessions (`session.created` with `parentID`) so the sidebar shows subagent work. |
+| Subagents | Claude `Agent`/`Task` tool parts are normalized to OpenCode `task` (Agent Task row + nested summary + Open-subtask link). Nested `parent_tool_use_id` streams map into synthetic child sessions (`session.created` with `parentID`). In OpenCode agents mode, registered subagents carry `disallowedTools` from blanket deny rules, and nested `canUseTool` applies that subagent's permission ruleset while stamping asks on the child session id so PermissionCards show **From subagent**. |
 
 ### OpenCode command translation
 

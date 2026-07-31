@@ -20,9 +20,11 @@ import {
 import { normalizeOpenCodeCommandRequest } from './opencode-command.js';
 import { claudePermissionModeFromEditAction } from './opencode-agents.js';
 import { listClaudeAgents } from './claude-agents.js';
+import { createSubagentPermissionRuntime } from './subagent-permission-runtime.js';
 import {
   buildTurnAbortEvents,
   buildUserMessageEvents,
+  claudeSubagentSessionId,
   createClaudeMapperContext,
   createOpenCodeId,
   mapClaudeMessageToEvents,
@@ -343,6 +345,15 @@ export function createClaudeCodeTranslator(deps = {}) {
       }
     }
 
+    const subagentRuntime = createSubagentPermissionRuntime({
+      parentSessionId: sessionId,
+      childSessionIdFor: (toolUseId) => claudeSubagentSessionId(sessionId, toolUseId),
+      policiesByAgentType: inheritance?.subagentPolicies || {},
+    });
+    ctx.onAgentToolStarted = (toolUseId, subagentType) => {
+      subagentRuntime.noteAgentTool(toolUseId, subagentType);
+    };
+
     const canUseTool = createCanUseTool({
       sessionId,
       directory,
@@ -352,6 +363,21 @@ export function createClaudeCodeTranslator(deps = {}) {
         resolveToolPolicy: inheritance.resolveToolPolicy,
         policySourceLabel: inheritance.agentName || requestedAgentName,
       } : {}),
+      onAgentTool: (toolUseId, subagentType) => {
+        subagentRuntime.noteAgentTool(toolUseId, subagentType);
+      },
+      resolveSubagentContext: (_toolName, _input, options) => {
+        const agentId = typeof options?.agentID === 'string' ? options.agentID.trim() : '';
+        if (!agentId) return null;
+        const resolved = subagentRuntime.resolve(agentId);
+        if (!resolved) return null;
+        return {
+          ...(resolved.resolveToolPolicy ? { resolveToolPolicy: resolved.resolveToolPolicy } : {}),
+          ...(resolved.agentType ? { policySourceLabel: resolved.agentType } : {}),
+          sessionId: resolved.childSessionId,
+          parentSessionId: sessionId,
+        };
+      },
     });
 
     // Bridge user/project OpenChamber MCP configs, then merge the in-process
@@ -446,9 +472,19 @@ export function createClaudeCodeTranslator(deps = {}) {
         settingSources: ['user', 'project', 'local'],
         forwardSubagentText: true,
         agentProgressSummaries: true,
-        ...(internal?.toolGuard ? {
-          hooks: { PreToolUse: [{ hooks: [internal.toolGuard] }] },
-        } : {}),
+        hooks: {
+          SubagentStart: [{
+            hooks: [async (input) => {
+              const agentId = typeof input?.agent_id === 'string' ? input.agent_id : '';
+              const agentType = typeof input?.agent_type === 'string' ? input.agent_type : '';
+              if (agentId) subagentRuntime.bindAgentId(agentId, agentType);
+              return {};
+            }],
+          }],
+          ...(internal?.toolGuard ? {
+            PreToolUse: [{ hooks: [internal.toolGuard] }],
+          } : {}),
+        },
       });
     } catch (error) {
       // The turn never started; release anything the MCP bridge already began.

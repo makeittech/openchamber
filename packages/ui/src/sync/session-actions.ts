@@ -29,6 +29,7 @@ import { getImperativeSessionMessageLoader } from "./session-message-loader"
 import { cleanupPersistedSessionState } from "./session-deletion-cleanup"
 import { getRuntimeKey } from "@/lib/runtime-switch"
 import { harnessAbort, harnessPermissionReply, harnessQuestionReply } from "@/lib/harness/client"
+import { isClaudeSubagentSessionId } from "@/lib/harness/claude-subagent"
 import { useSelectionStore } from "./selection-store"
 import { applyGlobalSessionStatusEvent } from "./global-session-status"
 
@@ -1182,6 +1183,27 @@ export async function abortCurrentOperation(sessionId: string): Promise<void> {
 // Permissions
 // ---------------------------------------------------------------------------
 
+/**
+ * Claude subagent asks are stamped on synthetic child session ids. The sticky
+ * harness target lives on the parent — walk parentID so Allow/Deny still hits
+ * `/api/harness/permission/reply` instead of the OpenCode SDK.
+ */
+function resolveHarnessTargetForPermissionSession(sessionId: string) {
+  const selection = useSelectionStore.getState()
+  const direct = selection.getSessionTarget(sessionId)
+  if (direct?.harnessId === "claude-code") return direct
+  if (!isClaudeSubagentSessionId(sessionId) || !_childStores) return direct
+
+  for (const store of _childStores.children.values()) {
+    const child = store.getState().session.find((session) => session.id === sessionId)
+    const parentId = typeof child?.parentID === "string" ? child.parentID : ""
+    if (!parentId) continue
+    const parentTarget = selection.getSessionTarget(parentId)
+    if (parentTarget?.harnessId === "claude-code") return parentTarget
+  }
+  return direct
+}
+
 export async function respondToPermission(
   sessionId: string,
   requestId: string,
@@ -1191,7 +1213,7 @@ export async function respondToPermission(
   const directory = resolveDirectoryForBlockingRequest("permission", sessionId, requestId)
     || getSessionDirectory(sessionId)
     || dir()
-  const target = useSelectionStore.getState().getSessionTarget(sessionId)
+  const target = resolveHarnessTargetForPermissionSession(sessionId)
   if (target?.harnessId === "claude-code") {
     const result = await harnessPermissionReply({
       sessionId,
@@ -1222,7 +1244,7 @@ export async function dismissPermission(
   const directory = resolveDirectoryForBlockingRequest("permission", sessionId, requestId)
     || getSessionDirectory(sessionId)
     || dir()
-  const target = useSelectionStore.getState().getSessionTarget(sessionId)
+  const target = resolveHarnessTargetForPermissionSession(sessionId)
   if (target?.harnessId === "claude-code") {
     const result = await harnessPermissionReply({
       sessionId,

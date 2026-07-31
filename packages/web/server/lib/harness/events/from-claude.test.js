@@ -559,7 +559,7 @@ describe('from-claude slash / mcp / subagents', () => {
           type: 'tool_use',
           id: 'agent_call_1',
           name: 'Agent',
-          input: { description: 'Review auth', prompt: 'review auth' },
+          input: { description: 'Review auth', prompt: 'review auth', subagent_type: 'doc-writer' },
         }],
       },
     });
@@ -567,7 +567,43 @@ describe('from-claude slash / mcp / subagents', () => {
     expect(created?.properties.info.parentID).toBe('ses_parent');
     expect(created?.properties.info.title).toBe('Review auth');
     const tool = events.find((e) => e.properties?.part?.type === 'tool');
+    expect(tool?.properties.part.tool).toBe('task');
     expect(tool?.properties.part.state.metadata.sessionId).toBe(created?.properties.info.id);
+  });
+
+  it('preserves task child-session metadata when the Agent tool completes', () => {
+    const ctx = createClaudeMapperContext({
+      sessionId: 'ses_parent',
+      directory: '/proj',
+      userMessageId: 'msg_u',
+      assistantMessageId: 'msg_a',
+    });
+    const start = mapClaudeMessageToEvents(ctx, {
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          id: 'agent_call_1',
+          name: 'Agent',
+          input: { description: 'Explore', subagent_type: 'doc-writer' },
+        }],
+      },
+    });
+    const childId = start.events.find((e) => e.type === 'session.created')?.properties.info.id;
+    const done = mapClaudeMessageToEvents(ctx, {
+      type: 'user',
+      message: {
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'agent_call_1',
+          content: 'done',
+        }],
+      },
+    });
+    const tool = done.events.find((e) => e.properties?.part?.type === 'tool');
+    expect(tool?.properties.part.tool).toBe('task');
+    expect(tool?.properties.part.state.status).toBe('completed');
+    expect(tool?.properties.part.state.metadata.sessionId).toBe(childId);
   });
 
   it('routes parent_tool_use_id messages into the child session', () => {

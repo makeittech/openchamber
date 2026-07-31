@@ -294,4 +294,48 @@ describe('createCanUseTool / replyPermission', () => {
       reply: 'once',
     })).toThrow(/not found/);
   });
+
+  it('stamps subagent asks on the child session and applies the subagent policy', async () => {
+    const events = [];
+    const canUseTool = createCanUseTool({
+      sessionId: 'ses_parent',
+      directory: '/project',
+      getBroadcast: () => (event) => events.push(event),
+      createId: () => 'perm_sub',
+      resolveToolPolicy: () => 'allow',
+      resolveSubagentContext: () => ({
+        resolveToolPolicy: (toolName) => (toolName === 'Bash' ? 'deny' : 'ask'),
+        policySourceLabel: 'doc-writer',
+        sessionId: 'ses_claude_sub_child',
+        parentSessionId: 'ses_parent',
+      }),
+    });
+
+    await expect(canUseTool('Bash', { command: 'ls' }, {
+      agentID: 'agent_1',
+      toolUseID: 't1',
+      signal: new AbortController().signal,
+    })).resolves.toMatchObject({
+      behavior: 'deny',
+      message: 'Denied by OpenCode agent "doc-writer" permission rules',
+    });
+
+    const pending = canUseTool('WebFetch', { url: 'https://example.com' }, {
+      agentID: 'agent_1',
+      toolUseID: 't2',
+      signal: new AbortController().signal,
+    });
+    expect(getPendingPermissionCount()).toBe(1);
+    expect(events[0]?.type).toBe('permission.asked');
+    expect(events[0]?.properties.sessionID).toBe('ses_claude_sub_child');
+    expect(events[0]?.properties.metadata.fromSubagent).toBe(true);
+    expect(events[0]?.properties.metadata.parentSessionID).toBe('ses_parent');
+
+    replyPermission({
+      sessionId: 'ses_claude_sub_child',
+      requestId: 'perm_sub',
+      reply: 'once',
+    });
+    await expect(pending).resolves.toMatchObject({ behavior: 'allow' });
+  });
 });
