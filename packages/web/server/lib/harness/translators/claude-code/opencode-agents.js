@@ -218,7 +218,7 @@ const OPENCODE_KEY_TO_CLAUDE_DISALLOWED = Object.freeze({
  * @param {unknown} ruleset
  * @returns {string[]}
  */
-export function buildDisallowedToolsFromRuleset(ruleset) {
+function buildDisallowedToolsFromRuleset(ruleset) {
   const rules = normalizePermissionRuleset(ruleset);
   /** @type {Set<string>} */
   const denied = new Set();
