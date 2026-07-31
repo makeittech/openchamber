@@ -1505,6 +1505,21 @@ export async function dismissOpenQuestionsForSession(sessionId: string): Promise
  * 5. Set pendingInputText so the reverted message text appears in the input
  */
 export async function revertToMessage(sessionId: string, messageId: string): Promise<void> {
+  const target = useSelectionStore.getState().getSessionTarget(sessionId)
+  if (target?.harnessId === "claude-code") {
+    // OpenCode `session.revert` only rewrites the OpenCode message store. Claude
+    // transcripts live in JSONL + resume via foreignSessionId, so a successful
+    // OC revert is a no-op that leaves model context intact (engines-claude-code
+    // spec: rewind UI is a non-goal). Refuse instead of faking a UI-only undo.
+    const { toast } = await import("sonner")
+    const { useI18nStore, formatMessage } = await import("@/lib/i18n/store")
+    const { dictionary } = useI18nStore.getState()
+    toast.error(formatMessage(dictionary, "chat.revert.toast.unsupportedHarness"))
+    const error = new Error("Revert is not supported on Claude Code sessions")
+    ;(error as Error & { code?: string }).code = "REVERT_UNSUPPORTED_HARNESS"
+    throw error
+  }
+
   const { store, directory } = dirStoreForSession(sessionId)
   const state = store.getState()
 
@@ -1646,6 +1661,17 @@ export async function refetchSessionMessages(sessionId: string): Promise<void> {
  * Restore all previously reverted messages. Aborts if busy, merges result.
  */
 export async function unrevertSession(sessionId: string): Promise<void> {
+  const target = useSelectionStore.getState().getSessionTarget(sessionId)
+  if (target?.harnessId === "claude-code") {
+    const { toast } = await import("sonner")
+    const { useI18nStore, formatMessage } = await import("@/lib/i18n/store")
+    const { dictionary } = useI18nStore.getState()
+    toast.error(formatMessage(dictionary, "chat.revert.toast.unsupportedHarness"))
+    const error = new Error("Revert is not supported on Claude Code sessions")
+    ;(error as Error & { code?: string }).code = "REVERT_UNSUPPORTED_HARNESS"
+    throw error
+  }
+
   const { store, directory } = dirStoreForSession(sessionId)
   const state = store.getState()
   const previousMessageCount = state.message[sessionId]?.length ?? 0

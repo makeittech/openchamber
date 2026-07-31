@@ -147,9 +147,10 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
       setLoading(true);
       try {
         if (isClaudeEngine) {
-          // Claude sessions: Claude-native slash + OpenChamber local helpers that
-          // are engine-agnostic (undo/redo/timeline) + OpenCode commands, which
-          // the harness translates into prompt text (harness/translators).
+          // Claude sessions: Claude-native slash + OpenChamber helpers that still
+          // apply (timeline) + OpenCode commands the harness translates. Undo/redo
+          // are OpenCode-store reverts and are not offered here (Claude rewind is
+          // a non-goal; session-actions refuses them).
           const claudeCommands: CommandInfo[] = claudeSlashCommands.map((name, index) => ({
             id: `claude:slash:${name}:${index}`,
             name,
@@ -160,8 +161,6 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
           }));
           const localHelpers: CommandInfo[] = hasSession
             ? [
-                { id: 'openchamber:undo', name: 'undo', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.undoDescription'), isBuiltIn: true },
-                { id: 'openchamber:redo', name: 'redo', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.redoDescription'), isBuiltIn: true },
                 { id: 'openchamber:timeline', name: 'timeline', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.timelineDescription'), isBuiltIn: true },
               ]
             : [];

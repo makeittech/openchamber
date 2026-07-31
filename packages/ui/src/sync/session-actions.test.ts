@@ -378,6 +378,20 @@ mock.module("@/lib/harness/client", () => ({
   },
 }))
 
+mock.module("sonner", () => ({
+  toast: {
+    error: mock(() => undefined),
+    success: mock(() => undefined),
+  },
+}))
+
+mock.module("@/lib/i18n/store", () => ({
+  useI18nStore: {
+    getState: () => ({ dictionary: {} }),
+  },
+  formatMessage: (_dictionary: unknown, key: string) => key,
+}))
+
 import { create, type StoreApi } from "zustand"
 import { INITIAL_STATE } from "./types"
 import type { DirectoryStore } from "./child-store"
@@ -1090,6 +1104,7 @@ describe("revertToMessage passes session directory", () => {
     replyCalls.length = 0
     scopedClientDirectories.length = 0
     sessionRevertResult = {}
+    sessionTargetById = {}
     Object.assign(inputState, {
       pendingInputText: "previous draft",
       pendingInputMode: "normal" as const,
@@ -1148,6 +1163,34 @@ describe("revertToMessage passes session directory", () => {
 
     expect(thrown).toBeInstanceOf(Error)
     expect((thrown as Error).message).toContain("session.revert failed (500)")
+    expect((sessionStore.getState().session[0] as Session & { revert?: { messageID?: string } }).revert).toBe(undefined)
+    expect(inputState.pendingInputText).toBe("previous draft")
+  })
+
+  test("refuses Claude Code sessions instead of calling OpenCode revert", async () => {
+    sessionTargetById["session-a"] = { harnessId: "claude-code", modelRef: "haiku" }
+    const session = { id: "session-a", time: { created: 1 } } as Session
+    const targetMessage = { id: "msg_2", sessionID: "session-a", role: "user", time: { created: 2 } } as Message
+    const targetPart = { id: "prt_2", messageID: "msg_2", type: "text", text: "edit this" } as Part
+    const sessionStore = createStore({}, {
+      session: [session],
+      message: { "session-a": [targetMessage] },
+      part: { "msg_2": [targetPart] },
+    })
+    const childStores = createChildStores([["/test/project", sessionStore]])
+
+    const { setActionRefs, revertToMessage } = await import("./session-actions")
+    setActionRefs(mockSdk as unknown as OpencodeClient, childStores, () => "/test/project")
+
+    let thrown: unknown
+    try {
+      await revertToMessage("session-a", "msg_2")
+    } catch (error) {
+      thrown = error
+    }
+
+    expect((thrown as Error & { code?: string }).code).toBe("REVERT_UNSUPPORTED_HARNESS")
+    expect(replyCalls.find((call) => call.method === "session.revert")).toBeUndefined()
     expect((sessionStore.getState().session[0] as Session & { revert?: { messageID?: string } }).revert).toBe(undefined)
     expect(inputState.pendingInputText).toBe("previous draft")
   })

@@ -518,6 +518,7 @@ Capabilities: `slash-commands: full`, `mcp: full`, `subagents: full`.
 | Slash | Claude-native `/command` (from `system/init.slash_commands` + built-ins) is sent as harness prompt text. UI autocomplete switches to Claude commands on Claude sessions. OpenCode/OpenChamber commands are **translated** into prompt text (see below). `/compact` uses Claude compaction, not OpenCode summarize. |
 | MCP | OpenChamber MCP configs (`opencode` mcp entries) convert to Claude `mcpServers` (`stdio` / `http`). Project `.mcp.json` still loads via `settingSources`. Status from `system/init.mcp_servers` is stored in `session-capabilities.js`. |
 | Subagents | Claude `Agent`/`Task` tool parts are normalized to OpenCode `task` (Agent Task row + nested summary + Open-subtask link). Nested `parent_tool_use_id` streams map into synthetic child sessions (`session.created` with `parentID`). In OpenCode agents mode, registered subagents carry `disallowedTools` from blanket deny rules, and nested `canUseTool` applies that subagent's permission ruleset while stamping asks on the child session id so PermissionCards show **From subagent**. |
+| Revert / undo | **Not supported.** OpenCode `session.revert` only mutates the OpenCode message store; Claude history lives in JSONL + `foreignSessionId` resume. The UI hides revert/undo/redo on Claude sessions and `revertToMessage` fails closed with `REVERT_UNSUPPORTED_HARNESS` (spec non-goal: rewind UI). |
 
 ### OpenCode command translation
 

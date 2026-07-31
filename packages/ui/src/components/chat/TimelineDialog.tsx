@@ -9,6 +9,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useSelectionStore } from '@/sync/selection-store';
 import { useSessionMessageRecords } from '@/sync/sync-context';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Icon } from "@/components/icon/Icon";
@@ -43,6 +44,10 @@ export const TimelineDialog: React.FC<TimelineDialogProps> = ({
     const messages = useSessionMessageRecords(currentSessionId ?? '');
     const revertToMessage = useSessionUIStore((state) => state.revertToMessage);
     const forkFromMessage = useSessionUIStore((state) => state.forkFromMessage);
+    const sessionHarnessId = useSelectionStore((s) => (
+        currentSessionId ? s.getSessionTarget(currentSessionId)?.harnessId : undefined
+    ));
+    const canRevert = sessionHarnessId !== 'claude-code';
     const { isMobile, isTablet } = useDeviceInfo();
     const alwaysShowActions = isMobile || isTablet;
 
@@ -327,6 +332,7 @@ export const TimelineDialog: React.FC<TimelineDialogProps> = ({
 
                                         <div className="flex-shrink-0 h-5 flex items-center mr-2">
                                             <div className={cn("gap-1", alwaysShowActions ? "flex" : "hidden group-hover:flex")}>
+                                                {canRevert ? (
                                                 <Tooltip>
                                                     <TooltipTrigger asChild>
                                                         <button
@@ -343,6 +349,7 @@ export const TimelineDialog: React.FC<TimelineDialogProps> = ({
                                                     </TooltipTrigger>
                                                     <TooltipContent sideOffset={6}>{t('chat.timeline.actions.revertFromHere')}</TooltipContent>
                                                 </Tooltip>
+                                                ) : null}
 
                                                 <Tooltip>
                                                     <TooltipTrigger asChild>

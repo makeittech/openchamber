@@ -1842,6 +1842,7 @@ export const dict: Record<I18nKey, string> = {
   "chat.revert.toast.undo": "Відкочено до {preview}",
   "chat.revert.toast.redo": "Повторено",
   "chat.revert.toast.restored": "Всі повідомлення відновлено",
+  "chat.revert.toast.unsupportedHarness": "Відкат недоступний у сесіях Claude Code",
   "chat.errorBoundary.title": "Помилка чату",
   "chat.errorBoundary.description": "В інтерфейсі чату сталася помилка. Причиною може бути тимчасова проблема з мережею або пошкоджені дані повідомлення.",
   "chat.errorBoundary.sessionLabel": "Сесія",

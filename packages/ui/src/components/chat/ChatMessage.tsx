@@ -165,6 +165,9 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
 
     const getAgentModelForSession = useSelectionStore((s) => s.getAgentModelForSession);
     const getSessionModelSelection = useSelectionStore((s) => s.getSessionModelSelection);
+    const sessionHarnessId = useSelectionStore((s) => (
+        sessionId ? s.getSessionTarget(sessionId)?.harnessId : undefined
+    ));
 
     streamPerfCount('ui.chat_message.render');
     if (isInActiveTurn) {
@@ -793,6 +796,8 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         useSessionUIStore.getState().revertToMessage(sessionId, message.info.id);
     }, [sessionId, message.info.id]);
 
+    const canRevert = Boolean(sessionId && isUser && sessionHarnessId !== 'claude-code');
+
     // NEW: Fork handler
     const handleFork = React.useCallback(() => {
         if (!sessionId || !message.info.id) return;
@@ -1073,7 +1078,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                                                 showReasoningTraces={showReasoningTraces}
                                                 onAuxiliaryContentComplete={handleAuxiliaryContentComplete}
                                                 agentMention={agentMention}
-                                                onRevert={handleRevert}
+                                                onRevert={canRevert ? handleRevert : undefined}
                                                 onFork={isUser ? handleFork : undefined}
                                                 contextPinned={isPinnedIntoContext}
                                                 contextPinPending={pinPending}
@@ -1110,7 +1115,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                                                 showReasoningTraces={showReasoningTraces}
                                                 onAuxiliaryContentComplete={handleAuxiliaryContentComplete}
                                                 agentMention={agentMention}
-                                                onRevert={handleRevert}
+                                                onRevert={canRevert ? handleRevert : undefined}
                                                 onFork={isUser ? handleFork : undefined}
                                                 contextPinned={isPinnedIntoContext}
                                                 contextPinPending={pinPending}

@@ -1660,7 +1660,11 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       : "[No text]"
 
     // revertToMessage handles the redo stack push internally
-    await get().revertToMessage(sessionId, targetMessage.id)
+    try {
+      await get().revertToMessage(sessionId, targetMessage.id)
+    } catch {
+      return
+    }
 
     const { toast } = await import("sonner")
     const { useI18nStore, formatMessage } = await import("@/lib/i18n/store")
@@ -1673,8 +1677,12 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   // ---------------------------------------------------------------------------
   handleSlashRedo: async (sessionId, options) => {
     if (options?.fullUnrevert) {
-      const { unrevertSession } = await import("./session-actions")
-      await unrevertSession(sessionId)
+      try {
+        const { unrevertSession } = await import("./session-actions")
+        await unrevertSession(sessionId)
+      } catch {
+        return
+      }
       const { toast } = await import("sonner")
       const { useI18nStore, formatMessage } = await import("@/lib/i18n/store")
       const { dictionary } = useI18nStore.getState()
@@ -1693,7 +1701,11 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     const targetMessage = userMessages.find((m) => m.id > revertToId)
 
     if (targetMessage) {
-      await get().revertToMessage(sessionId, targetMessage.id, { skipRedoPush: true })
+      try {
+        await get().revertToMessage(sessionId, targetMessage.id, { skipRedoPush: true })
+      } catch {
+        return
+      }
       const { toast } = await import("sonner")
       const { useI18nStore, formatMessage } = await import("@/lib/i18n/store")
       const { dictionary } = useI18nStore.getState()
@@ -1701,7 +1713,11 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       return
     }
 
-    await unrevertSessionAction(sessionId)
+    try {
+      await unrevertSessionAction(sessionId)
+    } catch {
+      return
+    }
     const { toast } = await import("sonner")
     const { useI18nStore, formatMessage } = await import("@/lib/i18n/store")
     const { dictionary } = useI18nStore.getState()

@@ -1830,6 +1830,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.revert.toast.undo': '已撤回至 {preview}',
   'chat.revert.toast.redo': '已重做',
   'chat.revert.toast.restored': '已恢复全部消息',
+  'chat.revert.toast.unsupportedHarness': 'Claude Code 会话不支持还原',
   'chat.errorBoundary.title': '聊天错误',
   'chat.errorBoundary.description': '聊天界面发生错误，可能是临时网络问题或消息数据损坏导致。',
   'chat.errorBoundary.sessionLabel': '会话',
