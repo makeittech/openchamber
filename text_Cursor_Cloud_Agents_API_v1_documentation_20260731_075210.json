@@ -1,0 +1,52 @@
+[
+  {
+    "title": "Cloud Agents API | Cursor Docs",
+    "href": "https://cursor.com/docs/cloud-agent/api/endpoints",
+    "body": "Create and manage Cursor Cloud Agents programmatically with the run-based REST API."
+  },
+  {
+    "title": "Cursor APIs Overview | Cursor Docs",
+    "href": "https://cursor.com/docs/api",
+    "body": "Learn about authentication, rate limiting, and best practices for Cursor's APIs."
+  },
+  {
+    "title": "How to Create and Manage Cursor Cloud Agents from an API",
+    "href": "https://medium.com/@dorangao/how-to-create-and-manage-cursor-cloud-agents-from-an-api-94649b3f8a3f",
+    "body": "May 28, 2026 ... Cursor Cloud Agents become more powerful when treated as programmable infrastructure, not just UI features. · The v1 model is easiest to ..."
+  },
+  {
+    "title": "Cursor SDK & Cloud Agents API updates - Announcements",
+    "href": "https://forum.cursor.com/t/cursor-sdk-cloud-agents-api-updates/159284",
+    "body": "Apr 29, 2026 ... Create agents programmatically from your own code, scripts, CI/CD pipelines, or products. Agents get the full Cursor harness: codebase indexing, ..."
+  },
+  {
+    "title": "cursor-self-hosted-agent/README.md at main · render ... - GitHub",
+    "href": "https://github.com/render-examples/cursor-self-hosted-agent/blob/main/README.md",
+    "body": "a Render worker that runs agent worker start · a small Node.js trigger API that launches Cursor Cloud Agents through the Cursor API · optional Slack and Linear ..."
+  },
+  {
+    "title": "Cursor's Coding Agent Becomes Programmable Infrastructure",
+    "href": "https://kingy.ai/news/cursor-sdk-review-cursors-coding-agent-becomes-programmable-infrastructure/",
+    "body": "Apr 30, 2026 ... Cursor is clear that the SDK is in public beta. The TypeScript SDK docs state that APIs may change before general availability. The Cloud Agents ..."
+  },
+  {
+    "title": "Cursor Cloud Agents Are Incredible - Until You Need ... - Qovery",
+    "href": "https://www.qovery.com/blog/cursor-cloud-agents-enterprise-limitations",
+    "body": "May 15, 2026 ... Cursor Cloud Agents are the most impressive AI coding environment available today. Parallel agent execution, remote desktop control, computer ..."
+  },
+  {
+    "title": "Build programmatic agents with the Cursor SDK",
+    "href": "https://cursor.com/changelog/sdk-release",
+    "body": "Apr 29, 2026 ... Updates to the Cloud Agents API↓↑ · Product · Resources · Company · Legal · Connect."
+  },
+  {
+    "title": "Cursor Cloud Agents - LiteLLM",
+    "href": "https://docs.litellm.ai/docs/pass_through/cursor",
+    "body": "Jan 15, 2024 ... Pass-through endpoints for the Cursor Cloud Agents API — launch and manage cloud agents that work on your repositories, in native format (no ..."
+  },
+  {
+    "title": "Cursor Background Agent: Run Long Tasks While You Keep Coding",
+    "href": "https://blink.new/blog/cursor-background-agent",
+    "body": "May 9, 2026 ... Cursor's background agent (now called Cloud Agent) lets you hand off long refactors, test generation, and documentation to an AI agent that ..."
+  }
+]
