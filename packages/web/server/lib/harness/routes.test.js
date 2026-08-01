@@ -1,5 +1,8 @@
 import { afterEach, beforeAll, describe, expect, it } from 'bun:test';
 import express from 'express';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { registerHarnessRoutes } from './routes.js';
 import { createHarnessRouter } from './router.js';
 import {
@@ -18,6 +21,7 @@ import {
   replyQuestion,
   resetPendingQuestions,
 } from './translators/claude-code/questions.js';
+import { resetClaudeTranscriptCaches } from './translators/claude-code/transcript-messages.js';
 import { applyHarnessEventToSnapshot, resetHarnessTurnSnapshots } from './turn-snapshot.js';
 
 beforeAll(() => configureSessionBindings({ persist: false, load: true }));
@@ -26,10 +30,9 @@ afterEach(() => {
   resetPendingPermissions();
   resetPendingQuestions();
   resetHarnessTurnSnapshots();
+  resetClaudeTranscriptCaches();
   configureSessionBindings({ persist: false, load: true });
-});
-
-async function withServer(register, run) {
+});async function withServer(register, run) {
   const app = express();
   register(app);
   const server = app.listen(0);
@@ -210,6 +213,26 @@ describe('OpenCode overlay routes', () => {
     }
   }
 
+  // Point CLAUDE_CONFIG_DIR at an isolated (usually empty) tree so transcript
+  // lookups never scan the developer's real ~/.claude.
+  async function withClaudeConfigDir(seed, run) {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-routes-ccd-'));
+    const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = tmpRoot;
+    resetClaudeTranscriptCaches();
+    try {
+      if (seed) {
+        seed(tmpRoot);
+      }
+      await run();
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
+      resetClaudeTranscriptCaches();
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  }
+
   it('overlays complete retry status over upstream idle', async () => {
     applyHarnessEventToSnapshot({
       type: 'session.status',
@@ -250,14 +273,140 @@ describe('OpenCode overlay routes', () => {
       type: 'message.updated',
       properties: { info: { id: 'msg_live', sessionID: 'ses_live', role: 'assistant' } },
     }, '/proj');
+    await withClaudeConfigDir(null, async () => {
+      await withServer(registerOverlay, async (base) => withUpstream(
+        async () => new Response('nope', { status: 502 }),
+        async () => {
+          const response = await fetch(`${base}/api/session/ses_live/message`);
+          expect(response.status).toBe(200);
+          expect((await response.json())[0].info.id).toBe('msg_live');
+        },
+      ));
+    });
+  });
+
+  it('lets non-Claude sessions fall through to the generic proxy', async () => {
+    let upstreamCalled = false;
     await withServer(registerOverlay, async (base) => withUpstream(
-      async () => new Response('nope', { status: 502 }),
       async () => {
-        const response = await fetch(`${base}/api/session/ses_live/message`);
-        expect(response.status).toBe(200);
-        expect((await response.json())[0].info.id).toBe('msg_live');
+        upstreamCalled = true;
+        throw new Error('upstream must not be reached');
+      },
+      async () => {
+        const response = await fetch(`${base}/api/session/ses_plain/message?limit=10`);
+        expect(response.status).toBe(599);
+        expect(upstreamCalled).toBe(false);
       },
     ));
+  });
+
+  it('pages merged Claude messages and keeps the pagination cursor', async () => {
+    const foreignSessionId = '11111111-1111-4111-8111-111111111111';
+    bindSession({
+      sessionId: 'ses_page',
+      harnessId: 'claude-code',
+      directory: '/proj',
+      foreignSessionId,
+      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+    });
+    applyHarnessEventToSnapshot({
+      type: 'message.updated',
+      properties: { info: { id: 'msg_user', sessionID: 'ses_page', role: 'user' } },
+    }, '/proj');
+    applyHarnessEventToSnapshot({
+      type: 'message.updated',
+      properties: { info: { id: 'msg_assistant', sessionID: 'ses_page', role: 'assistant' } },
+    }, '/proj');
+
+    const upstreamPage = [
+      { info: { id: 'msg_aaa', sessionID: 'ses_page', role: 'user' }, parts: [] },
+      { info: { id: 'msg_bbb', sessionID: 'ses_page', role: 'assistant' }, parts: [] },
+    ];
+    const upstreamQueries = [];
+    await withClaudeConfigDir(null, async () => {
+      await withServer(registerOverlay, async (base) => withUpstream(
+        async (input) => {
+          const url = new URL(String(input));
+          upstreamQueries.push({
+            limit: url.searchParams.get('limit'),
+            before: url.searchParams.get('before'),
+          });
+          return Response.json(upstreamPage);
+        },
+        async () => {
+          const first = await fetch(`${base}/api/session/ses_page/message?limit=2`);
+          const firstBody = await first.json();
+          expect(upstreamQueries[0]).toEqual({ limit: '2', before: null });
+          // merged = [msg_aaa, msg_assistant, msg_bbb, msg_user] (id sort);
+          // newest 2 = [msg_bbb, msg_user], cursor = oldest of the page.
+          expect(firstBody.map((record) => record.info.id)).toEqual(['msg_bbb', 'msg_user']);
+          expect(first.headers.get('x-next-cursor')).toBe('msg_bbb');
+
+          const second = await fetch(`${base}/api/session/ses_page/message?limit=2&before=msg_bbb`);
+          const secondBody = await second.json();
+          expect(upstreamQueries[1]).toEqual({ limit: '2', before: 'msg_bbb' });
+          expect(secondBody.map((record) => record.info.id)).toEqual(['msg_aaa', 'msg_assistant']);
+          expect(second.headers.get('x-next-cursor')).toBe('msg_aaa');
+        },
+      ));
+    });
+  });
+
+  it('omits the cursor when the full transcript fits one page', async () => {
+    const foreignSessionId = '22222222-2222-4222-8222-222222222222';
+    const transcriptRecord = (overrides) => JSON.stringify({
+      parentUuid: null,
+      isSidechain: false,
+      userType: 'external',
+      cwd: '/proj',
+      sessionId: foreignSessionId,
+      version: '2.1.220',
+      ...overrides,
+    });
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-routes-test-'));
+    const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = tmpRoot;
+    resetClaudeTranscriptCaches();
+    try {
+      const projectDir = path.join(tmpRoot, 'projects', '-tmp-project');
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, `${foreignSessionId}.jsonl`), [
+        transcriptRecord({
+          type: 'user',
+          uuid: 'u1',
+          timestamp: '2026-07-28T10:00:00.000Z',
+          message: { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+        }),
+        transcriptRecord({
+          type: 'assistant',
+          uuid: 'a1',
+          timestamp: '2026-07-28T10:00:01.000Z',
+          message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] },
+        }),
+      ].join('\n') + '\n');
+
+      bindSession({
+        sessionId: 'ses_full',
+        harnessId: 'claude-code',
+        directory: '/proj',
+        foreignSessionId,
+        target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+      });
+      await withServer(registerOverlay, async (base) => withUpstream(
+        async () => Response.json([]),
+        async () => {
+          const response = await fetch(`${base}/api/session/ses_full/message?limit=10`);
+          expect(response.status).toBe(200);
+          expect(response.headers.get('x-next-cursor')).toBeNull();
+          expect((await response.json()).length).toBe(2);
+        },
+      ));
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
+      resetClaudeTranscriptCaches();
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 });
 

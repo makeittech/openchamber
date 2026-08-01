@@ -11,6 +11,7 @@ import {
 import { createHarnessRouter } from './router.js';
 import { mergeHarnessActiveIntoSessionStatuses } from './session-status.js';
 import { mergeHarnessMessagesIntoSessionMessages } from './session-messages.js';
+import { getClaudeTranscriptMessages } from './translators/claude-code/transcript-messages.js';
 import {
   createOpenCodeSessionFactory,
   importClaudeSessions,
@@ -105,18 +106,51 @@ export function registerHarnessRoutes(app, deps = {}) {
       try {
         const sessionId = typeof req.params?.sessionId === 'string' ? req.params.sessionId : '';
         if (!sessionId) return next();
-        const messages = await getFromOpenCode(
-          `/session/${encodeURIComponent(sessionId)}/message`,
-          { directory: queryString(req, 'directory'), limit: queryString(req, 'limit') },
-        );
-        if (messages === null) {
-          // Upstream failure must not clear the session: serve live harness state when we have it.
-          const harnessOnly = mergeHarnessMessagesIntoSessionMessages([], sessionId);
-          if (harnessOnly.length === 0) return next();
-          res.json(harnessOnly);
-          return;
+        // Only Claude harness sessions need the transcript overlay. Let every
+        // other session fall through to the generic OpenCode proxy, which
+        // forwards `before` and the `x-next-cursor` pagination header
+        // untouched — intercepting all sessions here silently disabled
+        // "load older" history for every session.
+        if (getSessionBinding(sessionId)?.harnessId !== 'claude-code') {
+          return next();
         }
-        res.json(mergeHarnessMessagesIntoSessionMessages(messages, sessionId));
+
+        const directory = queryString(req, 'directory');
+        const limit = Math.max(1, Number.parseInt(queryString(req, 'limit'), 10) || 50);
+        const before = queryString(req, 'before');
+        const upstream = await getFromOpenCode(
+          `/session/${encodeURIComponent(sessionId)}/message`,
+          { directory, limit, before },
+        );
+        const base = Array.isArray(upstream) ? upstream : null;
+
+        // Page the merged (transcript + base + live snapshot) list the same
+        // way OpenCode pages a plain session: records older than `before`,
+        // the newest `limit` of those, and `x-next-cursor` = oldest returned
+        // id while older records still exist.
+        const merged = mergeHarnessMessagesIntoSessionMessages(base ?? [], sessionId);
+        if (base === null && merged.length === 0) return next();
+
+        let paged = merged;
+        if (before) {
+          paged = paged.filter((record) => (record?.info?.id ?? '') < before);
+        }
+        if (paged.length > limit) {
+          paged = paged.slice(paged.length - limit);
+        }
+
+        const oldestId = paged[0]?.info?.id;
+        const hasOlder = typeof oldestId === 'string'
+          && merged.some((record) => typeof record?.info?.id === 'string' && record.info.id < oldestId);
+        // A page served without a readable transcript (still being written,
+        // or the upstream fell back to the live snapshot) cannot prove the
+        // history is complete. Keep the cursor so the UI stays hasMore and
+        // re-fetches once the transcript becomes readable.
+        const transcriptUnavailable = getClaudeTranscriptMessages(sessionId).length === 0;
+        if ((hasOlder || transcriptUnavailable) && typeof oldestId === 'string') {
+          res.setHeader('x-next-cursor', oldestId);
+        }
+        res.json(paged);
       } catch {
         next();
       }
