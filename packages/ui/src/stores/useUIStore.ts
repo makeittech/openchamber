@@ -19,6 +19,7 @@ import {
   sanitizeFavoriteTargets,
 } from '@/lib/harness/favorite-targets';
 import { useFilesViewTabsStore } from './useFilesViewTabsStore';
+import { isWindowsArm64 } from '@/lib/platform';
 
 export type MainTab = 'chat' | 'plan' | 'git' | 'diff' | 'terminal' | 'files' | 'context' | 'diagram';
 export type PendingDiffScope = 'working' | 'staged' | 'turn';
@@ -630,6 +631,8 @@ interface UIStore {
   activityRenderMode: ActivityRenderMode;
   showDeletionDialog: boolean;
   autoDeleteEnabled: boolean;
+  /** Global file-editor autosave. Default true for backward compatibility. */
+  autoSaveEnabled: boolean;
   autoDeleteAfterDays: number;
   sessionRetentionAction: SessionRetentionAction;
   autoDeleteLastRunAt: number | null;
@@ -799,6 +802,7 @@ interface UIStore {
   setActivityRenderMode: (value: ActivityRenderMode) => void;
   setShowDeletionDialog: (value: boolean) => void;
   setAutoDeleteEnabled: (value: boolean) => void;
+  setAutoSaveEnabled: (value: boolean) => void;
   setAutoDeleteAfterDays: (days: number) => void;
   setSessionRetentionAction: (value: SessionRetentionAction) => void;
   setAutoDeleteLastRunAt: (timestamp: number | null) => void;
@@ -960,6 +964,7 @@ export const useUIStore = create<UIStore>()(
         activityRenderMode: 'summary',
         showDeletionDialog: true,
         autoDeleteEnabled: false,
+        autoSaveEnabled: true,
         autoDeleteAfterDays: 30,
         sessionRetentionAction: 'archive',
         autoDeleteLastRunAt: null,
@@ -1016,7 +1021,7 @@ export const useUIStore = create<UIStore>()(
 
         showTerminalQuickKeysOnDesktop: false,
         persistChatDraft: true,
-        showOpenCodeUpdateNotifications: true,
+        showOpenCodeUpdateNotifications: !isWindowsArm64(),
         agentControlToolEnabled: true,
         inputSpellcheckEnabled: false,
         wideChatLayoutEnabled: false,
@@ -1703,6 +1708,10 @@ export const useUIStore = create<UIStore>()(
           set({ autoDeleteEnabled: value });
         },
 
+        setAutoSaveEnabled: (value) => {
+          set({ autoSaveEnabled: value });
+        },
+
         setAutoDeleteAfterDays: (days) => {
           const clampedDays = Math.max(1, Math.min(365, days));
           set({ autoDeleteAfterDays: clampedDays });
@@ -2314,6 +2323,25 @@ export const useUIStore = create<UIStore>()(
           }
           const state = persistedState as Record<string, unknown>;
 
+          // v12 -> v13: promote FilesView localStorage autosave toggle into the store.
+          if (version < 13) {
+            if (typeof state.autoSaveEnabled !== 'boolean') {
+              let legacyEnabled = true;
+              try {
+                if (typeof localStorage !== 'undefined') {
+                  const legacy = localStorage.getItem('openchamber:files:auto-save-enabled');
+                  if (legacy !== null) {
+                    legacyEnabled = legacy !== 'false';
+                    localStorage.removeItem('openchamber:files:auto-save-enabled');
+                  }
+                }
+              } catch {
+                legacyEnabled = true;
+              }
+              state.autoSaveEnabled = legacyEnabled;
+            }
+          }
+
           // v11 -> v12: drop legacy window-controls "auto" (always meant right).
           if (version < 12) {
             if (state.desktopWindowControlsPosition === 'auto' || state.desktopWindowControlsPosition == null) {
@@ -2465,6 +2493,10 @@ export const useUIStore = create<UIStore>()(
 
           state.fileEditorKeymap = normalizeFileEditorKeymap(state.fileEditorKeymap);
 
+          if (typeof state.autoSaveEnabled !== 'boolean') {
+            state.autoSaveEnabled = true;
+          }
+
           state.contextRailOrder = Array.isArray(state.contextRailOrder)
             ? (state.contextRailOrder as unknown[]).filter((id): id is string => typeof id === 'string' && id.trim() !== '')
             : [];
@@ -2501,6 +2533,7 @@ export const useUIStore = create<UIStore>()(
           activityRenderMode: state.activityRenderMode,
           showDeletionDialog: state.showDeletionDialog,
           autoDeleteEnabled: state.autoDeleteEnabled,
+          autoSaveEnabled: state.autoSaveEnabled,
           autoDeleteAfterDays: state.autoDeleteAfterDays,
           sessionRetentionAction: state.sessionRetentionAction,
           autoDeleteLastRunAt: state.autoDeleteLastRunAt,

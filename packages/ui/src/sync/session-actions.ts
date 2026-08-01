@@ -846,7 +846,13 @@ export async function shareSession(sessionId: string): Promise<Session | null> {
 export async function unshareSession(sessionId: string): Promise<Session | null> {
   const sessionDirectory = getSessionDirectory(sessionId)
   const result = await sdk().session.unshare({ sessionID: sessionId, directory: sessionDirectory })
-  const session = stripSessionDiffSnapshots(assertSdkData(result, "session.unshare"))
+  // A successful unshare is authoritative even when the upstream response
+  // echoes the pre-mutation session with its old share URL. Normalize that
+  // stale field at the action boundary before publishing to either store.
+  const session = {
+    ...stripSessionDiffSnapshots(assertSdkData(result, "session.unshare")),
+    share: undefined,
+  }
   useGlobalSessionsStore.getState().upsertSession(session)
   updateLiveSession(session, sessionDirectory)
   return session
@@ -1251,10 +1257,12 @@ export async function respondToPermission(
   sessionId: string,
   requestId: string,
   response: "once" | "always" | "reject",
+  directoryOverride?: string,
 ): Promise<void> {
   await waitForConnectionOrThrow()
   const harnessTarget = resolveClaudeHarnessReplyTarget(sessionId, requestId)
-  const directory = resolveDirectoryForBlockingRequest("permission", sessionId, requestId)
+  const directory = directoryOverride
+    || resolveDirectoryForBlockingRequest("permission", sessionId, requestId)
     || getSessionDirectory(sessionId)
     || (harnessTarget ? getSessionDirectory(harnessTarget.sessionId) : "")
     || dir()
@@ -1270,7 +1278,10 @@ export async function respondToPermission(
     }
     return
   }
-  const result = await getRequestReplyClient("permission", sessionId, requestId).permission.reply({
+  const client = directoryOverride
+    ? opencodeClient.getScopedSdkClient(directoryOverride)
+    : getRequestReplyClient("permission", sessionId, requestId)
+  const result = await client.permission.reply({
     requestID: requestId,
     reply: response,
     ...(directory ? { directory } : {}),
