@@ -278,13 +278,6 @@ export class SessionMessageLoader {
           }, EMPTY_HYDRATION_RETRY_MS)
         }
       }
-      if (!isMobileSurfaceRuntime() && isCurrent()) {
-        queueMicrotask(() => {
-          if (isCurrent() && entry.snapshot.cursor && !entry.snapshot.complete) {
-            void this.loadOlder(normalized)
-          }
-        })
-      }
     })
   }
 
