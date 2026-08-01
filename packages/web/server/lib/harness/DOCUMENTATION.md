@@ -68,6 +68,12 @@ discard output requested with `effort`. `AskUserQuestion` uses native question
 events rather than a generic tool card. Claude result usage maps to
 `assistant.info.tokens` and cost for Goal accounting.
 
+Claude's subagent tools (`Agent`, `Task`) are normalized to the OpenCode `task`
+tool id in both the live mapper and transcript replay so the Agent Task row,
+nested summary, and "Open subtask" link render like an OpenCode session; the
+completed/error part keeps the synthetic child session id + title in
+`state.metadata` (set at tool_use time) and shows the human "Agent Task" title.
+
 Harness switching is owned by the UI switch store and `perform-handoff.ts`:
 
 - Empty or same-harness sessions update in place.
@@ -131,6 +137,20 @@ the last global `*` rule is fallback. Lookup failure or no match asks rather
 than allows. Concrete rules without a corresponding tool argument do not match.
 SDK-auto-approved bridged MCP wildcards do not reach `canUseTool`, so an
 OpenCode deny rule cannot currently block those calls.
+
+Each registered subagent carries its own inherited tool policy: blanket `deny`
+rules (wildcard pattern) become Claude SDK `disallowedTools` on the
+`AgentDefinition` so the SDK refuses before `canUseTool` is asked, and a
+lowercased-name → policy map is exposed for permission checks made *inside* a
+running subagent. A per-turn runtime correlates the SDK's subagent ids
+(`SubagentStart` `agent_id`/`agent_type`, `canUseTool` `agentID`) back to the
+Agent/Task tool_use that spawned them (handling the hook racing the parent
+tool's own permission check), so nested calls resolve against that subagent's
+ruleset instead of the parent's. Permission asks raised inside a subagent are
+stamped on the synthetic `ses_claude_sub_*` child session id with
+`metadata.fromSubagent` and `metadata.parentSessionID` so the PermissionCard
+shows the localized "From subagent" badge and replies route back to the parent
+session; abort/turn-end cleanup settles those child-stamped asks too.
 
 `agentsMode: 'claude'` uses native Claude prompts/permissions and a discovered
 agent. Discovery scans bounded user and project `.claude/agents` trees; stale or

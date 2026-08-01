@@ -459,6 +459,67 @@ describe('from-claude slash / mcp / subagents', () => {
   });
 });
 
+describe('claude Agent/Task tool naming parity', () => {
+  it('maps Agent/Task tool_use parts to the OpenCode task tool id', () => {
+    const ctx = freshCtx({ sessionId: 'ses_parent' });
+    const { events } = useTool(ctx, {
+      id: 'agent_call_2', name: 'Agent', input: { description: 'Triage', prompt: 'triage' },
+    });
+    expect(findPart(events, 'tool')?.tool).toBe('task');
+
+    const taskCtx = freshCtx({ sessionId: 'ses_parent' });
+    const taskEvents = useTool(taskCtx, {
+      id: 'task_call_1', name: 'Task', input: { description: 'Fix', prompt: 'fix' },
+    });
+    expect(findPart(taskEvents.events, 'tool')?.tool).toBe('task');
+  });
+
+  it('leaves non-subagent tool names untouched', () => {
+    const ctx = freshCtx();
+    const { events } = useTool(ctx, { name: 'Bash', input: { command: 'ls' } });
+    expect(findPart(events, 'tool')?.tool).toBe('Bash');
+  });
+
+  it('preserves child session metadata and shows the Agent Task title on completion', () => {
+    const ctx = freshCtx({ sessionId: 'ses_parent' });
+    const start = useTool(ctx, {
+      id: 'agent_call_3', name: 'Task', input: { description: 'Fix bug', prompt: 'fix' },
+    });
+    const childId = start.events.find((e) => e.type === 'session.created')?.properties.info.id;
+
+    const { events } = finishTool(ctx, { id: 'agent_call_3', content: 'done' });
+    const part = findPart(events, 'tool');
+    expect(part.tool).toBe('task');
+    expect(part.state.status).toBe('completed');
+    expect(part.state.title).toBe('Agent Task');
+    expect(part.state.metadata).toEqual({ sessionId: childId, title: 'Fix bug' });
+  });
+
+  it('keeps child session metadata when the Agent tool errors', () => {
+    const ctx = freshCtx({ sessionId: 'ses_parent' });
+    useTool(ctx, { id: 'agent_call_4', name: 'Agent', input: { description: 'Risk', prompt: 'r' } });
+
+    const { events } = finishTool(ctx, { id: 'agent_call_4', content: 'boom', isError: true });
+    const part = findPart(events, 'tool');
+    expect(part.state.status).toBe('error');
+    expect(part.state.metadata.sessionId).toMatch(/^ses_claude_sub_/);
+    expect(part.state.metadata.title).toBe('Risk');
+  });
+
+  it('keeps child session metadata on abort closure of a running Agent tool', () => {
+    const ctx = freshCtx({ sessionId: 'ses_parent' });
+    useTool(ctx, { id: 'agent_call_5', name: 'Agent', input: { description: 'Slow', prompt: 's' } });
+
+    const events = buildTurnAbortEvents(ctx);
+    const part = events
+      .map((e) => e.properties.part)
+      .find((p) => p?.type === 'tool' && p.callID === 'agent_call_5');
+    expect(part.state.status).toBe('error');
+    expect(part.state.metadata.sessionId).toMatch(/^ses_claude_sub_/);
+    expect(part.state.metadata.title).toBe('Slow');
+  });
+});
+
 describe('claude session-limit auto-resume mapper', () => {
   it('initializes latestRateLimitInfo / parentRateLimitError / sdkRetryActive defaults', () => {
     const ctx = freshCtx();

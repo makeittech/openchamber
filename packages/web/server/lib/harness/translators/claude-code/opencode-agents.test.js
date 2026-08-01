@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   buildClaudeAgentDefinitions,
   buildOpenCodeAgentInheritance,
+  claudeDisallowedToolNames,
   claudePermissionModeFromEditAction,
   createOpenCodeAgentResolver,
   createOpenCodeToolPolicy,
@@ -216,6 +217,33 @@ describe('claudePermissionModeFromEditAction', () => {
   });
 });
 
+describe('claudeDisallowedToolNames', () => {
+  it('maps blanket deny rules to the Claude tool names of each permission key', () => {
+    expect(claudeDisallowedToolNames([
+      { permission: 'bash', pattern: '*', action: 'deny' },
+      { permission: 'edit', pattern: '**', action: 'deny' },
+    ])).toEqual([
+      'Bash', 'BashOutput', 'KillShell', 'KillBash',
+      'Edit', 'MultiEdit', 'Write', 'NotebookEdit',
+    ]);
+  });
+
+  it('ignores concrete-pattern denies, allow rules, and unknown permission keys', () => {
+    expect(claudeDisallowedToolNames([
+      { permission: 'bash', pattern: 'git *', action: 'deny' },
+      { permission: 'bash', pattern: '*', action: 'allow' },
+      { permission: 'weird', pattern: '*', action: 'deny' },
+    ])).toEqual([]);
+  });
+
+  it('dedupes tool names across duplicate rules', () => {
+    expect(claudeDisallowedToolNames([
+      { permission: 'bash', pattern: '*', action: 'deny' },
+      { permission: 'bash', pattern: '**', action: 'deny' },
+    ])).toHaveLength(4);
+  });
+});
+
 describe('buildClaudeAgentDefinitions', () => {
   it('returns an empty object for non-array input', () => {
     expect(buildClaudeAgentDefinitions(null)).toEqual({});
@@ -312,6 +340,29 @@ describe('buildClaudeAgentDefinitions', () => {
     const result = buildClaudeAgentDefinitions(agents);
     expect(Object.keys(result).length).toBe(50);
   });
+
+  it('converts blanket deny permission rules into SDK disallowedTools', () => {
+    const result = buildClaudeAgentDefinitions([
+      {
+        name: 'restricted',
+        mode: 'subagent',
+        prompt: 'Prompt',
+        permission: [
+          { permission: 'bash', pattern: '*', action: 'deny' },
+          { permission: 'read', pattern: '*', action: 'allow' },
+          { permission: 'edit', pattern: '*.env', action: 'deny' },
+        ],
+      },
+      {
+        name: 'permissive',
+        mode: 'subagent',
+        prompt: 'Prompt',
+        permission: [{ permission: '*', pattern: '*', action: 'allow' }],
+      },
+    ]);
+    expect(result.restricted.disallowedTools).toEqual(['Bash', 'BashOutput', 'KillShell', 'KillBash']);
+    expect(result.permissive.disallowedTools).toBeUndefined();
+  });
 });
 
 describe('fetchOpenCodeAgents', () => {
@@ -405,6 +456,25 @@ describe('buildOpenCodeAgentInheritance', () => {
   it('builds agentDefinitions from the whole agent list, not just the selected one', () => {
     const result = buildOpenCodeAgentInheritance(agents, 'reviewer');
     expect(Object.keys(result.agentDefinitions).sort()).toEqual(['reviewer', 'writer']);
+  });
+
+  it('exposes a lowercased-name policy map for every OpenCode subagent', () => {
+    const result = buildOpenCodeAgentInheritance(agents, 'reviewer');
+    expect(Object.keys(result.subagentPolicies).sort()).toEqual(['reviewer', 'writer']);
+    expect(result.subagentPolicies.reviewer('Bash', { command: 'git status' })).toBe('allow');
+    expect(result.subagentPolicies.reviewer('Read', { file_path: '/a' })).toBe('ask');
+    // A subagent without rules asks for everything, never allows.
+    expect(result.subagentPolicies.writer('Bash', { command: 'git status' })).toBe('ask');
+    expect(result.subagentPolicies.writer('Read', { file_path: '/a' })).toBe('ask');
+  });
+
+  it('does not leak primary/built-in agents into subagentPolicies', () => {
+    const result = buildOpenCodeAgentInheritance([
+      { name: 'build', mode: 'primary', native: true, prompt: 'x' },
+      { name: 'explore', mode: 'all', prompt: 'y', permission: [{ permission: '*', pattern: '*', action: 'deny' }] },
+    ], 'build');
+    expect(Object.keys(result.subagentPolicies)).toEqual(['explore']);
+    expect(result.subagentPolicies.explore('Bash', { command: 'git status' })).toBe('deny');
   });
 });
 

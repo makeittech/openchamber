@@ -372,6 +372,36 @@ describe('createClaudeCodeTranslator', () => {
     await finish(controller, translator, 'ses_oc_agents');
   });
 
+  it('applies the spawned subagent ruleset to nested calls and stamps asks on the child session id', async () => {
+    const controller = createControlledStream();
+    const { events, startQuery, translator } = createHarness(createHandle(controller), {
+      resolveOpenCodeAgents: agentResolver(),
+    });
+    await translator.prompt(basePrompt('ses_sub_policy', { agentsMode: 'opencode', agent: 'build' }));
+    const options = startQuery.mock.calls[0][0];
+
+    // The parent `build` agent allows Read; the `pr-review` subagent has no
+    // permission rules and must ask. SubagentStart binds the nested calls.
+    expect(options.hooks?.SubagentStart).toBeDefined();
+    await options.hooks.SubagentStart[0].hooks[0]({ agent_id: 'agent_1', agent_type: 'pr-review' });
+
+    const nested = options.canUseTool('Read', { file_path: '/project/src/a.ts' }, { agentID: 'agent_1' });
+    expect(getPendingPermissionCount()).toBe(1);
+    const asked = events.find((event) => event.type === 'permission.asked').properties;
+    expect(asked.sessionID).toMatch(/^ses_claude_sub_/);
+    expect(asked.sessionID).not.toBe('ses_sub_policy');
+    expect(asked.metadata.fromSubagent).toBe(true);
+    expect(asked.metadata.parentSessionID).toBe('ses_sub_policy');
+
+    replyPermission({ sessionId: asked.sessionID, requestId: asked.id, reply: 'reject' });
+    await expect(nested).resolves.toMatchObject({ behavior: 'deny' });
+
+    // Parent-level calls still resolve against the parent policy.
+    await expect(options.canUseTool('Read', { file_path: '/project/src/b.ts' }, {}))
+      .resolves.toEqual({ behavior: 'allow', updatedInput: { file_path: '/project/src/b.ts' } });
+    await finish(controller, translator, 'ses_sub_policy');
+  });
+
   it('derives OpenCode permissionMode from server rules, not the client', async () => {
     const controller = createControlledStream();
     const { startQuery, translator } = createHarness(createHandle(controller), {

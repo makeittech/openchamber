@@ -1083,6 +1083,102 @@ describe("respondToPermission passes directory", () => {
       directory: "/test/project",
     }])
   })
+
+  test("routes synthetic claude subagent session ids through the parent harness target", async () => {
+    sessionTargetById["parent-session"] = { harnessId: "claude-code", modelRef: "sonnet" }
+    const childSessionId = "ses_claude_sub_34567890abcd_toolu_abc"
+    const permission: PermissionRequest = {
+      id: "perm-sub",
+      sessionID: childSessionId,
+      permission: "bash",
+      patterns: [],
+      metadata: { fromSubagent: true, parentSessionID: "parent-session" },
+      always: [],
+    }
+    const store = createStore(
+      { [childSessionId]: [permission] },
+      {
+        session: [{
+          id: childSessionId,
+          parentID: "parent-session",
+          time: { created: 1 },
+        }] as Session[],
+      },
+    )
+    const childStores = createChildStores([["/test/project", store]])
+
+    const { setActionRefs, respondToPermission, dismissPermission } = await import("./session-actions")
+    setActionRefs(mockSdk as unknown as OpencodeClient, childStores, () => "/fallback/dir")
+
+    await respondToPermission(childSessionId, "perm-sub", "once")
+    expect(replyCalls.length).toBe(0)
+    expect(harnessPermissionReplyCalls).toEqual([{
+      sessionId: "parent-session",
+      requestId: "perm-sub",
+      reply: "once",
+      directory: "/test/project",
+    }])
+
+    harnessPermissionReplyCalls.length = 0
+    await dismissPermission(childSessionId, "perm-sub")
+    expect(replyCalls.length).toBe(0)
+    expect(harnessPermissionReplyCalls).toEqual([{
+      sessionId: "parent-session",
+      requestId: "perm-sub",
+      reply: "reject",
+      directory: "/test/project",
+    }])
+  })
+
+  test("resolves the parent via permission metadata when the child session record is missing", async () => {
+    sessionTargetById["parent-session"] = { harnessId: "claude-code", modelRef: "sonnet" }
+    const childSessionId = "ses_claude_sub_34567890abcd_agent_1"
+    const permission: PermissionRequest = {
+      id: "perm-sub2",
+      sessionID: childSessionId,
+      permission: "Bash",
+      patterns: [],
+      metadata: { parentSessionID: "parent-session" },
+      always: [],
+    }
+    const store = createStore({ [childSessionId]: [permission] })
+    const childStores = createChildStores([["/test/project", store]])
+
+    const { setActionRefs, respondToPermission } = await import("./session-actions")
+    setActionRefs(mockSdk as unknown as OpencodeClient, childStores, () => "/fallback/dir")
+
+    await respondToPermission(childSessionId, "perm-sub2", "reject")
+    expect(replyCalls.length).toBe(0)
+    expect(harnessPermissionReplyCalls).toEqual([{
+      sessionId: "parent-session",
+      requestId: "perm-sub2",
+      reply: "reject",
+      directory: "/test/project",
+    }])
+  })
+
+  test("falls back to the OpenCode reply client when no harness parent resolves", async () => {
+    const childSessionId = "ses_claude_sub_34567890abcd_toolu_xyz"
+    const permission: PermissionRequest = {
+      id: "perm-sub3",
+      sessionID: childSessionId,
+      permission: "bash",
+      patterns: [],
+      metadata: {},
+      always: [],
+    }
+    const store = createStore({ [childSessionId]: [permission] })
+    const childStores = createChildStores([["/test/project", store]])
+
+    const { setActionRefs, respondToPermission } = await import("./session-actions")
+    setActionRefs(mockSdk as unknown as OpencodeClient, childStores, () => "/fallback/dir")
+
+    await respondToPermission(childSessionId, "perm-sub3", "always")
+    expect(harnessPermissionReplyCalls.length).toBe(0)
+    expect(replyCalls.length).toBe(1)
+    expect(replyCalls[0].params.requestID).toBe("perm-sub3")
+    expect(replyCalls[0].params.reply).toBe("always")
+  })
 })
 
 describe("revertToMessage passes session directory", () => {

@@ -3,7 +3,7 @@
  * Fail-closed: unanswered prompts deny after timeout.
  */
 
-import { createOpenCodeId } from '../../events/from-claude.js';
+import { claudeSubagentSessionId, createOpenCodeId } from '../../events/from-claude.js';
 import { emitHarnessEvents } from '../../events/emit.js';
 import { createAskUserQuestionHandler } from './questions.js';
 
@@ -13,12 +13,103 @@ import { createAskUserQuestionHandler } from './questions.js';
  * @typedef {object} PendingPermission
  * @property {(result: object) => void} resolve
  * @property {string} sessionId
+ * @property {string} [parentSessionId] Real parent session for asks stamped on
+ *   a synthetic subagent child session id (`ses_claude_sub_*`). Abort/turn-end
+ *   cleanup of the parent must settle these too.
  * @property {string} directory
  * @property {Record<string, unknown>} input
  * @property {unknown[] | undefined} suggestions
  * @property {ReturnType<typeof setTimeout> | null} timer
  * @property {() => ((payload: object, options?: object) => void) | null | undefined} getBroadcast
  */
+
+/**
+ * Per-turn correlation state between the Claude Agent SDK's subagent ids and
+ * the Agent/Task tool_use that spawned them.
+ *
+ * The SDK reports a subagent by its internal `agentID` (canUseTool options,
+ * `agent_id` in hook inputs) but the child session id the UI knows is derived
+ * from the parent Agent/Task tool_use id. `SubagentStart` can fire before the
+ * parent tool's own permission check, so tool_use ids are noted as they appear
+ * and subagent starts bind to the earliest unbound call of the same agent type.
+ */
+export function createSubagentPermissionRuntime() {
+  /** @type {Map<string, string>} toolUseId → lowercased agent type */
+  const pendingByToolUseId = new Map();
+  /** @type {Map<string, string>} agentId → toolUseId */
+  const toolUseIdByAgentId = new Map();
+  /** @type {Map<string, string>} agentId → agent type */
+  const agentTypeByAgentId = new Map();
+
+  const findUnboundToolUseId = (agentType) => {
+    if (pendingByToolUseId.size === 0) return null;
+    if (agentType) {
+      for (const [toolUseId, type] of pendingByToolUseId) {
+        if (type === agentType) return toolUseId;
+      }
+      return null;
+    }
+    // Unknown type: bind the only outstanding call, if there is exactly one.
+    if (pendingByToolUseId.size === 1) return pendingByToolUseId.keys().next().value;
+    return null;
+  };
+
+  return {
+    /**
+     * Note the parent Agent/Task tool call (canUseTool without an agentID).
+     * May run after `SubagentStart` (the SDK can fire the hook before the
+     * parent tool's own permission check), so an earlier unbound start of the
+     * same type binds to this call immediately.
+     * @param {string} [toolUseId]
+     * @param {string} [agentType]
+     */
+    noteAgentToolCall(toolUseId, agentType = '') {
+      if (!toolUseId) return;
+      const type = trimmedString(agentType).toLowerCase();
+      if (type) {
+        for (const [agentId, existingType] of agentTypeByAgentId) {
+          if (!toolUseIdByAgentId.has(agentId) && existingType === type) {
+            toolUseIdByAgentId.set(agentId, toolUseId);
+            return; // consumed by the earlier subagent start
+          }
+        }
+      }
+      pendingByToolUseId.set(toolUseId, type);
+    },
+    /**
+     * Bind a subagent start (SDK `SubagentStart` hook) to its tool_use.
+     * @param {object} input Hook input: `{ agent_id, agent_type }`.
+     */
+    onSubagentStart(input) {
+      const agentId = trimmedString(input?.agent_id);
+      const agentType = trimmedString(input?.agent_type).toLowerCase();
+      if (!agentId) return;
+      agentTypeByAgentId.set(agentId, agentType);
+      const toolUseId = findUnboundToolUseId(agentType);
+      if (toolUseId) {
+        toolUseIdByAgentId.set(agentId, toolUseId);
+        pendingByToolUseId.delete(toolUseId);
+      }
+    },
+    /**
+     * Resolve the parent Agent/Task tool_use id for a nested call.
+     * @param {string} [agentId]
+     * @returns {string | null}
+     */
+    resolveToolUseId(agentId) {
+      if (!agentId) return null;
+      return toolUseIdByAgentId.get(agentId) ?? null;
+    },
+    /**
+     * Agent type (lowercased) for a nested call, or ''.
+     * @param {string} [agentId]
+     * @returns {string}
+     */
+    agentType(agentId) {
+      return agentId ? agentTypeByAgentId.get(agentId) ?? '' : '';
+    },
+  };
+}
 
 /** @type {Map<string, PendingPermission>} */
 const pending = new Map();
@@ -166,6 +257,11 @@ export function buildAlwaysPatterns(patterns, toolName) {
  *   Inherited OpenCode agent permission rules (`agentsMode: 'opencode'`).
  *   Omitted → every tool asks, which is the native Claude behavior.
  * @param {string} [params.policySourceLabel] Agent name used in deny messages.
+ * @param {ReturnType<typeof createSubagentPermissionRuntime>} [params.subagentRuntime]
+ *   Per-turn Agent/Task tool_use ↔ SDK agentID correlation state.
+ * @param {Record<string, (toolName: string, input: Record<string, unknown>) => 'allow' | 'deny' | 'ask'>} [params.subagentPolicies]
+ *   Lowercased OpenCode subagent name → its own tool policy, applied when the
+ *   SDK reports the call runs inside that subagent (canUseTool `agentID`).
  * @returns {(toolName: string, input: Record<string, unknown>, options: object) => Promise<object>}
  */
 export function createCanUseTool(params) {
@@ -180,6 +276,12 @@ export function createCanUseTool(params) {
   const assistantMessageId = typeof params?.assistantMessageId === 'string' ? params.assistantMessageId : '';
   const resolveToolPolicy = typeof params?.resolveToolPolicy === 'function' ? params.resolveToolPolicy : null;
   const policySourceLabel = trimmedString(params?.policySourceLabel);
+  const subagentRuntime = params?.subagentRuntime && typeof params.subagentRuntime === 'object'
+    ? params.subagentRuntime
+    : null;
+  const subagentPolicies = params?.subagentPolicies && typeof params.subagentPolicies === 'object'
+    ? params.subagentPolicies
+    : null;
 
   const askUserQuestion = createAskUserQuestionHandler({
     sessionId,
@@ -210,13 +312,33 @@ export function createCanUseTool(params) {
       return { behavior: 'allow', updatedInput: safeInput };
     }
 
+    // A nested tool call reports the subagent it runs inside. Correlate it
+    // back to the Agent/Task tool_use that spawned it and apply THAT
+    // subagent's permission ruleset instead of the parent's.
+    const agentId = typeof options?.agentID === 'string' ? options.agentID : '';
+    const nestedAgentType = subagentRuntime && agentId
+      ? subagentRuntime.agentType(agentId)
+      : '';
+    const subagentPolicy = nestedAgentType && subagentPolicies
+      ? subagentPolicies[nestedAgentType]
+      : null;
+
+    let policy = null;
+    let policyLabel = policySourceLabel;
+    if (subagentPolicy) {
+      policy = subagentPolicy;
+      policyLabel = nestedAgentType;
+    } else if (resolveToolPolicy) {
+      policy = resolveToolPolicy;
+    }
+
     // Inherited OpenCode agent rules decide before the user is involved, the
     // same way they do on an OpenCode session: `allow` runs, `deny` refuses,
     // and only `ask` (or no rule at all) reaches the PermissionCard.
-    if (resolveToolPolicy) {
+    if (policy) {
       let decision = 'ask';
       try {
-        decision = resolveToolPolicy(toolName, safeInput);
+        decision = policy(toolName, safeInput);
       } catch (error) {
         // A broken policy must not widen access — fall back to asking.
         const detail = error instanceof Error ? error.message : error;
@@ -229,12 +351,34 @@ export function createCanUseTool(params) {
       if (decision === 'deny') {
         return {
           behavior: 'deny',
-          message: policySourceLabel
-            ? `Denied by OpenCode agent "${policySourceLabel}" permission rules`
+          message: policyLabel
+            ? `Denied by OpenCode agent "${policyLabel}" permission rules`
             : 'Denied by OpenCode agent permission rules',
         };
       }
     }
+
+    // The parent Agent/Task call itself is noted so its subagent starts can
+    // bind back to this tool_use id (SubagentStart may fire before or after
+    // this check).
+    if (!agentId && (toolName === 'Agent' || toolName === 'Task')) {
+      subagentRuntime?.noteAgentToolCall(
+        typeof options?.toolUseID === 'string' ? options.toolUseID : '',
+        trimmedString(safeInput.subagent_type) || trimmedString(safeInput.agent),
+      );
+    }
+
+    // Permission asks raised *inside* a subagent are stamped on the synthetic
+    // child session id (same scheme as the Agent/Task child sessions) and
+    // carry the real parent in metadata, so the PermissionCard shows the
+    // localized "From subagent" badge and replies route back to the parent.
+    const askSessionId = agentId
+      ? claudeSubagentSessionId(
+        sessionId,
+        subagentRuntime?.resolveToolUseId(agentId) || agentId,
+      )
+      : sessionId;
+    const parentSessionId = agentId ? sessionId : '';
 
     const requestId = createId();
     const tool = trimmedString(toolName) || 'tool';
@@ -253,12 +397,13 @@ export function createCanUseTool(params) {
       ...(typeof options.displayName === 'string' ? { displayName: options.displayName } : {}),
       ...(typeof options.toolUseID === 'string' ? { toolUseID: options.toolUseID } : {}),
       ...(typeof options.requestId === 'string' ? { sdkRequestId: options.requestId } : {}),
+      ...(agentId ? { fromSubagent: true, parentSessionID: sessionId } : {}),
       always,
     };
 
     const permissionRequest = {
       id: requestId,
-      sessionID: sessionId,
+      sessionID: askSessionId,
       permission: tool,
       patterns,
       metadata,
@@ -277,7 +422,8 @@ export function createCanUseTool(params) {
       /** @type {PendingPermission} */
       const entry = {
         resolve,
-        sessionId,
+        sessionId: askSessionId,
+        ...(parentSessionId ? { parentSessionId } : {}),
         directory,
         input: safeInput,
         suggestions: Array.isArray(options.suggestions) ? options.suggestions : undefined,
@@ -337,6 +483,10 @@ export function replyPermission(body) {
 
 /**
  * Fail-closed: deny all pending prompts for a session (abort / turn end).
+ * Also settles asks stamped on a synthetic subagent child session id whose
+ * parent is this session — otherwise aborting a parent turn leaves orphaned
+ * pending asks for its subagent.
+ *
  * @param {string} sessionId
  * @returns {number} settled count
  */
@@ -344,7 +494,7 @@ export function rejectPendingForSession(sessionId) {
   if (typeof sessionId !== 'string' || !sessionId) return 0;
   let count = 0;
   for (const [requestId, entry] of Array.from(pending.entries())) {
-    if (entry.sessionId !== sessionId) continue;
+    if (entry.sessionId !== sessionId && entry.parentSessionId !== sessionId) continue;
     settlePending(requestId, entry, 'reject');
     count += 1;
   }

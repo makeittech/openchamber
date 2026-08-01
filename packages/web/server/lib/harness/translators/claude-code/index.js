@@ -6,6 +6,7 @@ import {
 } from './mcp-config.js';
 import {
   createCanUseTool,
+  createSubagentPermissionRuntime,
   rejectPendingForSession as rejectPendingPermissions,
   replyPermission as replyPendingPermission,
 } from './permissions.js';
@@ -292,6 +293,8 @@ export function createClaudeCodeTranslator(deps = {}) {
       }
     }
 
+    const subagentPermissionRuntime = createSubagentPermissionRuntime();
+
     const canUseTool = createCanUseTool({
       sessionId,
       directory,
@@ -300,6 +303,8 @@ export function createClaudeCodeTranslator(deps = {}) {
       ...(inheritance ? {
         resolveToolPolicy: inheritance.resolveToolPolicy,
         policySourceLabel: inheritance.agentName || requestedAgentName,
+        subagentPolicies: inheritance.subagentPolicies,
+        subagentRuntime: subagentPermissionRuntime,
       } : {}),
     });
 
@@ -334,6 +339,24 @@ export function createClaudeCodeTranslator(deps = {}) {
       ? inheritance.agentDefinitions
       : null;
 
+    // When OpenCode subagents are registered, bind each SDK subagent start
+    // (agent_id/agent_type) back to the Agent/Task tool_use that spawned it so
+    // nested permission calls resolve against that subagent's own ruleset.
+    let hooks = null;
+    if (inheritance && Object.keys(inheritance.subagentPolicies || {}).length > 0) {
+      hooks = {
+        SubagentStart: [{ hooks: [async (input) => {
+          subagentPermissionRuntime.onSubagentStart(input);
+        }] }],
+      };
+    }
+    if (internal?.toolGuard) {
+      hooks = {
+        ...(hooks || {}),
+        PreToolUse: [{ hooks: [internal.toolGuard] }],
+      };
+    }
+
     let permissionMode;
     if (agentsMode === 'opencode') {
       permissionMode = inheritance
@@ -363,9 +386,7 @@ export function createClaudeCodeTranslator(deps = {}) {
         settingSources: ['user', 'project', 'local'],
         forwardSubagentText: true,
         agentProgressSummaries: true,
-        ...(internal?.toolGuard ? {
-          hooks: { PreToolUse: [{ hooks: [internal.toolGuard] }] },
-        } : {}),
+        ...(hooks ? { hooks } : {}),
       });
     } catch (error) {
       turnAbort.abort();

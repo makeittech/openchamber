@@ -15,6 +15,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getSessionBinding } from '../../session-bindings.js';
+import {
+  claudeSubagentSessionId,
+  claudeToolNameToOpenCodeId,
+  claudeToolPartTitle,
+} from '../../events/from-claude.js';
 import { resolveClaudeProjectsRoot } from './import-from-disk.js';
 import { isRecoveryContinuationRecord } from './recovery-transcript.js';
 
@@ -216,6 +221,33 @@ function capToolOutput(text) {
 }
 
 /**
+ * Replay-time subagent metadata for an Agent/Task tool part. Matches the live
+ * mapper (`from-claude.js`) so a replayed history shows the same synthetic
+ * child session id + title and keeps the "Open subtask" link after settle.
+ *
+ * @param {object} block
+ * @param {string} sessionId
+ * @param {string} callId
+ * @returns {{ sessionId: string, title: string } | undefined}
+ */
+function replaySubagentMetadata(block, sessionId, callId) {
+  const name = typeof block?.name === 'string' ? block.name.trim() : '';
+  if (name !== 'Agent' && name !== 'Task') return undefined;
+  const input = block?.input && typeof block.input === 'object' && !Array.isArray(block.input)
+    ? block.input
+    : {};
+  const description = typeof input.description === 'string' && input.description.trim()
+    ? input.description.trim().slice(0, 120)
+    : '';
+  const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : '';
+  const agentType = typeof input.subagent_type === 'string' && input.subagent_type.trim()
+    ? input.subagent_type.trim()
+    : '';
+  const title = description || prompt.slice(0, 80) || agentType || 'Subagent';
+  return { sessionId: claudeSubagentSessionId(sessionId, callId), title };
+}
+
+/**
  * @param {unknown} usage
  * @returns {{ input: number, output: number, reasoning: number, cache: { read: number, write: number } }}
  */
@@ -367,14 +399,24 @@ export function parseClaudeTranscript(params) {
         const output = capToolOutput(toolResultText(block.content));
         const ended = createdMs || Date.now();
         const time = { start: entry.part.state.time?.start ?? ended, end: ended };
+        const subagentMetadata = typeof entry.part.state.metadata === 'object'
+          && entry.part.state.metadata !== null
+          ? entry.part.state.metadata
+          : undefined;
         entry.part.state = block.is_error === true
-          ? { status: 'error', input: entry.part.state.input, error: output || 'Tool error', time }
+          ? {
+            status: 'error',
+            input: entry.part.state.input,
+            error: output || 'Tool error',
+            ...(subagentMetadata ? { metadata: subagentMetadata } : {}),
+            time,
+          }
           : {
             status: 'completed',
             input: entry.part.state.input,
             output,
-            title: entry.part.tool,
-            metadata: {},
+            title: claudeToolPartTitle(entry.rawName),
+            metadata: subagentMetadata ?? {},
             time,
           };
       }
@@ -423,16 +465,23 @@ export function parseClaudeTranscript(params) {
         const input = block.input && typeof block.input === 'object' && !Array.isArray(block.input)
           ? block.input
           : {};
+        const rawName = typeof block.name === 'string' && block.name.trim() ? block.name.trim() : 'tool';
+        const subagentMetadata = replaySubagentMetadata(block, sessionId, callId);
         const part = {
           id: transcriptId('prt', createdMs, nextSeq(), `${seed}:tool:${callId}`),
           sessionID: sessionId,
           messageID: assistant.info.id,
           type: 'tool',
           callID: callId,
-          tool: typeof block.name === 'string' && block.name.trim() ? block.name.trim() : 'tool',
-          state: { status: 'running', input, time: { start: createdMs || completed } },
+          tool: claudeToolNameToOpenCodeId(rawName),
+          state: {
+            status: 'running',
+            input,
+            ...(subagentMetadata ? { metadata: subagentMetadata } : {}),
+            time: { start: createdMs || completed },
+          },
         };
-        toolParts.set(callId, { part });
+        toolParts.set(callId, { part, rawName });
         assistant.parts.push(part);
       }
     }
@@ -442,10 +491,14 @@ export function parseClaudeTranscript(params) {
   // tools as error so the UI does not spin forever on replay.
   for (const { part } of toolParts.values()) {
     if (part.state?.status === 'running') {
+      const subagentMetadata = typeof part.state.metadata === 'object' && part.state.metadata !== null
+        ? part.state.metadata
+        : undefined;
       part.state = {
         status: 'error',
         input: part.state.input,
         error: 'Tool call did not complete (transcript ended)',
+        ...(subagentMetadata ? { metadata: subagentMetadata } : {}),
         time: { start: part.state.time?.start, end: part.state.time?.start },
       };
     }

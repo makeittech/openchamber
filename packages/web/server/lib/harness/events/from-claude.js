@@ -180,7 +180,45 @@ export function createClaudeMapperContext(input) {
 
 const SUBAGENT_SESSION_PREFIX = 'ses_claude_sub_';
 
-function claudeSubagentSessionId(parentSessionId, toolUseId) {
+/**
+ * Map a Claude tool name onto the OpenCode tool id the shared UI renders.
+ * Claude's own subagent tools (`Agent`, `Task`) render through the OpenCode
+ * `task` tool part (Agent Task row, nested summary, "Open subtask" link), so
+ * they must arrive with the `task` id instead of their internal name.
+ *
+ * @param {string} toolName
+ * @returns {string}
+ */
+export function claudeToolNameToOpenCodeId(toolName) {
+  const name = trimmedText(toolName);
+  if (name === 'Agent' || name === 'Task') return 'task';
+  return name || 'tool';
+}
+
+/**
+ * Human label for a tool part title on completion. The mapped `task` tool
+ * shows "Agent Task" rather than the raw internal `Agent`/`Task` name.
+ *
+ * @param {string} toolName
+ * @returns {string}
+ */
+export function claudeToolPartTitle(toolName) {
+  const name = trimmedText(toolName);
+  if (name === 'Agent' || name === 'Task') return 'Agent Task';
+  return name || 'tool';
+}
+
+/**
+ * Deterministic synthetic OpenCode session id for a Claude subagent. The
+ * parent session tail plus the Agent/Task tool_use id keep it stable for the
+ * whole turn and reproducible for permission asks spawned inside the
+ * subagent (see `permissions.js`).
+ *
+ * @param {string} parentSessionId
+ * @param {string} toolUseId
+ * @returns {string}
+ */
+export function claudeSubagentSessionId(parentSessionId, toolUseId) {
   const safeTool = String(toolUseId || 'agent').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24) || 'agent';
   return `${SUBAGENT_SESSION_PREFIX}${parentSessionId.slice(-12)}_${safeTool}`;
 }
@@ -509,9 +547,24 @@ function toolPartEvent(ctx, callId, entry, state) {
     id: entry.partId,
     type: 'tool',
     callID: callId,
-    tool: entry.toolName,
+    tool: claudeToolNameToOpenCodeId(entry.toolName),
     state,
   });
+}
+
+/**
+ * Subagent metadata attached to the Agent/Task tool part at tool_use time.
+ * The child session id must survive tool completion, otherwise the UI's
+ * "Open subtask" link disappears once the tool finishes.
+ *
+ * @param {ClaudeMapperContext} ctx
+ * @param {string} callId
+ * @returns {{ sessionId: string, title: string } | undefined}
+ */
+function childToolMetadata(ctx, callId) {
+  const child = ctx.subagentByToolUseId?.get(callId);
+  if (!child) return undefined;
+  return { sessionId: child.sessionId, title: child.title };
 }
 
 /**
@@ -605,9 +658,23 @@ function mapToolResultBlock(ctx, block) {
   const input = entry.input && typeof entry.input === 'object' ? entry.input : {};
   const endedAt = Date.now();
   const time = { start: typeof entry.startedAt === 'number' ? entry.startedAt : endedAt, end: endedAt };
+  const childMeta = childToolMetadata(ctx, callId);
   const state = block.is_error === true
-    ? { status: 'error', input, error: output || 'Tool error', time }
-    : { status: 'completed', input, output, title: entry.toolName, metadata: {}, time };
+    ? {
+      status: 'error',
+      input,
+      error: output || 'Tool error',
+      ...(childMeta ? { metadata: childMeta } : {}),
+      time,
+    }
+    : {
+      status: 'completed',
+      input,
+      output,
+      title: claudeToolPartTitle(entry.toolName),
+      metadata: childMeta ?? {},
+      time,
+    };
   return [toolPartEvent(ctx, callId, entry, state)];
 }
 
@@ -618,10 +685,12 @@ function buildContextClosureEvents(ctx, reason) {
   for (const [callId, entry] of ctx.toolParts?.entries() ?? []) {
     if (!entry || entry.settled) continue;
     entry.settled = true;
+    const childMeta = childToolMetadata(ctx, callId);
     events.push(toolPartEvent(ctx, callId, entry, {
       status: 'error',
       input: entry.input && typeof entry.input === 'object' ? entry.input : {},
       error: reason,
+      ...(childMeta ? { metadata: childMeta } : {}),
       time: {
         start: typeof entry.startedAt === 'number' ? entry.startedAt : ctx.assistantCreatedAt,
         end: now,

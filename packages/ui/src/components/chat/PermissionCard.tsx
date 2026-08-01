@@ -10,6 +10,7 @@ import { Icon } from "@/components/icon/Icon";
 import { DiffPreview, WritePreview } from './DiffPreview';
 import { useI18n } from '@/lib/i18n';
 import { getVisiblePermissionPatterns } from './permissionCardPatterns';
+import { isPermissionFromSubagent } from './permissionCardSubagent';
 
 const PERMISSION_BASH_CUSTOM_STYLE: React.CSSProperties = {
   margin: 0,
@@ -98,11 +99,10 @@ export const PermissionCard: React.FC<PermissionCardProps> = ({
   const respondToPermission = sessionActions.respondToPermission;
   const sessions = useSessions();
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
-  const isFromSubagent = React.useMemo(() => {
-    if (!currentSessionId || permission.sessionID === currentSessionId) return false;
-    const sourceSession = sessions.find((session) => session.id === permission.sessionID);
-    return Boolean(sourceSession?.parentID && sourceSession.parentID === currentSessionId);
-  }, [permission.sessionID, currentSessionId, sessions]);
+  const isFromSubagent = React.useMemo(
+    () => isPermissionFromSubagent(permission, currentSessionId, sessions),
+    [permission, currentSessionId, sessions],
+  );
 
   const handleResponse = async (response: PermissionResponse) => {
     setIsResponding(true);
@@ -325,7 +325,7 @@ export const PermissionCard: React.FC<PermissionCardProps> = ({
                 </span>
                 {isFromSubagent ? (
                   <span className="typography-micro text-muted-foreground px-1.5 py-0.5 rounded bg-foreground/5">
-                    From subagent
+                    {t('chat.questionCard.fromSubagent')}
                   </span>
                 ) : null}
               </div>

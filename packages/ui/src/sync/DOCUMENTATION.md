@@ -216,6 +216,8 @@ Rules:
 3. `session-ui-store.ts` should delegate to `session-actions.ts` for these mutations instead of duplicating SDK calls.
 4. Sending after a revert commits the new branch optimistically: remove the reverted tail and marker before inserting the new message, and restore both if the send is rejected.
 
+Permission replies (`respondToPermission` / `dismissPermission`) resolve the harness target through `getSessionTarget` first, then walk up from synthetic Claude harness subagent session ids (`ses_claude_sub_*`): such ids are transcript-only broadcast shells that are never selectable sessions, so the direct lookup misses the `claude-code` target. The walk reads the child session's `parentID` from the loaded child stores, falling back to the pending ask's `metadata.parentSessionID`, and replies through the parent's harness target — otherwise Allow/Deny would silently hit the OpenCode runtime instead of the Claude harness reply endpoint.
+
 Examples of global-store updates performed in `session-actions.ts`:
 
 - `createSession()` -> `upsertSession(session)`
