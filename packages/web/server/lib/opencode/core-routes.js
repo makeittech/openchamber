@@ -601,6 +601,13 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
       return next();
     }
 
+    // The Linear OAuth callback arrives as a cross-site top-level navigation,
+    // so the SameSite=Strict session cookie is not attached. The single-use
+    // OAuth state parameter acts as the credential for this request instead.
+    if (req.path === '/api/linear/auth/callback') {
+      return next();
+    }
+
     const requestScope = tunnelAuthController.classifyRequestScope(req);
     if (requestScope === 'tunnel' || requestScope === 'unknown-public') {
       return tunnelAuthController.requireTunnelSession(req, res, next);
@@ -1063,6 +1070,8 @@ export const registerCommonRequestMiddleware = (app, dependencies) => {
       req.path.startsWith('/api/projects') ||
       req.path.startsWith('/api/fs') ||
       req.path.startsWith('/api/git') ||
+      req.path.startsWith('/api/linear') ||
+      req.path.startsWith('/api/workqueue') ||
       req.path.startsWith('/api/magic-prompts') ||
       req.path.startsWith('/api/prompts') ||
       req.path.startsWith('/api/terminal') ||

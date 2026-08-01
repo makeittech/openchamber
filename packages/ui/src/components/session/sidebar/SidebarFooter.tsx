@@ -9,6 +9,7 @@ type Props = {
   onOpenShortcuts: () => void;
   onOpenAbout: () => void;
   onOpenUpdate: () => void;
+  onOpenWorkQueue?: () => void;
   showRuntimeButtons?: boolean;
   showUpdateButton?: boolean;
 };
@@ -20,6 +21,7 @@ export function SidebarFooter({
   onOpenShortcuts,
   onOpenAbout,
   onOpenUpdate,
+  onOpenWorkQueue,
   showRuntimeButtons = true,
   showUpdateButton = true,
 }: Props): React.ReactNode {
@@ -33,6 +35,16 @@ export function SidebarFooter({
     <div className="flex shrink-0 items-center justify-start gap-1 px-2.5 py-2">
       {showRuntimeButtons ? (
         <>
+          {onOpenWorkQueue ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button type="button" onClick={onOpenWorkQueue} className={footerButtonClassName} aria-label={t('sessions.sidebar.footer.actions.workQueue')}>
+                  <Icon name="layout-column" className="h-4.5 w-4.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={4}><p>{t('sessions.sidebar.footer.actions.workQueue')}</p></TooltipContent>
+            </Tooltip>
+          ) : null}
           <Tooltip>
             <TooltipTrigger asChild>
               <button type="button" onClick={onOpenSettings} className={footerButtonClassName} aria-label={t('sessions.sidebar.footer.actions.settings')}>

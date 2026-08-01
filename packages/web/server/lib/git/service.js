@@ -4214,6 +4214,39 @@ export async function getLog(directory, options = {}) {
   }
 }
 
+// Quick keyword search over commit messages (any ref, case-insensitive) —
+// used by the Work Queue staleness check to find commits that may already
+// have resolved an open issue/PR. Returns [] on any git failure rather than
+// throwing, since this is an advisory signal, not authoritative state.
+export async function searchCommitsByReference(directory, reference, { maxCount = 10 } = {}) {
+  if (!reference) return [];
+  try {
+    const { git } = await createRepositoryGitContext(directory);
+    const rawLog = await git.raw([
+      'log',
+      '--all',
+      `--max-count=${maxCount}`,
+      '--date=iso',
+      `--grep=${reference}`,
+      '--fixed-strings',
+      '-i',
+      '--pretty=format:%x1e%H%x1f%ad%x1f%s',
+    ]);
+    return rawLog
+      .split('\x1e')
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const [hash, date, message] = entry.split('\x1f');
+        return { hash: hash || '', date: date || '', message: message || '' };
+      })
+      .filter((entry) => entry.hash);
+  } catch (error) {
+    console.warn('Failed to search commits by reference:', error?.message || error);
+    return [];
+  }
+}
+
 export async function isLinkedWorktree(directory) {
   const git = await createGit(directory);
   try {

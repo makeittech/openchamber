@@ -40,6 +40,8 @@ import { PlanView } from '@/components/views/PlanView';
 const DiagramView = lazyWithChunkRecovery(() => import('@/components/views/DiagramView').then(m => ({ default: m.DiagramView })));
 const SettingsView = lazyWithChunkRecovery(() => import('@/components/views/SettingsView').then(m => ({ default: m.SettingsView })));
 const SettingsWindow = lazyWithChunkRecovery(() => import('@/components/views/SettingsWindow').then(m => ({ default: m.SettingsWindow })));
+const WorkQueueView = lazyWithChunkRecovery(() => import('@/components/workqueue/WorkQueueView').then(m => ({ default: m.WorkQueueView })));
+const WorkQueueWindow = lazyWithChunkRecovery(() => import('@/components/workqueue/WorkQueueWindow').then(m => ({ default: m.WorkQueueWindow })));
 
 export const MainLayout: React.FC = () => {
     const isSidebarOpen = useUIStore((state) => state.isSidebarOpen);
@@ -48,6 +50,8 @@ export const MainLayout: React.FC = () => {
     const isSessionSwitcherOpen = useUIStore((state) => state.isSessionSwitcherOpen);
     const isSettingsDialogOpen = useUIStore((state) => state.isSettingsDialogOpen);
     const setSettingsDialogOpen = useUIStore((state) => state.setSettingsDialogOpen);
+    const isWorkQueueOpen = useUIStore((state) => state.isWorkQueueOpen);
+    const setWorkQueueOpen = useUIStore((state) => state.setWorkQueueOpen);
     const isMultiRunLauncherOpen = useUIStore((state) => state.isMultiRunLauncherOpen);
     const setMultiRunLauncherOpen = useUIStore((state) => state.setMultiRunLauncherOpen);
     const multiRunLauncherPrefillPrompt = useUIStore((state) => state.multiRunLauncherPrefillPrompt);
@@ -403,6 +407,20 @@ export const MainLayout: React.FC = () => {
                             </ErrorBoundary>
                         </div>
                     )}
+
+                    {/* Mobile Work Queue: full screen */}
+                    {isWorkQueueOpen && (
+                        <div
+                            className="absolute inset-0 z-10 bg-background"
+                            style={{ paddingTop: 'var(--oc-safe-area-top, 0px)' }}
+                        >
+                            <ErrorBoundary>
+                                <React.Suspense fallback={null}>
+                                    <WorkQueueView onClose={() => setWorkQueueOpen(false)} />
+                                </React.Suspense>
+                            </ErrorBoundary>
+                        </div>
+                    )}
                 </DrawerProvider>
             ) : (
                 <>
@@ -468,6 +486,14 @@ export const MainLayout: React.FC = () => {
                         <SettingsWindow
                             open={isSettingsDialogOpen}
                             onOpenChange={setSettingsDialogOpen}
+                        />
+                    </React.Suspense>
+
+                    {/* Desktop Work Queue: windowed dialog with blur */}
+                    <React.Suspense fallback={null}>
+                        <WorkQueueWindow
+                            open={isWorkQueueOpen}
+                            onOpenChange={setWorkQueueOpen}
                         />
                     </React.Suspense>
                 </>
