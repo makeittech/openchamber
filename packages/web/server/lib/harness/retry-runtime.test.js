@@ -1,10 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { createHarnessRetryRuntime } from './retry-runtime.js';
 import { createPendingRetryStore } from './pending-retry-store.js';
-import {
-  resetHarnessTurnSnapshots,
-} from './turn-snapshot.js';
-
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -38,6 +34,18 @@ function baseObservation(sessionId = 'ses_1', overrides = {}) {
 function createFakeTimer(getNow, setNow) {
   let handle = 0;
   const pending = new Map();
+
+  function takeEarliest() {
+    let earliest = null;
+    for (const [id, entry] of pending) {
+      if (!earliest || entry.delayMs < earliest.delayMs) earliest = { id, ...entry };
+    }
+    if (!earliest) return null;
+    pending.delete(earliest.id);
+    setNow(Math.max(getNow(), earliest.dueAt));
+    return earliest;
+  }
+
   return {
     setTimer(fn, delayMs) {
       handle += 1;
@@ -48,45 +56,17 @@ function createFakeTimer(getNow, setNow) {
     clearTimer(id) {
       pending.delete(id);
     },
-    pending,
     async runAll() {
-      // Drain the timers that existed when this turn started. Timers created by
-      // a retry outcome belong to a later clock turn and remain pending.
       const initialCount = pending.size;
       for (let count = 0; count < initialCount && pending.size > 0; count += 1) {
-        let earliest = null;
-        for (const [id, entry] of pending) {
-          if (!earliest || entry.delayMs < earliest.delayMs) {
-            earliest = { id, ...entry };
-          }
-        }
+        const earliest = takeEarliest();
         if (!earliest) break;
-        pending.delete(earliest.id);
-        setNow(Math.max(getNow(), earliest.dueAt));
         await earliest.fn();
       }
     },
-    async runOne() {
-      let earliest = null;
-      for (const [id, entry] of pending) {
-        if (!earliest || entry.delayMs < earliest.delayMs) {
-          earliest = { id, ...entry };
-        }
-      }
-      if (!earliest) return false;
-      pending.delete(earliest.id);
-      setNow(Math.max(getNow(), earliest.dueAt));
-      await earliest.fn();
-      return true;
-    },
     startOne() {
-      let earliest = null;
-      for (const [id, entry] of pending) {
-        if (!earliest || entry.delayMs < earliest.delayMs) earliest = { id, ...entry };
-      }
+      const earliest = takeEarliest();
       if (!earliest) return null;
-      pending.delete(earliest.id);
-      setNow(Math.max(getNow(), earliest.dueAt));
       return Promise.resolve(earliest.fn());
     },
     count() {
@@ -105,6 +85,17 @@ describe('createHarnessRetryRuntime', () => {
   let inspectResult;
   let sessionState;
   let runtime;
+
+  function statusCalls(sessionId, type) {
+    return emitCalls.filter((call) => (
+      call.sessionId === sessionId && call.status.type === type
+    ));
+  }
+
+  async function scheduleAndRun(sessionId, overrides = {}) {
+    runtime.schedule(baseObservation(sessionId, overrides));
+    await fakeTimers.runAll();
+  }
 
   beforeEach(() => {
     clockNow = 1_700_000_000_000;
@@ -150,7 +141,6 @@ describe('createHarnessRetryRuntime', () => {
     } catch {
       // ignore
     }
-    resetHarnessTurnSnapshots();
   });
 
   it('schedule persists waiting before emitting retry status', () => {
@@ -158,8 +148,7 @@ describe('createHarnessRetryRuntime', () => {
     const record = store.get('ses_persist');
     expect(record).not.toBeNull();
     expect(record.state).toBe('waiting');
-    const retryCalls = emitCalls.filter((e) => e.status.type === 'retry');
-    expect(retryCalls.length).toBeGreaterThanOrEqual(1);
+    expect(statusCalls('ses_persist', 'retry').length).toBeGreaterThanOrEqual(1);
   });
 
   it('schedule throws on persistence failure', () => {
@@ -196,14 +185,13 @@ describe('createHarnessRetryRuntime', () => {
     runtime.schedule(baseObservation('ses_dup'));
     const second = store.get('ses_dup');
     expect(second.generation).toBe(first.generation);
-    expect(emitCalls.filter((e) => e.status.type === 'retry').length).toBe(1);
+    expect(statusCalls('ses_dup', 'retry')).toHaveLength(1);
   });
 
   it('higher generation supersedes; lower generation is no-op', () => {
     runtime.schedule(baseObservation('ses_gen', { attempt: 1 }));
     const first = store.get('ses_gen');
     const firstGen = first.generation;
-    // Simulate a fresh observation with a higher generation by scheduling again after incrementing attempt
     runtime.schedule(baseObservation('ses_gen', { attempt: 2 }));
     const second = store.get('ses_gen');
     expect(second.generation).toBeGreaterThan(firstGen);
@@ -219,29 +207,22 @@ describe('createHarnessRetryRuntime', () => {
 
   it('wake re-reads now and launches overdue work after grace', async () => {
     launchOutcomes.push({ outcome: 'success' });
-    runtime.schedule(baseObservation('ses_wake', { resetAt: clockNow + 1000 }));
-    const beforeLaunch = launchCalls.length;
-    await fakeTimers.runAll();
-    expect(launchCalls.length).toBe(1);
+    await scheduleAndRun('ses_wake', { resetAt: clockNow + 1000 });
+    expect(launchCalls).toHaveLength(1);
   });
 
   it('launching is persisted before launchRecovery is called', async () => {
     launchOutcomes.push({ outcome: 'success' });
-    runtime.schedule(baseObservation('ses_launching'));
-    await fakeTimers.runAll();
-    // The record was deleted on success; verify launch was called
-    expect(launchCalls.length).toBe(1);
-    // After success, record is gone
+    await scheduleAndRun('ses_launching');
+    expect(launchCalls).toHaveLength(1);
     expect(store.get('ses_launching')).toBeNull();
   });
 
   it('success deletes record before emitting idle', async () => {
     launchOutcomes.push({ outcome: 'success' });
-    runtime.schedule(baseObservation('ses_success'));
-    await fakeTimers.runAll();
+    await scheduleAndRun('ses_success');
     expect(store.get('ses_success')).toBeNull();
-    const idleCalls = emitCalls.filter((e) => e.status.type === 'idle' && e.sessionId === 'ses_success');
-    expect(idleCalls.length).toBe(1);
+    expect(statusCalls('ses_success', 'idle')).toHaveLength(1);
   });
 
   it('second rate-limit increments attempt and returns to retry without idle', async () => {
@@ -254,36 +235,29 @@ describe('createHarnessRetryRuntime', () => {
         assistantUuid: 'asst_2',
       },
     });
-    runtime.schedule(baseObservation('ses_second', { attempt: 1 }));
-    await fakeTimers.runAll();
-    // Launch happened, then rate-limit back to waiting
-    expect(launchCalls.length).toBe(1);
+    await scheduleAndRun('ses_second', { attempt: 1 });
+    expect(launchCalls).toHaveLength(1);
     const record = store.get('ses_second');
     expect(record).not.toBeNull();
     expect(record.attempt).toBe(2);
     expect(record.state).toBe('waiting');
-    // No idle emitted (still waiting)
-    const idleCalls = emitCalls.filter((e) => e.sessionId === 'ses_second' && e.status.type === 'idle');
-    expect(idleCalls.length).toBe(0);
+    expect(statusCalls('ses_second', 'idle')).toHaveLength(0);
   });
 
   it('hard error deletes record and emits idle', async () => {
     launchOutcomes.push({ outcome: 'error' });
-    runtime.schedule(baseObservation('ses_harderr'));
-    await fakeTimers.runAll();
+    await scheduleAndRun('ses_harderr');
     expect(store.get('ses_harderr')).toBeNull();
-    const idleCalls = emitCalls.filter((e) => e.sessionId === 'ses_harderr' && e.status.type === 'idle');
-    expect(idleCalls.length).toBeGreaterThanOrEqual(1);
+    expect(statusCalls('ses_harderr', 'idle').length).toBeGreaterThanOrEqual(1);
   });
 
   it('blocked transcript persists blocked with no next and never launches', async () => {
     inspectResult = { safe: false, reason: 'unsettled-tool', tailPresent: true };
-    runtime.schedule(baseObservation('ses_block'));
-    await fakeTimers.runAll();
+    await scheduleAndRun('ses_block');
     const record = store.get('ses_block');
     expect(record).not.toBeNull();
     expect(record.state).toBe('blocked');
-    expect(launchCalls.length).toBe(0);
+    expect(launchCalls).toHaveLength(0);
     const blockedStatus = emitCalls.findLast((e) => e.sessionId === 'ses_block' && e.status.type === 'retry');
     expect(blockedStatus).toBeDefined();
     expect(blockedStatus.status.next).toBeUndefined();
@@ -293,8 +267,7 @@ describe('createHarnessRetryRuntime', () => {
     runtime.schedule(baseObservation('ses_cancelwait'));
     await runtime.cancel('ses_cancelwait');
     expect(store.get('ses_cancelwait')).toBeNull();
-    const idleCalls = emitCalls.filter((e) => e.sessionId === 'ses_cancelwait' && e.status.type === 'idle');
-    expect(idleCalls.length).toBeGreaterThanOrEqual(1);
+    expect(statusCalls('ses_cancelwait', 'idle').length).toBeGreaterThanOrEqual(1);
   });
 
   it('cancel launching aborts the active launch signal', async () => {
@@ -305,7 +278,7 @@ describe('createHarnessRetryRuntime', () => {
     const wake = fakeTimers.startOne();
     await Promise.resolve();
     await Promise.resolve();
-    expect(launchCalls.length).toBe(1);
+    expect(launchCalls).toHaveLength(1);
     const signal = launchCalls[0].signal;
     expect(signal).toBeDefined();
     signal.addEventListener('abort', () => { aborted = true; });
@@ -320,12 +293,10 @@ describe('createHarnessRetryRuntime', () => {
     expect(store.get('ses_stop')).not.toBeNull();
     runtime.stop();
     expect(fakeTimers.count()).toBe(0);
-    // Record preserved
     expect(store.get('ses_stop')).not.toBeNull();
   });
 
   it('start seeds existing waiting statuses', async () => {
-    // Pre-populate store directly
     store.put({
       sessionId: 'ses_preexisting',
       directory: '/repo',
@@ -345,8 +316,7 @@ describe('createHarnessRetryRuntime', () => {
       updatedAt: clockNow,
     });
     await runtime.start();
-    const retryCalls = emitCalls.filter((e) => e.sessionId === 'ses_preexisting' && e.status.type === 'retry');
-    expect(retryCalls.length).toBe(1);
+    expect(statusCalls('ses_preexisting', 'retry')).toHaveLength(1);
   });
 
   it('hasPending and listPendingForStatus are accurate', () => {
@@ -357,27 +327,14 @@ describe('createHarnessRetryRuntime', () => {
     expect(statuses['ses_has']).toBeDefined();
   });
 
-  it('deleteSession removes record when session truly deleted and does not emit', async () => {
-    runtime.schedule(baseObservation('ses_del'));
-    sessionState.set('ses_del', 'deleted');
-    await runtime.deleteSession('ses_del');
-    expect(store.get('ses_del')).toBeNull();
-    // No idle emitted for deleted session
-    const idleCalls = emitCalls.filter((e) => e.sessionId === 'ses_del' && e.status.type === 'idle');
-    expect(idleCalls.length).toBe(0);
-  });
-
-  it('deleteSession keeps record when session unknown', async () => {
-    runtime.schedule(baseObservation('ses_unknown'));
-    sessionState.set('ses_unknown', 'unknown');
-    await runtime.deleteSession('ses_unknown');
-    expect(store.get('ses_unknown')).not.toBeNull();
-  });
-
-  it('deleteSession is no-op when session still exists', async () => {
-    runtime.schedule(baseObservation('ses_exists'));
-    sessionState.set('ses_exists', 'exists');
-    await runtime.deleteSession('ses_exists');
-    expect(store.get('ses_exists')).not.toBeNull();
-  });
+  for (const [state, removed] of [['deleted', true], ['unknown', false], ['exists', false]]) {
+    it(`${removed ? 'removes' : 'keeps'} a retry when the session is ${state}`, async () => {
+      const sessionId = `ses_${state}`;
+      runtime.schedule(baseObservation(sessionId));
+      sessionState.set(sessionId, state);
+      await runtime.deleteSession(sessionId);
+      expect(store.get(sessionId) === null).toBe(removed);
+      expect(statusCalls(sessionId, 'idle')).toHaveLength(0);
+    });
+  }
 });

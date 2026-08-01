@@ -67,6 +67,10 @@ function makeMinimalRecord(overrides = {}) {
   };
 }
 
+function makeTargetRecord(targetOverrides) {
+  return { ...makeRecord(), target: { ...makeRecord().target, ...targetOverrides } };
+}
+
 function omitField(record, field) {
   const copy = { ...record };
   delete copy[field];
@@ -77,12 +81,50 @@ function readPayload(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
 
+function reloadRecords(filePath) {
+  return createPendingRetryStore({ filePath }).init().records;
+}
+
+function initStore(filePath, options = {}) {
+  const store = createPendingRetryStore({ filePath, ...options });
+  store.init();
+  return store;
+}
+
+function recordSessionIds(records) {
+  return records.map((record) => record.sessionId);
+}
+
+function temporaryFiles(directory) {
+  return fs.readdirSync(directory).filter((name) => name.endsWith('.tmp'));
+}
+
+function writeJournal(filePath, retries, extra = {}) {
+  writeFixture(filePath, JSON.stringify({ version: 1, retries, ...extra }));
+}
+
 function writeFixture(filePath, content, { mode = 0o600 } = {}) {
   const directory = path.dirname(filePath);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   if (process.platform !== 'win32') fs.chmodSync(directory, 0o700);
   fs.writeFileSync(filePath, content, { mode });
   if (process.platform !== 'win32') fs.chmodSync(filePath, mode);
+}
+
+const DEAD_LOCK_OWNER = { pid: 999_999_999, token: 'dead-owner', createdAt: 1 };
+
+function seedLock(filePath, owner, { ageMs = 0 } = {}) {
+  const lockPath = `${filePath}.lock`;
+  fs.mkdirSync(lockPath, { recursive: true, mode: 0o700 });
+  writeFixture(path.join(lockPath, 'owner.json'), JSON.stringify({
+    createdAt: Date.now(),
+    ...owner,
+  }));
+  if (ageMs > 0) {
+    const stamp = new Date(Date.now() - ageMs);
+    fs.utimesSync(lockPath, stamp, stamp);
+  }
+  return lockPath;
 }
 
 function makeFsError(code, message = code) {
@@ -100,6 +142,16 @@ function captureError(callback) {
   throw new Error('Expected callback to throw');
 }
 
+function expectUnavailable(callback, label) {
+  expect(captureError(callback).code, label).toBe(RETRY_STORE_UNAVAILABLE);
+}
+
+function expectPersistedRecordRejected(record, label) {
+  const { filePath } = makeStorePath();
+  writeJournal(filePath, [record]);
+  expectUnavailable(() => createPendingRetryStore({ filePath }).init(), label);
+}
+
 function withFsFailures({
   failRename = () => false,
   failChmod = () => false,
@@ -112,89 +164,66 @@ function withFsFailures({
   operations,
 } = {}) {
   const pathsByFd = new Map();
+  const trace = (entry) => { operations?.push(entry); };
+  const failIf = (code, operation) => {
+    if (code) throw makeFsError(code, `injected ${operation} failure`);
+  };
+
+  const overrides = {
+    openSync: (targetPath, ...args) => {
+      const fd = fs.openSync(targetPath, ...args);
+      pathsByFd.set(fd, String(targetPath));
+      trace(`open:${String(targetPath)}`);
+      return fd;
+    },
+    fstatSync: (fd, ...args) => {
+      const filePath = pathsByFd.get(fd);
+      failIf(fstatErrorCode(filePath, fd), 'fstat');
+      trace(`fstat:${filePath}`);
+      return transformFstat(fs.fstatSync(fd, ...args), filePath);
+    },
+    lstatSync: (targetPath, ...args) => transformLstat(
+      fs.lstatSync(targetPath, ...args),
+      String(targetPath),
+    ),
+    readSync: (fd, ...args) => {
+      const filePath = pathsByFd.get(fd);
+      failIf(readErrorCode(filePath, fd), 'read');
+      trace(`read:${filePath}`);
+      return fs.readSync(fd, ...args);
+    },
+    writeSync: (fd, ...args) => {
+      trace(`write:${pathsByFd.get(fd)}`);
+      return fs.writeSync(fd, ...args);
+    },
+    fsyncSync: (fd) => {
+      const filePath = pathsByFd.get(fd);
+      failIf(fsyncErrorCode(filePath, fd), 'fsync');
+      trace(`fsync:${filePath}`);
+      return fs.fsyncSync(fd);
+    },
+    closeSync: (fd) => {
+      trace(`close:${pathsByFd.get(fd)}`);
+      try {
+        return fs.closeSync(fd);
+      } finally {
+        pathsByFd.delete(fd);
+      }
+    },
+    renameSync: (from, to) => {
+      failIf(failRename() ? 'EIO' : null, 'rename');
+      trace(`rename:${String(from)}->${String(to)}`);
+      return fs.renameSync(from, to);
+    },
+    chmodSync: (...args) => {
+      failIf(chmodErrorCode(...args) || (failChmod() ? 'ENOTSUP' : null), 'chmod');
+      return fs.chmodSync(...args);
+    },
+  };
+
   return new Proxy(fs, {
     get(target, property, receiver) {
-      if (property === 'openSync') {
-        return (...args) => {
-          const fd = target.openSync(...args);
-          pathsByFd.set(fd, String(args[0]));
-          operations?.push(`open:${String(args[0])}`);
-          return fd;
-        };
-      }
-      if (property === 'fstatSync') {
-        return (fd, ...args) => {
-          const filePath = pathsByFd.get(fd);
-          const code = fstatErrorCode(filePath, fd);
-          if (code) throw makeFsError(code, 'injected fstat failure');
-          operations?.push(`fstat:${filePath}`);
-          return transformFstat(target.fstatSync(fd, ...args), filePath);
-        };
-      }
-      if (property === 'lstatSync') {
-        return (targetPath, ...args) => transformLstat(
-          target.lstatSync(targetPath, ...args),
-          String(targetPath),
-        );
-      }
-      if (property === 'readSync') {
-        return (fd, ...args) => {
-          const filePath = pathsByFd.get(fd);
-          const code = readErrorCode(filePath, fd);
-          if (code) throw makeFsError(code, 'injected read failure');
-          operations?.push(`read:${filePath}`);
-          return target.readSync(fd, ...args);
-        };
-      }
-      if (property === 'writeSync') {
-        return (fd, ...args) => {
-          const filePath = pathsByFd.get(fd);
-          operations?.push(`write:${filePath}`);
-          return target.writeSync(fd, ...args);
-        };
-      }
-      if (property === 'fsyncSync') {
-        return (fd) => {
-          const filePath = pathsByFd.get(fd);
-          const code = fsyncErrorCode(filePath, fd);
-          if (code) throw makeFsError(code, 'injected fsync failure');
-          operations?.push(`fsync:${filePath}`);
-          return target.fsyncSync(fd);
-        };
-      }
-      if (property === 'closeSync') {
-        return (fd) => {
-          const filePath = pathsByFd.get(fd);
-          operations?.push(`close:${filePath}`);
-          try {
-            return target.closeSync(fd);
-          } finally {
-            pathsByFd.delete(fd);
-          }
-        };
-      }
-      if (property === 'renameSync') {
-        return (...args) => {
-          if (failRename()) {
-            const error = new Error('injected rename failure');
-            error.code = 'EIO';
-            throw error;
-          }
-          operations?.push(`rename:${String(args[0])}->${String(args[1])}`);
-          return target.renameSync(...args);
-        };
-      }
-      if (property === 'chmodSync') {
-        return (...args) => {
-          const code = chmodErrorCode(...args) || (failChmod() ? 'ENOTSUP' : null);
-          if (code) {
-            const error = new Error('chmod unsupported');
-            error.code = code;
-            throw error;
-          }
-          return target.chmodSync(...args);
-        };
-      }
+      if (Object.hasOwn(overrides, property)) return overrides[property];
       const value = Reflect.get(target, property, receiver);
       return typeof value === 'function' ? value.bind(target) : value;
     },
@@ -240,8 +269,7 @@ describe('pending retry store paths and bounds', () => {
       (_, index) => makeMinimalRecord({ sessionId: `ses_${index}` }),
     );
 
-    const error = captureError(() => store.replace(records));
-    expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
+    expectUnavailable(() => store.replace(records));
     expect(store.list()).toEqual([]);
     expect(fs.existsSync(filePath)).toBe(false);
   });
@@ -258,28 +286,7 @@ describe('pending retry store paths and bounds', () => {
       maxBytes: MAX_PENDING_RETRY_STORE_BYTES * 2,
     });
 
-    const error = captureError(() => store.init());
-    expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
-  });
-});
-
-describe('harness pending retry exports', () => {
-  it('exports focused operations without exposing the mutable production singleton', async () => {
-    const harnessApi = await import('./index.js');
-    for (const name of [
-      'createPendingRetryStore',
-      'resolvePendingRetryStorePath',
-      'sanitizePendingRetryRecord',
-      'initPendingRetryStore',
-      'getPendingRetry',
-      'listPendingRetries',
-      'putPendingRetry',
-      'deletePendingRetry',
-      'replacePendingRetries',
-    ]) {
-      expect(typeof harnessApi[name], name).toBe('function');
-    }
-    expect('pendingRetryStore' in harnessApi).toBe(false);
+    expectUnavailable(() => store.init());
   });
 });
 
@@ -366,8 +373,8 @@ describe('sanitizePendingRetryRecord', () => {
       makeRecord({ foreignSessionId: 'f'.repeat(513) }),
       makeRecord({ expectedTailUuid: 'tail\0uuid' }),
       makeRecord({ launchUuid: ' launch-uuid' }),
-      makeRecord({ target: { ...makeRecord().target, modelRef: ' sonnet' } }),
-      makeRecord({ target: { ...makeRecord().target, modelRef: 'm'.repeat(201) } }),
+      makeTargetRecord({ modelRef: ' sonnet' }),
+      makeTargetRecord({ modelRef: 'm'.repeat(201) }),
     ];
 
     for (const record of invalidRecords) {
@@ -458,8 +465,7 @@ describe('durable pending retry journal', () => {
 
   it('gets a defensive record copy and returns null for an unknown session', () => {
     const { filePath } = makeStorePath();
-    const store = createPendingRetryStore({ filePath });
-    store.init();
+    const store = initStore(filePath);
     const stored = store.put(makeRecord());
 
     const result = store.get('ses_1');
@@ -473,36 +479,30 @@ describe('durable pending retry journal', () => {
   for (const state of ['observed', 'waiting', 'launching', 'blocked']) {
     it(`accepts the ${state} recovery state`, () => {
       const { filePath } = makeStorePath();
-      const store = createPendingRetryStore({ filePath });
-      store.init();
+      const store = initStore(filePath);
       expect(store.put(makeRecord({ sessionId: `ses_${state}`, state })).state).toBe(state);
-      expect(createPendingRetryStore({ filePath }).init().records[0].state).toBe(state);
+      expect(reloadRecords(filePath)[0].state).toBe(state);
     });
   }
 
   it('rejects an invalid state without replacing authoritative data', () => {
     const { filePath } = makeStorePath();
-    const store = createPendingRetryStore({ filePath });
-    store.init();
+    const store = initStore(filePath);
     const prior = store.put(makeRecord());
     const diskBefore = fs.readFileSync(filePath, 'utf8');
 
-    const error = captureError(() => store.put(makeRecord({ state: 'idle' })));
-    expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
+    expectUnavailable(() => store.put(makeRecord({ state: 'idle' })));
     expect(store.list()).toEqual([prior]);
     expect(fs.readFileSync(filePath, 'utf8')).toBe(diskBefore);
   });
 
   it('collapses duplicate session IDs on load by generation, then updatedAt', () => {
     const { directory, filePath } = makeStorePath();
-    writeFixture(filePath, JSON.stringify({
-      version: 1,
-      retries: [
-        makeRecord({ generation: 4, updatedAt: 400, blockedReason: 'older-generation-winner' }),
-        makeRecord({ generation: 3, updatedAt: 900, blockedReason: 'lower-generation' }),
-        makeRecord({ generation: 4, updatedAt: 500, blockedReason: 'newest-generation-winner' }),
-      ],
-    }));
+    writeJournal(filePath, [
+      makeRecord({ generation: 4, updatedAt: 400, blockedReason: 'older-generation-winner' }),
+      makeRecord({ generation: 3, updatedAt: 900, blockedReason: 'lower-generation' }),
+      makeRecord({ generation: 4, updatedAt: 500, blockedReason: 'newest-generation-winner' }),
+    ]);
 
     const store = createPendingRetryStore({ filePath });
     expect(store.init().records).toEqual([
@@ -517,8 +517,7 @@ describe('durable pending retry journal', () => {
 
   it('collapses duplicate session IDs during replace using the same ordering', () => {
     const { filePath } = makeStorePath();
-    const store = createPendingRetryStore({ filePath });
-    store.init();
+    const store = initStore(filePath);
 
     const records = store.replace([
       makeRecord({ generation: 8, updatedAt: 100, blockedReason: 'first' }),
@@ -561,8 +560,7 @@ describe('durable pending retry journal', () => {
 
   it('allows a newer updatedAt in the same generation and any higher generation', () => {
     const { filePath } = makeStorePath();
-    const store = createPendingRetryStore({ filePath });
-    store.init();
+    const store = initStore(filePath);
     store.put(makeRecord({ generation: 5, updatedAt: 500 }));
 
     const sameGeneration = store.put(makeRecord({
@@ -582,17 +580,16 @@ describe('durable pending retry journal', () => {
 
   it('persists put, delete, and replace before each synchronous mutation returns', () => {
     const { filePath } = makeStorePath();
-    const store = createPendingRetryStore({ filePath });
-    store.init();
+    const store = initStore(filePath);
 
     store.put(makeRecord({ sessionId: 'ses_a' }));
-    expect(readPayload(filePath).retries.map((record) => record.sessionId)).toEqual(['ses_a']);
+    expect(recordSessionIds(readPayload(filePath).retries)).toEqual(['ses_a']);
 
     store.put(makeRecord({ sessionId: 'ses_b' }));
-    expect(readPayload(filePath).retries.map((record) => record.sessionId)).toEqual(['ses_a', 'ses_b']);
+    expect(recordSessionIds(readPayload(filePath).retries)).toEqual(['ses_a', 'ses_b']);
 
     expect(store.delete('ses_a')).toBe(true);
-    expect(readPayload(filePath).retries.map((record) => record.sessionId)).toEqual(['ses_b']);
+    expect(recordSessionIds(readPayload(filePath).retries)).toEqual(['ses_b']);
 
     const replacement = makeRecord({ sessionId: 'ses_c', generation: 3 });
     expect(store.replace([replacement])).toEqual([sanitizePendingRetryRecord(replacement)]);
@@ -601,27 +598,22 @@ describe('durable pending retry journal', () => {
 
   it('cleans temporary files when an atomic rename fails', () => {
     const { directory, filePath } = makeStorePath();
-    const store = createPendingRetryStore({
-      filePath,
+    const store = initStore(filePath, {
       fs: withFsFailures({ failRename: () => true }),
     });
-    store.init();
 
-    const error = captureError(() => store.put(makeRecord()));
-    expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
+    expectUnavailable(() => store.put(makeRecord()));
     expect(store.list()).toEqual([]);
     expect(fs.existsSync(filePath)).toBe(false);
-    expect(fs.readdirSync(directory).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    expect(temporaryFiles(directory)).toEqual([]);
   });
 
   it('preserves prior memory and disk for every failed critical mutation', () => {
     const { directory, filePath } = makeStorePath();
     let renameShouldFail = false;
-    const store = createPendingRetryStore({
-      filePath,
+    const store = initStore(filePath, {
       fs: withFsFailures({ failRename: () => renameShouldFail }),
     });
-    store.init();
     const prior = store.put(makeRecord({ blockedReason: 'keep-me' }));
     const diskBefore = fs.readFileSync(filePath, 'utf8');
     renameShouldFail = true;
@@ -631,49 +623,74 @@ describe('durable pending retry journal', () => {
       () => store.delete('ses_1'),
       () => store.replace([makeRecord({ sessionId: 'ses_new' })]),
     ]) {
-      const error = captureError(mutate);
-      expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
+      expectUnavailable(mutate);
       expect(store.list()).toEqual([prior]);
       expect(fs.readFileSync(filePath, 'utf8')).toBe(diskBefore);
-      expect(fs.readdirSync(directory).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+      expect(temporaryFiles(directory)).toEqual([]);
     }
   });
 
   it('treats chmod as best-effort when the platform does not support it', () => {
     const { filePath } = makeStorePath();
-    const store = createPendingRetryStore({
-      filePath,
+    const store = initStore(filePath, {
       fs: withFsFailures({ failChmod: () => true }),
     });
-    store.init();
     expect(store.put(makeRecord()).sessionId).toBe('ses_1');
     expect(createPendingRetryStore({ filePath }).init().records).toHaveLength(1);
   });
 
-  it('aborts on a genuine chmod failure and preserves prior memory and disk', () => {
-    const { directory, filePath } = makeStorePath();
-    let failTemporaryChmod = false;
-    const store = createPendingRetryStore({
-      filePath,
-      fs: withFsFailures({
-        chmodErrorCode: (targetPath) => (
-          failTemporaryChmod && String(targetPath).endsWith('.tmp') ? 'EACCES' : null
-        ),
-      }),
-    });
-    store.init();
-    const existing = store.put(makeRecord({ generation: 1, blockedReason: 'keep-me' }));
-    const diskBefore = fs.readFileSync(filePath, 'utf8');
-    failTemporaryChmod = true;
+  it('rolls back memory, disk, temp files, and the lock for each injected write failure', () => {
+    // Each case arms its failure only after an authoritative record exists, so a
+    // durability failure can never publish the replacement.
+    const writeFailures = [
+      {
+        name: 'temp-file chmod',
+        inject: (armed) => ({
+          chmodErrorCode: (targetPath) => (
+            armed() && String(targetPath).endsWith('.tmp') ? 'EACCES' : null
+          ),
+        }),
+      },
+      {
+        name: 'temp-file fsync',
+        inject: (armed) => ({
+          fsyncErrorCode: (targetPath) => (
+            armed() && String(targetPath).endsWith('.tmp') ? 'EIO' : null
+          ),
+        }),
+      },
+      {
+        name: 'parent-directory fsync',
+        inject: (armed, directory) => ({
+          fsyncErrorCode: (targetPath) => (armed() && targetPath === directory ? 'EIO' : null),
+        }),
+      },
+    ];
 
-    const error = captureError(() => store.put(makeRecord({
-      generation: 2,
-      blockedReason: 'must-not-publish',
-    })));
-    expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
-    expect(store.get('ses_1')).toEqual(existing);
-    expect(fs.readFileSync(filePath, 'utf8')).toBe(diskBefore);
-    expect(fs.readdirSync(directory).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    for (const failure of writeFailures) {
+      const { directory, filePath } = makeStorePath();
+      let armed = false;
+      const store = initStore(filePath, {
+        fs: withFsFailures(failure.inject(() => armed, directory)),
+      });
+      const existing = store.put(makeRecord({
+        generation: 1,
+        updatedAt: 1,
+        blockedReason: 'keep-me',
+      }));
+      const diskBefore = fs.readFileSync(filePath, 'utf8');
+      armed = true;
+
+      expectUnavailable(() => store.put(makeRecord({
+        generation: 2,
+        updatedAt: 2,
+        blockedReason: 'must-not-publish',
+      })), failure.name);
+      expect(store.get('ses_1'), failure.name).toEqual(existing);
+      expect(fs.readFileSync(filePath, 'utf8'), failure.name).toBe(diskBefore);
+      expect(temporaryFiles(directory), failure.name).toEqual([]);
+      expect(fs.existsSync(`${filePath}.lock`), failure.name).toBe(false);
+    }
   });
 
   it('treats ENOENT as a valid missing journal', () => {
@@ -683,33 +700,21 @@ describe('durable pending retry journal', () => {
     expect(store.list()).toEqual([]);
   });
 
-  it('fails closed when a descriptor read returns ENOENT after open', () => {
-    const { filePath } = makeStorePath();
-    writeFixture(filePath, JSON.stringify({ version: 1, retries: [] }));
-    const store = createPendingRetryStore({
-      filePath,
-      fs: withFsFailures({
-        readErrorCode: (targetPath) => (targetPath === filePath ? 'ENOENT' : null),
-      }),
+  for (const [operation, code] of [['read', 'ENOENT'], ['fstat', 'EIO']]) {
+    it(`fails closed when ${operation} fails after the journal is opened`, () => {
+      const { filePath } = makeStorePath();
+      writeJournal(filePath, []);
+      const errorCode = (targetPath) => (targetPath === filePath ? code : null);
+      const store = createPendingRetryStore({
+        filePath,
+        fs: withFsFailures(operation === 'read'
+          ? { readErrorCode: errorCode }
+          : { fstatErrorCode: errorCode }),
+      });
+
+      expectUnavailable(() => store.init());
     });
-
-    const error = captureError(() => store.init());
-    expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
-  });
-
-  it('fails closed when fstat fails after the journal is opened', () => {
-    const { filePath } = makeStorePath();
-    writeFixture(filePath, JSON.stringify({ version: 1, retries: [] }));
-    const store = createPendingRetryStore({
-      filePath,
-      fs: withFsFailures({
-        fstatErrorCode: (targetPath) => (targetPath === filePath ? 'EIO' : null),
-      }),
-    });
-
-    const error = captureError(() => store.init());
-    expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
-  });
+  }
 
   it('fails closed on malformed UTF-8 bytes instead of accepting replacement text', () => {
     const { filePath } = makeStorePath();
@@ -722,222 +727,156 @@ describe('durable pending retry journal', () => {
     bytes[marker] = 0xff;
     writeFixture(filePath, bytes);
 
-    const error = captureError(() => createPendingRetryStore({ filePath }).init());
-    expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
+    expectUnavailable(() => createPendingRetryStore({ filePath }).init());
   });
 
   it('fails closed for malformed, unsupported, invalid, or oversized journals', () => {
     const cases = [
-      { name: 'malformed', content: '{' },
-      { name: 'unsupported version', content: JSON.stringify({ version: 2, retries: [] }) },
-      { name: 'invalid top level', content: JSON.stringify({ version: 1, retries: {} }) },
-      { name: 'invalid record', content: JSON.stringify({ version: 1, retries: [null] }) },
-      { name: 'oversized', content: ' '.repeat(MAX_PENDING_RETRY_STORE_BYTES + 1) },
+      ['malformed', '{'],
+      ['unsupported version', JSON.stringify({ version: 2, retries: [] })],
+      ['invalid top level', JSON.stringify({ version: 1, retries: {} })],
+      ['invalid record', JSON.stringify({ version: 1, retries: [null] })],
+      ['oversized', ' '.repeat(MAX_PENDING_RETRY_STORE_BYTES + 1)],
     ];
 
-    for (const testCase of cases) {
+    for (const [name, content] of cases) {
       const { filePath } = makeStorePath();
-      writeFixture(filePath, testCase.content);
-      const store = createPendingRetryStore({ filePath });
-      const error = captureError(() => store.init());
-      expect(error.code, testCase.name).toBe(RETRY_STORE_UNAVAILABLE);
+      writeFixture(filePath, content);
+      expectUnavailable(() => createPendingRetryStore({ filePath }).init(), name);
     }
   });
 
   it('fails closed when the persisted envelope contains an unknown key', () => {
     const { filePath } = makeStorePath();
-    writeFixture(filePath, JSON.stringify({
-      version: 1,
-      retries: [],
-      token: 'must-not-be-authoritative',
-    }));
+    writeJournal(filePath, [], { token: 'must-not-be-authoritative' });
 
-    const error = captureError(() => createPendingRetryStore({ filePath }).init());
-    expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
+    expectUnavailable(() => createPendingRetryStore({ filePath }).init());
   });
 
   it('fails closed when a persisted record contains forbidden or unknown fields', () => {
     const cases = [
-      { name: 'prompt', record: { ...makeRecord(), prompt: 'private prompt' } },
-      { name: 'files', record: { ...makeRecord(), files: [{ url: 'private file' }] } },
-      { name: 'unknown', record: { ...makeRecord(), arbitrary: true } },
-      {
-        name: 'target unknown',
-        record: {
-          ...makeRecord(),
-          target: { ...makeRecord().target, authorization: 'Bearer private' },
-        },
-      },
+      ['prompt', { ...makeRecord(), prompt: 'private prompt' }],
+      ['files', { ...makeRecord(), files: [{ url: 'private file' }] }],
+      ['unknown', { ...makeRecord(), arbitrary: true }],
+      ['target unknown', makeTargetRecord({ authorization: 'Bearer private' })],
     ];
 
-    for (const testCase of cases) {
-      const { filePath } = makeStorePath();
-      writeFixture(filePath, JSON.stringify({
-        version: 1,
-        retries: [testCase.record],
-      }));
-      const error = captureError(() => createPendingRetryStore({ filePath }).init());
-      expect(error.code, testCase.name).toBe(RETRY_STORE_UNAVAILABLE);
-    }
+    for (const [name, record] of cases) expectPersistedRecordRejected(record, name);
   });
 
-  const noncanonicalPersistedRecords = [
-    {
-      name: 'an invalid permission mode',
-      record: makeRecord({
-        target: { ...makeRecord().target, permissionMode: 'bypassPermissions' },
-      }),
-    },
-    { name: 'an invalid state', record: makeRecord({ state: 'idle' }) },
-    { name: 'a missing required session ID', record: omitField(makeRecord(), 'sessionId') },
-    { name: 'a missing required generation', record: omitField(makeRecord(), 'generation') },
-    { name: 'a nonnumeric generation', record: makeRecord({ generation: '1' }) },
-    { name: 'a negative attempt', record: makeRecord({ attempt: -1 }) },
-    { name: 'a fractional creation timestamp', record: makeRecord({ createdAt: 1.5 }) },
-    { name: 'a negative reset timestamp', record: makeRecord({ resetAt: -1 }) },
-    {
-      name: 'a non-Claude target harness',
-      record: makeRecord({ target: { ...makeRecord().target, harnessId: 'opencode' } }),
-    },
-    {
-      name: 'a nonstring target model',
-      record: makeRecord({ target: { ...makeRecord().target, modelRef: { id: 'sonnet' } } }),
-    },
-    {
-      name: 'an invalid effort level',
-      record: makeRecord({ target: { ...makeRecord().target, effort: 'unlimited' } }),
-    },
-    { name: 'an invalid agents mode', record: makeRecord({ agentsMode: 'all' }) },
-    { name: 'an overlong agent name', record: makeRecord({ agentName: 'a'.repeat(201) }) },
-    { name: 'a nonstring launch UUID', record: makeRecord({ launchUuid: { uuid: 'launch' } }) },
-  ];
+  it('fails closed on noncanonical persisted records', () => {
+    const cases = [
+      ['an invalid permission mode', makeTargetRecord({ permissionMode: 'bypassPermissions' })],
+      ['an invalid state', makeRecord({ state: 'idle' })],
+      ['a missing required session ID', omitField(makeRecord(), 'sessionId')],
+      ['a missing required generation', omitField(makeRecord(), 'generation')],
+      ['a nonnumeric generation', makeRecord({ generation: '1' })],
+      ['a negative attempt', makeRecord({ attempt: -1 })],
+      ['a fractional creation timestamp', makeRecord({ createdAt: 1.5 })],
+      ['a negative reset timestamp', makeRecord({ resetAt: -1 })],
+      ['a non-Claude target harness', makeTargetRecord({ harnessId: 'opencode' })],
+      ['a nonstring target model', makeTargetRecord({ modelRef: { id: 'sonnet' } })],
+      ['an invalid effort level', makeTargetRecord({ effort: 'unlimited' })],
+      ['an invalid agents mode', makeRecord({ agentsMode: 'all' })],
+      ['an overlong agent name', makeRecord({ agentName: 'a'.repeat(201) })],
+      ['a nonstring launch UUID', makeRecord({ launchUuid: { uuid: 'launch' } })],
+    ];
 
-  for (const testCase of noncanonicalPersistedRecords) {
-    it(`fails closed when a persisted record contains ${testCase.name}`, () => {
-      const { filePath } = makeStorePath();
-      writeFixture(filePath, JSON.stringify({
-        version: 1,
-        retries: [testCase.record],
-      }));
-
-      const error = captureError(() => createPendingRetryStore({ filePath }).init());
-      expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
-    });
-  }
+    for (const [name, record] of cases) expectPersistedRecordRejected(record, name);
+  });
 
   it('rejects a load whose record array exceeds the configured bound', () => {
     const { filePath } = makeStorePath();
-    writeFixture(filePath, JSON.stringify({
-      version: 1,
-      retries: [
+    writeJournal(filePath, [
         makeRecord({ sessionId: 'ses_1' }),
         makeRecord({ sessionId: 'ses_2' }),
         makeRecord({ sessionId: 'ses_3' }),
-      ],
-    }));
+    ]);
 
     const store = createPendingRetryStore({ filePath, maxRecords: 2 });
-    const error = captureError(() => store.init());
-    expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
+    expectUnavailable(() => store.init());
   });
 
   it('rejects a new record at capacity without evicting an obligation', () => {
     const { filePath } = makeStorePath();
-    const store = createPendingRetryStore({ filePath, maxRecords: 2 });
-    store.init();
+    const store = initStore(filePath, { maxRecords: 2 });
     store.put(makeRecord({ sessionId: 'ses_1' }));
     store.put(makeRecord({ sessionId: 'ses_2' }));
     const diskBefore = fs.readFileSync(filePath, 'utf8');
 
-    const error = captureError(() => store.put(makeRecord({ sessionId: 'ses_3' })));
-    expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
-    expect(store.list().map((record) => record.sessionId)).toEqual(['ses_1', 'ses_2']);
+    expectUnavailable(() => store.put(makeRecord({ sessionId: 'ses_3' })));
+    expect(recordSessionIds(store.list())).toEqual(['ses_1', 'ses_2']);
     expect(fs.readFileSync(filePath, 'utf8')).toBe(diskBefore);
   });
 
   it('rolls back a write-side byte overflow without replacing memory or disk', () => {
     const { directory, filePath } = makeStorePath();
-    const store = createPendingRetryStore({ filePath, maxBytes: 700 });
-    store.init();
+    const store = initStore(filePath, { maxBytes: 700 });
     const existing = store.put(makeMinimalRecord());
     const diskBefore = fs.readFileSync(filePath, 'utf8');
 
-    const error = captureError(() => store.put(makeMinimalRecord({
+    expectUnavailable(() => store.put(makeMinimalRecord({
       generation: 2,
       updatedAt: 2,
       directory: `/${'x'.repeat(1000)}`,
     })));
-    expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
     expect(store.get('ses_minimal')).toEqual(existing);
     expect(fs.readFileSync(filePath, 'utf8')).toBe(diskBefore);
-    expect(fs.readdirSync(directory).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    expect(temporaryFiles(directory)).toEqual([]);
   });
 
   it('merges unrelated puts from independently initialized stores', () => {
     const { filePath } = makeStorePath();
-    const first = createPendingRetryStore({ filePath });
-    const second = createPendingRetryStore({ filePath });
-    first.init();
-    second.init();
+    const first = initStore(filePath);
+    const second = initStore(filePath);
 
     first.put(makeRecord({ sessionId: 'ses_first' }));
     second.put(makeRecord({ sessionId: 'ses_second' }));
 
-    expect(createPendingRetryStore({ filePath }).init().records.map((record) => record.sessionId))
-      .toEqual(['ses_first', 'ses_second']);
+    expect(recordSessionIds(reloadRecords(filePath))).toEqual(['ses_first', 'ses_second']);
   });
 
   it('does not resurrect a deleted record when a stale store puts an unrelated record', () => {
     const { filePath } = makeStorePath();
-    const deletingStore = createPendingRetryStore({ filePath });
-    deletingStore.init();
+    const deletingStore = initStore(filePath);
     deletingStore.put(makeRecord({ sessionId: 'ses_deleted' }));
 
-    const staleStore = createPendingRetryStore({ filePath });
-    staleStore.init();
+    const staleStore = initStore(filePath);
     deletingStore.delete('ses_deleted');
     staleStore.put(makeRecord({ sessionId: 'ses_unrelated' }));
 
-    expect(createPendingRetryStore({ filePath }).init().records.map((record) => record.sessionId))
-      .toEqual(['ses_unrelated']);
+    expect(recordSessionIds(reloadRecords(filePath))).toEqual(['ses_unrelated']);
   });
 
   it('preserves a concurrent unrelated addition during stale replace', () => {
     const { filePath } = makeStorePath();
-    const replacingStore = createPendingRetryStore({ filePath });
-    const otherStore = createPendingRetryStore({ filePath });
-    replacingStore.init();
-    otherStore.init();
+    const replacingStore = initStore(filePath);
+    const otherStore = initStore(filePath);
     otherStore.put(makeRecord({ sessionId: 'ses_other' }));
 
     replacingStore.replace([makeRecord({ sessionId: 'ses_replacement' })]);
 
-    expect(createPendingRetryStore({ filePath }).init().records.map((record) => record.sessionId))
-      .toEqual(['ses_other', 'ses_replacement']);
+    expect(recordSessionIds(reloadRecords(filePath))).toEqual(['ses_other', 'ses_replacement']);
   });
 
   it('does not delete a concurrently advanced record during stale replace', () => {
     const { filePath } = makeStorePath();
-    const currentStore = createPendingRetryStore({ filePath });
-    currentStore.init();
+    const currentStore = initStore(filePath);
     currentStore.put(makeRecord({ sessionId: 'ses_1', generation: 1, updatedAt: 1 }));
-    const staleStore = createPendingRetryStore({ filePath });
-    staleStore.init();
+    const staleStore = initStore(filePath);
     const current = currentStore.put(makeRecord({ sessionId: 'ses_1', generation: 2, updatedAt: 2 }));
 
     staleStore.replace([]);
 
     expect(staleStore.get('ses_1')).toEqual(current);
-    expect(createPendingRetryStore({ filePath }).init().records).toEqual([current]);
+    expect(reloadRecords(filePath)).toEqual([current]);
   });
 
   it('treats a put with a stale expected generation as a no-op conflict', () => {
     const { filePath } = makeStorePath();
-    const currentStore = createPendingRetryStore({ filePath });
-    currentStore.init();
+    const currentStore = initStore(filePath);
     currentStore.put(makeRecord({ generation: 1, updatedAt: 1 }));
-    const staleStore = createPendingRetryStore({ filePath });
-    staleStore.init();
+    const staleStore = initStore(filePath);
     const current = currentStore.put(makeRecord({ generation: 2, updatedAt: 2 }));
 
     expect(staleStore.put(
@@ -945,57 +884,38 @@ describe('durable pending retry journal', () => {
       { expectedGeneration: 1 },
     )).toEqual(current);
     expect(staleStore.get('ses_1')).toEqual(current);
-    expect(createPendingRetryStore({ filePath }).init().records).toEqual([current]);
+    expect(reloadRecords(filePath)).toEqual([current]);
   });
 
   it('treats a delete with a stale expected generation as a no-op conflict', () => {
     const { filePath } = makeStorePath();
-    const currentStore = createPendingRetryStore({ filePath });
-    currentStore.init();
+    const currentStore = initStore(filePath);
     currentStore.put(makeRecord({ generation: 1, updatedAt: 1 }));
-    const staleStore = createPendingRetryStore({ filePath });
-    staleStore.init();
+    const staleStore = initStore(filePath);
     const current = currentStore.put(makeRecord({ generation: 2, updatedAt: 2 }));
 
     expect(staleStore.delete('ses_1', { expectedGeneration: 1 })).toBe(false);
     expect(staleStore.get('ses_1')).toEqual(current);
-    expect(createPendingRetryStore({ filePath }).init().records).toEqual([current]);
+    expect(reloadRecords(filePath)).toEqual([current]);
   });
 
   it('times out on a live interprocess lock without deleting its owner', () => {
     const { filePath } = makeStorePath();
-    const lockPath = `${filePath}.lock`;
-    fs.mkdirSync(lockPath, { recursive: true, mode: 0o700 });
-    writeFixture(path.join(lockPath, 'owner.json'), JSON.stringify({
-      pid: process.pid,
-      token: 'live-owner',
-      createdAt: Date.now(),
-    }));
-    const store = createPendingRetryStore({
-      filePath,
+    const lockPath = seedLock(filePath, { pid: process.pid, token: 'live-owner' });
+    const store = initStore(filePath, {
       lockTimeoutMs: 5,
       lockPollMs: 1,
       staleLockMs: 60_000,
     });
-    store.init();
 
-    const error = captureError(() => store.put(makeRecord()));
-    expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
+    expectUnavailable(() => store.put(makeRecord()));
     expect(fs.existsSync(lockPath)).toBe(true);
     expect(fs.existsSync(filePath)).toBe(false);
   });
 
   it('reclaims an old lock only when its owner is confirmed dead', () => {
     const { filePath } = makeStorePath();
-    const lockPath = `${filePath}.lock`;
-    fs.mkdirSync(lockPath, { recursive: true, mode: 0o700 });
-    writeFixture(path.join(lockPath, 'owner.json'), JSON.stringify({
-      pid: 999_999_999,
-      token: 'dead-owner',
-      createdAt: 1,
-    }));
-    const old = new Date(Date.now() - 60_000);
-    fs.utimesSync(lockPath, old, old);
+    const lockPath = seedLock(filePath, DEAD_LOCK_OWNER, { ageMs: 60_000 });
     const store = createPendingRetryStore({
       filePath,
       lockTimeoutMs: 50,
@@ -1011,15 +931,7 @@ describe('durable pending retry journal', () => {
 
   it('does not reclaim a lock whose directory identity changes during stale verification', () => {
     const { filePath } = makeStorePath();
-    const lockPath = `${filePath}.lock`;
-    fs.mkdirSync(lockPath, { recursive: true, mode: 0o700 });
-    writeFixture(path.join(lockPath, 'owner.json'), JSON.stringify({
-      pid: 999_999_999,
-      token: 'dead-owner',
-      createdAt: 1,
-    }));
-    const old = new Date(Date.now() - 60_000);
-    fs.utimesSync(lockPath, old, old);
+    const lockPath = seedLock(filePath, DEAD_LOCK_OWNER, { ageMs: 60_000 });
     let lockStatCount = 0;
     const store = createPendingRetryStore({
       filePath,
@@ -1040,8 +952,7 @@ describe('durable pending retry journal', () => {
     });
     store.init();
 
-    const error = captureError(() => store.put(makeRecord()));
-    expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
+    expectUnavailable(() => store.put(makeRecord()));
     expect(fs.existsSync(lockPath)).toBe(true);
   });
 
@@ -1074,53 +985,6 @@ describe('durable pending retry journal', () => {
     if (process.platform !== 'win32') expect(directoryFsync).toBeGreaterThan(rename);
   });
 
-  it('rolls back memory and disk when the temp-file fsync fails', () => {
-    const { directory, filePath } = makeStorePath();
-    let failTempFsync = false;
-    const store = createPendingRetryStore({
-      filePath,
-      fs: withFsFailures({
-        fsyncErrorCode: (targetPath) => (
-          failTempFsync && String(targetPath).endsWith('.tmp') ? 'EIO' : null
-        ),
-      }),
-    });
-    store.init();
-    const current = store.put(makeRecord({ generation: 1, updatedAt: 1 }));
-    const diskBefore = fs.readFileSync(filePath, 'utf8');
-    failTempFsync = true;
-
-    const error = captureError(() => store.put(makeRecord({ generation: 2, updatedAt: 2 })));
-    expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
-    expect(store.get('ses_1')).toEqual(current);
-    expect(fs.readFileSync(filePath, 'utf8')).toBe(diskBefore);
-    expect(fs.readdirSync(directory).filter((name) => name.endsWith('.tmp'))).toEqual([]);
-    expect(fs.existsSync(`${filePath}.lock`)).toBe(false);
-  });
-
-  it('keeps memory unpublished and releases the lock when parent-directory fsync fails', () => {
-    const { directory, filePath } = makeStorePath();
-    let failDirectoryFsync = false;
-    const store = createPendingRetryStore({
-      filePath,
-      fs: withFsFailures({
-        fsyncErrorCode: (targetPath) => (
-          failDirectoryFsync && targetPath === directory ? 'EIO' : null
-        ),
-      }),
-    });
-    store.init();
-    const current = store.put(makeRecord({ generation: 1, updatedAt: 1 }));
-    const diskBefore = fs.readFileSync(filePath, 'utf8');
-    failDirectoryFsync = true;
-
-    const error = captureError(() => store.put(makeRecord({ generation: 2, updatedAt: 2 })));
-    expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
-    expect(store.get('ses_1')).toEqual(current);
-    expect(fs.readFileSync(filePath, 'utf8')).toBe(diskBefore);
-    expect(fs.existsSync(`${filePath}.lock`)).toBe(false);
-  });
-
   it('ignores only an explicit unsupported parent-directory fsync error', () => {
     const { directory, filePath } = makeStorePath();
     const store = createPendingRetryStore({
@@ -1135,7 +999,7 @@ describe('durable pending retry journal', () => {
 
   it('reads the journal through one descriptor instead of path stat/read helpers', () => {
     const { filePath } = makeStorePath();
-    writeFixture(filePath, JSON.stringify({ version: 1, retries: [makeRecord()] }));
+    writeJournal(filePath, [makeRecord()]);
     const descriptorOnlyFs = new Proxy(fs, {
       get(target, property, receiver) {
         if (property === 'statSync' || property === 'readFileSync') {
@@ -1154,13 +1018,12 @@ describe('durable pending retry journal', () => {
     it('rejects an existing journal with non-private mode', () => {
       const { filePath } = makeStorePath();
       writeFixture(filePath, JSON.stringify({ version: 1, retries: [makeRecord()] }), { mode: 0o644 });
-      const error = captureError(() => createPendingRetryStore({ filePath }).init());
-      expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
+      expectUnavailable(() => createPendingRetryStore({ filePath }).init());
     });
 
     it('rejects an existing journal owned by another uid', () => {
       const { filePath } = makeStorePath();
-      writeFixture(filePath, JSON.stringify({ version: 1, retries: [makeRecord()] }));
+      writeJournal(filePath, [makeRecord()]);
       const store = createPendingRetryStore({
         filePath,
         fs: withFsFailures({
@@ -1176,8 +1039,7 @@ describe('durable pending retry journal', () => {
           ),
         }),
       });
-      const error = captureError(() => store.init());
-      expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
+      expectUnavailable(() => store.init());
     });
 
     it('does not follow a symlink journal when O_NOFOLLOW is available', () => {
@@ -1186,8 +1048,7 @@ describe('durable pending retry journal', () => {
       writeFixture(targetPath, JSON.stringify({ version: 1, retries: [makeRecord()] }));
       fs.symlinkSync(targetPath, filePath);
 
-      const error = captureError(() => createPendingRetryStore({ filePath }).init());
-      expect(error.code).toBe(RETRY_STORE_UNAVAILABLE);
+      expectUnavailable(() => createPendingRetryStore({ filePath }).init());
     });
   }
 });

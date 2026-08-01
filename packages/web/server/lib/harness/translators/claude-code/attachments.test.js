@@ -2,13 +2,15 @@ import { describe, expect, it } from 'bun:test';
 import path from 'node:path';
 import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import {
   assertPathInsideCwd,
   isSupportedAttachmentMime,
   mapAttachmentToContentBlock,
   mapAttachmentsToContentBlocks,
-  toFileUrl,
 } from './attachments.js';
+
+const toFileUrl = (filePath) => pathToFileURL(path.resolve(filePath)).href;
 
 describe('claude-code attachments', () => {
   it('maps image/png data URL to an SDK image block', () => {

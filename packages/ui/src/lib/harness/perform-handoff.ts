@@ -1,14 +1,3 @@
-/**
- * Immediate cross-harness session switch.
- *
- * Confirming the switch dialog creates the destination session right away,
- * navigates to it, and posts the transferred context as a visible first
- * message (see `handoff-context.ts`):
- * - `duplicate` — budgeted transcript of the source session.
- * - `summarize` — LLM summary of the source session (OpenCode summarize for
- *   OpenCode sources, Claude-native `/compact` for Claude Code sources).
- */
-
 import type { ExecutionTarget, HarnessId } from '@/types/harness';
 import { getDirectoryState, getSyncSessionStatus } from '@/sync/sync-refs';
 import { useSelectionStore } from '@/sync/selection-store';
@@ -93,16 +82,13 @@ async function postContextMessage(args: {
     if (!args.directory) {
       throw new Error('directory is required for Claude Code');
     }
-    // Claude turns always reply; the context message itself asks for a brief
-    // ack. Fire-and-report: the reply streams into the new session.
     void harnessPrompt({
       sessionId: args.sessionId,
       directory: args.directory,
       target: args.target,
       text: args.contextText,
     }).catch(() => {
-      // Surface via session binding error / stream events; the switch itself
-      // already succeeded, so do not fail the handoff here.
+      // The switch already succeeded; stream events surface prompt failures.
     });
     return;
   }
@@ -121,15 +107,10 @@ export type HarnessHandoffArgs = {
   mode: HandoffContextMode;
 };
 
-/**
- * Create the destination session for a confirmed harness switch, navigate to
- * it, and post the transferred context as the visible first message.
- */
 export async function performHarnessHandoff(args: HarnessHandoffArgs): Promise<void> {
   const sourceLabel = args.sourceHarnessId === 'claude-code' ? 'Claude Code' : 'OpenCode';
 
-  // 1. Build the transferred body BEFORE creating the session so summarize
-  //    failures leave the user in the source session untouched.
+  // Summarize before creation so failure leaves the source session untouched.
   let body: string;
   if (args.mode === 'summarize') {
     body = args.sourceHarnessId === 'claude-code'
@@ -153,16 +134,12 @@ export async function performHarnessHandoff(args: HarnessHandoffArgs): Promise<v
     body = seed.text;
   }
 
-  // 2. Create the destination session with the source title.
   const store = useSessionUIStore.getState();
-  const sourceTitleCandidate = getDirectoryState(args.directory ?? undefined)
-    ?.session?.find((session) => session.id === args.sourceSessionId)?.title
-    ?? useGlobalSessionsStore.getState().activeSessions.find(
-      (session) => session.id === args.sourceSessionId,
-    )?.title
-    ?? useGlobalSessionsStore.getState().archivedSessions.find(
-      (session) => session.id === args.sourceSessionId,
-    )?.title;
+  const isSource = (session: { id: string }) => session.id === args.sourceSessionId;
+  const globalSessions = useGlobalSessionsStore.getState();
+  const sourceTitleCandidate = getDirectoryState(args.directory ?? undefined)?.session?.find(isSource)?.title
+    ?? globalSessions.activeSessions.find(isSource)?.title
+    ?? globalSessions.archivedSessions.find(isSource)?.title;
   const title = typeof sourceTitleCandidate === 'string' && sourceTitleCandidate.trim()
     ? sourceTitleCandidate.trim()
     : undefined;
@@ -172,7 +149,6 @@ export async function performHarnessHandoff(args: HarnessHandoffArgs): Promise<v
   }
   const directory = created.directory ?? args.directory;
 
-  // 3. Persist the target + model/agent selections on the new session.
   persistSessionExecutionTarget(created.id, args.target);
   const providerID = args.target.harnessId === 'claude-code' ? 'claude-code' : args.target.providerId;
   const modelID = args.target.harnessId === 'claude-code' ? args.target.modelRef : args.target.modelId;
@@ -180,7 +156,6 @@ export async function performHarnessHandoff(args: HarnessHandoffArgs): Promise<v
 
   clearPendingHandoffTarget(args.sourceSessionId);
 
-  // 4. Navigate, then post the visible context message.
   store.setCurrentSession(created.id, directory);
   const contextText = buildHandoffContextText({
     sourceLabel,

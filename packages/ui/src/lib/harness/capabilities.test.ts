@@ -31,8 +31,9 @@ beforeEach(() => {
 describe('sessionSupports', () => {
   test('defaults to OpenCode capabilities when no target is known', () => {
     expect(resolveSessionHarnessId(null)).toBe('opencode');
-    expect(sessionSupports(null, 'goal')).toBe(true);
-    expect(sessionSupports(null, 'multirun')).toBe(true);
+    for (const capability of ['goal', 'multirun'] as const) {
+      expect(sessionSupports(null, capability)).toBe(true);
+    }
   });
 
   test('supports goal, multirun, and openchamber-tool on Claude', () => {
@@ -40,11 +41,9 @@ describe('sessionSupports', () => {
       harnessId: 'claude-code',
       modelRef: 'sonnet',
     });
-    expect(sessionSupports('ses_claude', 'goal')).toBe(true);
-    expect(sessionSupports('ses_claude', 'multirun')).toBe(true);
-    expect(sessionSupports('ses_claude', 'openchamber-tool')).toBe(true);
-    expect(sessionSupports('ses_claude', 'prompt')).toBe(true);
-    expect(sessionSupports('ses_claude', 'abort')).toBe(true);
+    for (const capability of ['goal', 'multirun', 'openchamber-tool', 'prompt', 'abort'] as const) {
+      expect(sessionSupports('ses_claude', capability)).toBe(true);
+    }
   });
 
   test('prefers sticky session target over last-used', () => {
@@ -64,16 +63,18 @@ describe('sessionSupports', () => {
       harnessId: 'claude-code',
       modelRef: 'haiku',
     });
-    expect(sessionSupports('ses_new', 'goal')).toBe(true);
-    expect(sessionSupports('ses_new', 'multirun')).toBe(true);
+    for (const capability of ['goal', 'multirun'] as const) {
+      expect(sessionSupports('ses_new', capability)).toBe(true);
+    }
   });
 
   test('falls back to last-used target for drafts', () => {
     useSelectionStore.setState({
       lastUsedTarget: { harnessId: 'claude-code', modelRef: 'sonnet' },
     });
-    expect(sessionSupports(null, 'goal')).toBe(true);
-    expect(sessionSupports(null, 'multirun')).toBe(true);
+    for (const capability of ['goal', 'multirun'] as const) {
+      expect(sessionSupports(null, capability)).toBe(true);
+    }
   });
 
   test('Claude sessions do not support steer delivery', () => {

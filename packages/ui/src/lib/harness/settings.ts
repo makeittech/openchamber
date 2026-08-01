@@ -1,26 +1,15 @@
 import type { HarnessId } from '@/types/harness';
 import { isHarnessId } from '@/types/harness';
 
-/** Which agent definitions Claude Code sessions inherit. */
 export type ClaudeAgentsMode = 'claude' | 'opencode';
 
-export const CLAUDE_AGENTS_MODES: readonly ClaudeAgentsMode[] = ['claude', 'opencode'] as const;
-
-export function isClaudeAgentsMode(value: unknown): value is ClaudeAgentsMode {
-  return typeof value === 'string'
-    && (CLAUDE_AGENTS_MODES as readonly string[]).includes(value);
-}
+const isClaudeAgentsMode = (value: unknown): value is ClaudeAgentsMode =>
+  value === 'claude' || value === 'opencode';
 
 export type HarnessSettingsFields = {
   harnessDefaultId: HarnessId;
-  /** Confirm dialog when switching harness on a session with messages. Default true. */
   harnessWarnOnSwitch: boolean;
   harnessClaudeCodeEnabled: boolean;
-  /**
-   * Claude Code agent source:
-   * - `opencode` — OpenChamber/OpenCode agents drive permissionMode + system prompt append
-   * - `claude` — native Claude Code agents / prompts / permission settings
-   */
   harnessClaudeCodeAgentsMode: ClaudeAgentsMode;
 };
 
@@ -28,13 +17,10 @@ export const HARNESS_SETTINGS_DEFAULTS: HarnessSettingsFields = {
   harnessDefaultId: 'opencode',
   harnessWarnOnSwitch: true,
   harnessClaudeCodeEnabled: true,
-  // Preserve documented v1 behavior: OpenCode agents derive Claude permissionMode.
   harnessClaudeCodeAgentsMode: 'opencode',
 };
 
-/** In-memory mirror of the harness-switch confirm toggle for picker/send gates. */
-let cachedWarnOnHarnessSwitch: boolean =
-  HARNESS_SETTINGS_DEFAULTS.harnessWarnOnSwitch;
+let cachedWarnOnHarnessSwitch = HARNESS_SETTINGS_DEFAULTS.harnessWarnOnSwitch;
 
 export function getCachedWarnOnHarnessSwitch(): boolean {
   return cachedWarnOnHarnessSwitch;
@@ -44,17 +30,7 @@ export function setCachedWarnOnHarnessSwitch(enabled: boolean): void {
   cachedWarnOnHarnessSwitch = enabled;
 }
 
-/** In-memory mirror for Claude send-path agent inheritance (no per-send settings fetch). */
-let cachedClaudeAgentsMode: ClaudeAgentsMode =
-  HARNESS_SETTINGS_DEFAULTS.harnessClaudeCodeAgentsMode;
-
-/**
- * Subscribers for the React-facing view of the same value.
- *
- * The cache stays the single source of truth — the composer picker has to swap
- * its whole agent list when the mode changes, and a second copy in a store
- * would drift from what the send path actually uses.
- */
+let cachedClaudeAgentsMode = HARNESS_SETTINGS_DEFAULTS.harnessClaudeCodeAgentsMode;
 const claudeAgentsModeListeners = new Set<() => void>();
 
 export function getCachedClaudeAgentsMode(): ClaudeAgentsMode {
@@ -69,7 +45,6 @@ export function setCachedClaudeAgentsMode(mode: ClaudeAgentsMode): void {
   }
 }
 
-/** `useSyncExternalStore` subscribe fn for `getCachedClaudeAgentsMode`. */
 export function subscribeClaudeAgentsMode(listener: () => void): () => void {
   claudeAgentsModeListeners.add(listener);
   return () => {
@@ -79,11 +54,6 @@ export function subscribeClaudeAgentsMode(listener: () => void): () => void {
 
 export type SanitizedHarnessSettings = Partial<HarnessSettingsFields>;
 
-/**
- * Sanitize persisted harness settings fields.
- * Invalid harness ids fall back to `opencode`. Wrong-typed fields are omitted.
- * Legacy `engines*` keys are accepted (read migration); output uses new keys only.
- */
 export function sanitizeHarnessSettings(candidate: Record<string, unknown>): SanitizedHarnessSettings {
   const result: SanitizedHarnessSettings = {};
 
@@ -116,7 +86,6 @@ export function sanitizeHarnessSettings(candidate: Record<string, unknown>): San
   return result;
 }
 
-/** Fill missing harness settings with product defaults. */
 export function withHarnessSettingsDefaults(
   partial: SanitizedHarnessSettings | null | undefined,
 ): HarnessSettingsFields {

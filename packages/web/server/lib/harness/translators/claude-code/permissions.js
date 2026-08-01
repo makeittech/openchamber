@@ -12,7 +12,6 @@ import { createAskUserQuestionHandler } from './questions.js';
 /**
  * @typedef {object} PendingPermission
  * @property {(result: object) => void} resolve
- * @property {(error: Error) => void} reject
  * @property {string} sessionId
  * @property {string} directory
  * @property {Record<string, unknown>} input
@@ -24,7 +23,20 @@ import { createAskUserQuestionHandler } from './questions.js';
 /** @type {Map<string, PendingPermission>} */
 const pending = new Map();
 
-export const DEFAULT_PERMISSION_TIMEOUT_MS = 120_000;
+const DEFAULT_PERMISSION_TIMEOUT_MS = 120_000;
+
+/** Tool input fields that can carry a concrete Always-Allow pattern. */
+const PATTERN_INPUT_KEYS = ['command', 'cmd', 'path', 'file_path', 'filePath', 'filename', 'url'];
+
+/** Trimmed string, or `''` for anything that is not a string. */
+const trimmedString = (value) => (typeof value === 'string' ? value.trim() : '');
+
+function permissionError(message, code, statusCode) {
+  const error = new Error(message);
+  error.code = code;
+  error.statusCode = statusCode;
+  return error;
+}
 
 /**
  * Tools injected by OpenChamber itself (Claude SDK MCP openchamber server).
@@ -36,12 +48,11 @@ export const DEFAULT_PERMISSION_TIMEOUT_MS = 120_000;
  * @returns {boolean}
  */
 export function isOpenChamberInjectedTool(toolName) {
-  const name = typeof toolName === 'string' ? toolName.trim() : '';
+  const name = trimmedString(toolName);
   if (!name) return false;
   if (name === 'openchamber') return true;
   // Claude Agent SDK MCP tools are exposed as mcp__<server>__<tool>
-  return name === 'mcp__openchamber__openchamber'
-    || /^mcp__openchamber__/i.test(name);
+  return /^mcp__openchamber__/i.test(name);
 }
 
 /**
@@ -52,20 +63,13 @@ export function isOpenChamberInjectedTool(toolName) {
 export function extractPermissionPatterns(input, options = {}) {
   const patterns = [];
   const push = (value) => {
-    if (typeof value !== 'string') return;
-    const trimmed = value.trim();
+    const trimmed = trimmedString(value);
     if (!trimmed || patterns.includes(trimmed)) return;
     patterns.push(trimmed);
   };
 
   if (input && typeof input === 'object') {
-    push(input.command);
-    push(input.cmd);
-    push(input.path);
-    push(input.file_path);
-    push(input.filePath);
-    push(input.filename);
-    push(input.url);
+    for (const key of PATTERN_INPUT_KEYS) push(input[key]);
   }
   push(options.blockedPath);
   push(options.title);
@@ -100,10 +104,7 @@ function sanitizeToolInput(input) {
  */
 function mapReplyToPermissionResult(reply, entry) {
   if (reply === 'reject') {
-    return {
-      behavior: 'deny',
-      message: 'Permission denied by user',
-    };
+    return { behavior: 'deny', message: 'Permission denied by user' };
   }
 
   const allow = {
@@ -129,19 +130,11 @@ function settlePending(requestId, entry, reply) {
   pending.delete(requestId);
 
   const result = mapReplyToPermissionResult(reply, entry);
-  try {
-    entry.resolve(result);
-  } catch {
-    // ignore double-settle
-  }
+  entry.resolve(result);
 
-  const broadcast = typeof entry.getBroadcast === 'function' ? entry.getBroadcast() : null;
-  emitHarnessEvents(broadcast, entry.directory, [{
+  emitHarnessEvents(entry.getBroadcast(), entry.directory, [{
     type: 'permission.replied',
-    properties: {
-      sessionID: entry.sessionId,
-      requestID: requestId,
-    },
+    properties: { sessionID: entry.sessionId, requestID: requestId },
   }]);
 }
 
@@ -155,11 +148,8 @@ function settlePending(requestId, entry, reply) {
  * @returns {string[]}
  */
 export function buildAlwaysPatterns(patterns, toolName) {
-  if (Array.isArray(patterns) && patterns.length > 0) {
-    return [...patterns];
-  }
-  const tool = typeof toolName === 'string' && toolName.trim() ? toolName.trim() : 'tool';
-  return [tool];
+  if (Array.isArray(patterns) && patterns.length > 0) return [...patterns];
+  return [trimmedString(toolName) || 'tool'];
 }
 
 /**
@@ -185,40 +175,27 @@ export function createCanUseTool(params) {
   const timeoutMs = Number.isFinite(params?.timeoutMs) && params.timeoutMs > 0
     ? params.timeoutMs
     : DEFAULT_PERMISSION_TIMEOUT_MS;
-  const createId = typeof params?.createId === 'function'
-    ? params.createId
-    : () => createOpenCodeId('perm');
-  const assistantMessageId = typeof params?.assistantMessageId === 'string'
-    ? params.assistantMessageId
-    : '';
-  const resolveToolPolicy = typeof params?.resolveToolPolicy === 'function'
-    ? params.resolveToolPolicy
-    : null;
-  const policySourceLabel = typeof params?.policySourceLabel === 'string'
-    ? params.policySourceLabel.trim()
-    : '';
+  const suppliedCreateId = typeof params?.createId === 'function' ? params.createId : null;
+  const createId = suppliedCreateId || (() => createOpenCodeId('perm'));
+  const assistantMessageId = typeof params?.assistantMessageId === 'string' ? params.assistantMessageId : '';
+  const resolveToolPolicy = typeof params?.resolveToolPolicy === 'function' ? params.resolveToolPolicy : null;
+  const policySourceLabel = trimmedString(params?.policySourceLabel);
 
   const askUserQuestion = createAskUserQuestionHandler({
     sessionId,
     directory,
     getBroadcast,
-    createId: typeof params?.createId === 'function' ? params.createId : () => createOpenCodeId('qst'),
+    createId: suppliedCreateId || (() => createOpenCodeId('qst')),
     assistantMessageId,
   });
 
   return async (toolName, input, options = {}) => {
     if (!sessionId || !directory) {
-      return {
-        behavior: 'deny',
-        message: 'Permission bridge misconfigured',
-      };
+      return { behavior: 'deny', message: 'Permission bridge misconfigured' };
     }
 
     if (options?.signal?.aborted) {
-      return {
-        behavior: 'deny',
-        message: 'Permission request aborted',
-      };
+      return { behavior: 'deny', message: 'Permission request aborted' };
     }
 
     const safeInput = input && typeof input === 'object' ? input : {};
@@ -230,10 +207,7 @@ export function createCanUseTool(params) {
     }
 
     if (isOpenChamberInjectedTool(toolName)) {
-      return {
-        behavior: 'allow',
-        updatedInput: safeInput,
-      };
+      return { behavior: 'allow', updatedInput: safeInput };
     }
 
     // Inherited OpenCode agent rules decide before the user is involved, the
@@ -245,10 +219,8 @@ export function createCanUseTool(params) {
         decision = resolveToolPolicy(toolName, safeInput);
       } catch (error) {
         // A broken policy must not widen access — fall back to asking.
-        console.warn(
-          '[harness/claude-code] agent permission policy failed:',
-          error instanceof Error ? error.message : error,
-        );
+        const detail = error instanceof Error ? error.message : error;
+        console.warn('[harness/claude-code] agent permission policy failed:', detail);
         decision = 'ask';
       }
       if (decision === 'allow') {
@@ -265,7 +237,7 @@ export function createCanUseTool(params) {
     }
 
     const requestId = createId();
-    const tool = typeof toolName === 'string' && toolName.trim() ? toolName.trim() : 'tool';
+    const tool = trimmedString(toolName) || 'tool';
     const patterns = extractPermissionPatterns(safeInput, {
       blockedPath: typeof options.blockedPath === 'string' ? options.blockedPath : undefined,
       title: typeof options.title === 'string' ? options.title : undefined,
@@ -292,24 +264,19 @@ export function createCanUseTool(params) {
       metadata,
       always,
       ...(typeof options.toolUseID === 'string' ? {
-        tool: {
-          messageID: assistantMessageId,
-          callID: options.toolUseID,
-        },
+        tool: { messageID: assistantMessageId, callID: options.toolUseID },
       } : {}),
     };
 
-    const broadcast = getBroadcast();
-    emitHarnessEvents(broadcast, directory, [{
+    emitHarnessEvents(getBroadcast(), directory, [{
       type: 'permission.asked',
       properties: permissionRequest,
     }]);
 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       /** @type {PendingPermission} */
       const entry = {
         resolve,
-        reject,
         sessionId,
         directory,
         input: safeInput,
@@ -318,18 +285,17 @@ export function createCanUseTool(params) {
         getBroadcast,
       };
 
-      entry.timer = setTimeout(() => {
+      // Fail closed on timeout and on abort.
+      const denyIfStillPending = () => {
         if (!pending.has(requestId)) return;
         settlePending(requestId, entry, 'reject');
-      }, timeoutMs);
+      };
 
+      entry.timer = setTimeout(denyIfStillPending, timeoutMs);
       pending.set(requestId, entry);
 
-      if (options?.signal && typeof options.signal.addEventListener === 'function') {
-        options.signal.addEventListener('abort', () => {
-          if (!pending.has(requestId)) return;
-          settlePending(requestId, entry, 'reject');
-        }, { once: true });
+      if (typeof options?.signal?.addEventListener === 'function') {
+        options.signal.addEventListener('abort', denyIfStillPending, { once: true });
       }
     });
   };
@@ -351,30 +317,18 @@ export function replyPermission(body) {
   const reply = body?.reply;
 
   if (!sessionId || !requestId) {
-    const error = new Error('sessionId and requestId are required');
-    error.code = 'PERMISSION_REPLY_INVALID';
-    error.statusCode = 400;
-    throw error;
+    throw permissionError('sessionId and requestId are required', 'PERMISSION_REPLY_INVALID', 400);
   }
   if (reply !== 'once' && reply !== 'always' && reply !== 'reject') {
-    const error = new Error('reply must be once, always, or reject');
-    error.code = 'PERMISSION_REPLY_INVALID';
-    error.statusCode = 400;
-    throw error;
+    throw permissionError('reply must be once, always, or reject', 'PERMISSION_REPLY_INVALID', 400);
   }
 
   const entry = pending.get(requestId);
   if (!entry) {
-    const error = new Error('Permission request not found');
-    error.code = 'PERMISSION_NOT_FOUND';
-    error.statusCode = 404;
-    throw error;
+    throw permissionError('Permission request not found', 'PERMISSION_NOT_FOUND', 404);
   }
   if (entry.sessionId !== sessionId) {
-    const error = new Error('Permission request does not belong to this session');
-    error.code = 'PERMISSION_SESSION_MISMATCH';
-    error.statusCode = 409;
-    throw error;
+    throw permissionError('Permission request does not belong to this session', 'PERMISSION_SESSION_MISMATCH', 409);
   }
 
   settlePending(requestId, entry, reply);
@@ -407,7 +361,7 @@ export function getPendingPermissionCount() {
  * @returns {Array<{ id: string, sessionID: string, directory: string }>}
  */
 export function listPendingPermissions() {
-  return Array.from(pending.entries()).map(([id, entry]) => ({
+  return Array.from(pending, ([id, entry]) => ({
     id,
     sessionID: entry.sessionId,
     directory: entry.directory,

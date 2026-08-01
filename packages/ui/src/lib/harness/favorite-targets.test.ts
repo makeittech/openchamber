@@ -2,12 +2,11 @@ import { describe, expect, test } from 'bun:test';
 import {
   CLAUDE_FAVORITE_PROVIDER_ID,
   executionTargetFromFavoriteRef,
-  executionTargetIdentityKey,
+  executionTargetsMatchIdentity,
   favoriteRefFromExecutionTarget,
   favoriteTargetsToLegacyRefs,
   legacyRefsToFavoriteTargets,
   normalizeFavoriteTarget,
-  parseFavoriteTargetEntry,
   sanitizeFavoriteTargets,
 } from './favorite-targets';
 
@@ -76,14 +75,14 @@ describe('favorite-targets sanitize', () => {
     ]);
   });
 
-  test('parseFavoriteTargetEntry normalizes OpenCode camelCase', () => {
-    expect(parseFavoriteTargetEntry({
+  test('normalizes OpenCode camelCase entries', () => {
+    expect(sanitizeFavoriteTargets([{
       harnessId: 'opencode',
       providerId: 'openai',
       modelId: 'gpt',
       agentName: 'build',
       variant: 'high',
-    })).toEqual({ harnessId: 'opencode', providerId: 'openai', modelId: 'gpt' });
+    }], 64)).toEqual([{ harnessId: 'opencode', providerId: 'openai', modelId: 'gpt' }]);
   });
 
   test('identity helpers ignore permissionMode and effort', () => {
@@ -94,7 +93,7 @@ describe('favorite-targets sanitize', () => {
       effort: 'max' as const,
     };
     const b = { harnessId: 'claude-code' as const, modelRef: 'sonnet' };
-    expect(executionTargetIdentityKey(normalizeFavoriteTarget(a))).toBe(executionTargetIdentityKey(b));
+    expect(executionTargetsMatchIdentity(normalizeFavoriteTarget(a), b)).toBe(true);
     expect(executionTargetFromFavoriteRef(favoriteRefFromExecutionTarget(a))).toEqual(b);
   });
 

@@ -1,19 +1,49 @@
-import { beforeEach, afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {
-  bindSession,
-  configureSessionBindings,
-  resetSessionBindings,
-} from './session-bindings.js';
-import {
-  applyHarnessEventToSnapshot,
-  resetHarnessTurnSnapshots,
-} from './turn-snapshot.js';
+import { bindSession, configureSessionBindings, resetSessionBindings } from './session-bindings.js';
+import { applyHarnessEventToSnapshot, resetHarnessTurnSnapshots } from './turn-snapshot.js';
 import { resetClaudeTranscriptCaches } from './translators/claude-code/transcript-messages.js';
 import { mergeHarnessMessagesIntoSessionMessages } from './session-messages.js';
 import { RECOVERY_MARKER } from './translators/claude-code/recovery-transcript.js';
+
+const FOREIGN_ID = '123e4567-e89b-42d3-a456-426614174000';
+
+function bindClaude(sessionId, foreignSessionId) {
+  bindSession({
+    sessionId,
+    harnessId: 'claude-code',
+    directory: '/repo',
+    target: { harnessId: 'claude-code', modelRef: 'sonnet' },
+    foreignSessionId,
+  });
+}
+
+function applyMessage(sessionId, id, role, text, created) {
+  applyHarnessEventToSnapshot({
+    type: 'message.updated',
+    properties: { info: { id, role, sessionID: sessionId, ...(created ? { time: { created } } : {}) } },
+  }, '/repo');
+  applyHarnessEventToSnapshot({
+    type: 'message.part.updated',
+    properties: {
+      part: { id: `prt_${id}`, sessionID: sessionId, messageID: id, type: 'text', text },
+    },
+  }, '/repo');
+}
+
+function transcriptLine(role, uuid, timestamp, text, extra = {}) {
+  return JSON.stringify({
+    type: role,
+    uuid,
+    timestamp,
+    sessionId: FOREIGN_ID,
+    cwd: '/repo',
+    ...extra,
+    message: { role, content: [{ type: 'text', text }] },
+  });
+}
 
 describe('mergeHarnessMessagesIntoSessionMessages', () => {
   beforeEach(() => {
@@ -23,98 +53,37 @@ describe('mergeHarnessMessagesIntoSessionMessages', () => {
   });
 
   it('returns OpenCode messages unchanged for non-Claude sessions', () => {
-    const openCode = [{ info: { id: 'msg_1', role: 'user', sessionID: 'ses_oc' }, parts: [] }];
-    expect(mergeHarnessMessagesIntoSessionMessages(openCode, 'ses_oc')).toEqual(openCode);
+    const messages = [{ info: { id: 'msg_1', role: 'user', sessionID: 'ses_oc' }, parts: [] }];
+    expect(mergeHarnessMessagesIntoSessionMessages(messages, 'ses_oc')).toEqual(messages);
   });
 
-  it('fills empty OpenCode lists from the Claude turn snapshot', () => {
-    bindSession({
-      sessionId: 'ses_claude',
-      harnessId: 'claude-code',
-      directory: '/repo',
-      target: { harnessId: 'claude-code', modelRef: 'haiku' },
-    });
-    applyHarnessEventToSnapshot({
-      type: 'message.updated',
-      properties: {
-        info: { id: 'msg_01_user', role: 'user', sessionID: 'ses_claude' },
-      },
-    }, '/repo');
-    applyHarnessEventToSnapshot({
-      type: 'message.part.updated',
-      properties: {
-        part: {
-          id: 'prt_1',
-          sessionID: 'ses_claude',
-          messageID: 'msg_01_user',
-          type: 'text',
-          text: 'hi',
-        },
-      },
-    }, '/repo');
-    applyHarnessEventToSnapshot({
-      type: 'message.updated',
-      properties: {
-        info: { id: 'msg_02_asst', role: 'assistant', sessionID: 'ses_claude' },
-      },
-    }, '/repo');
-    applyHarnessEventToSnapshot({
-      type: 'message.part.updated',
-      properties: {
-        part: {
-          id: 'prt_2',
-          sessionID: 'ses_claude',
-          messageID: 'msg_02_asst',
-          type: 'text',
-          text: 'READY1',
-        },
-      },
-    }, '/repo');
-
-    const merged = mergeHarnessMessagesIntoSessionMessages([], 'ses_claude');
-    expect(merged).toHaveLength(2);
-    expect(merged[0].info.id).toBe('msg_01_user');
-    expect(merged[0].parts?.[0]?.text).toBe('hi');
-    expect(merged[1].info.id).toBe('msg_02_asst');
-    expect(merged[1].parts?.[0]?.text).toBe('READY1');
+  it('fills an empty OpenCode response from the live snapshot', () => {
+    bindClaude('ses_claude');
+    applyMessage('ses_claude', 'msg_01_user', 'user', 'hi');
+    applyMessage('ses_claude', 'msg_02_asst', 'assistant', 'READY1');
+    expect(mergeHarnessMessagesIntoSessionMessages([], 'ses_claude').map((record) => (
+      [record.info.id, record.parts[0].text]
+    ))).toEqual([
+      ['msg_01_user', 'hi'],
+      ['msg_02_asst', 'READY1'],
+    ]);
   });
 });
 
-describe('mergeHarnessMessagesIntoSessionMessages + transcript replay', () => {
-  const FOREIGN_ID = '123e4567-e89b-42d3-a456-426614174000';
-  let tmpRoot;
+describe('transcript replay overlay', () => {
+  let root;
   let previousConfigDir;
 
-  const writeTranscript = (lines) => {
-    const projectDir = path.join(tmpRoot, 'projects', '-repo');
-    fs.mkdirSync(projectDir, { recursive: true });
-    const filePath = path.join(projectDir, `${FOREIGN_ID}.jsonl`);
-    fs.writeFileSync(filePath, lines.join('\n') + '\n');
-    return filePath;
-  };
-
-  const transcriptUser = (uuid, timestamp, text) => JSON.stringify({
-    type: 'user',
-    uuid,
-    timestamp,
-    sessionId: FOREIGN_ID,
-    cwd: '/repo',
-    message: { role: 'user', content: [{ type: 'text', text }] },
-  });
-
-  const transcriptAssistant = (uuid, timestamp, text) => JSON.stringify({
-    type: 'assistant',
-    uuid,
-    timestamp,
-    sessionId: FOREIGN_ID,
-    cwd: '/repo',
-    message: { role: 'assistant', content: [{ type: 'text', text }] },
-  });
+  function writeTranscript(lines) {
+    const directory = path.join(root, 'projects', '-repo');
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(directory, `${FOREIGN_ID}.jsonl`), `${lines.join('\n')}\n`);
+  }
 
   beforeEach(() => {
-    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-messages-test-'));
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-messages-test-'));
     previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
-    process.env.CLAUDE_CONFIG_DIR = tmpRoot;
+    process.env.CLAUDE_CONFIG_DIR = root;
     resetSessionBindings();
     configureSessionBindings({ persist: false, load: true });
     resetHarnessTurnSnapshots();
@@ -125,130 +94,57 @@ describe('mergeHarnessMessagesIntoSessionMessages + transcript replay', () => {
     if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
     resetClaudeTranscriptCaches();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it('serves imported session history from the Claude transcript on disk', () => {
+  it('serves imported history from disk', () => {
     writeTranscript([
-      transcriptUser('u1', '2026-07-28T10:00:00.000Z', 'imported question'),
-      transcriptAssistant('a1', '2026-07-28T10:00:01.000Z', 'imported answer'),
+      transcriptLine('user', 'u1', '2026-07-28T10:00:00.000Z', 'imported question'),
+      transcriptLine('assistant', 'a1', '2026-07-28T10:00:01.000Z', 'imported answer'),
     ]);
-    bindSession({
-      sessionId: 'ses_imported',
-      harnessId: 'claude-code',
-      directory: '/repo',
-      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
-      foreignSessionId: FOREIGN_ID,
-    });
-
-    const merged = mergeHarnessMessagesIntoSessionMessages([], 'ses_imported');
-    expect(merged).toHaveLength(2);
-    expect(merged[0].info.role).toBe('user');
-    expect(merged[0].parts?.[0]?.text).toBe('imported question');
-    expect(merged[1].info.role).toBe('assistant');
-    expect(merged[1].parts?.[0]?.text).toBe('imported answer');
+    bindClaude('ses_imported', FOREIGN_ID);
+    expect(mergeHarnessMessagesIntoSessionMessages([], 'ses_imported').map((record) => (
+      [record.info.role, record.parts[0].text]
+    ))).toEqual([
+      ['user', 'imported question'],
+      ['assistant', 'imported answer'],
+    ]);
   });
 
-  it('does not duplicate the turn the live snapshot already covers', () => {
-    // The live turn is flushed to the same JSONL the replay reads.
+  it('lets a recent live snapshot replace its transcript copy', () => {
     writeTranscript([
-      transcriptUser('u1', '2026-07-28T10:00:00.000Z', 'live question'),
-      transcriptAssistant('a1', '2026-07-28T10:00:01.000Z', 'live answer'),
+      transcriptLine('user', 'u1', '2026-07-28T10:00:00.000Z', 'live question'),
+      transcriptLine('assistant', 'a1', '2026-07-28T10:00:01.000Z', 'live answer'),
     ]);
-    bindSession({
-      sessionId: 'ses_live',
-      harnessId: 'claude-code',
-      directory: '/repo',
-      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
-      foreignSessionId: FOREIGN_ID,
-    });
-
-    const now = Date.parse('2026-07-28T10:00:02.000Z');
-    applyHarnessEventToSnapshot({
-      type: 'message.updated',
-      properties: {
-        info: { id: 'msg_live_user', role: 'user', sessionID: 'ses_live', time: { created: now } },
-      },
-    }, '/repo');
-    applyHarnessEventToSnapshot({
-      type: 'message.part.updated',
-      properties: {
-        part: {
-          id: 'prt_live_u',
-          sessionID: 'ses_live',
-          messageID: 'msg_live_user',
-          type: 'text',
-          text: 'live question',
-        },
-      },
-    }, '/repo');
-    applyHarnessEventToSnapshot({
-      type: 'message.updated',
-      properties: {
-        info: { id: 'msg_live_asst', role: 'assistant', sessionID: 'ses_live', time: { created: now } },
-      },
-    }, '/repo');
-    applyHarnessEventToSnapshot({
-      type: 'message.part.updated',
-      properties: {
-        part: {
-          id: 'prt_live_a',
-          sessionID: 'ses_live',
-          messageID: 'msg_live_asst',
-          type: 'text',
-          text: 'live answer',
-        },
-      },
-    }, '/repo');
-
-    const merged = mergeHarnessMessagesIntoSessionMessages([], 'ses_live');
-    expect(merged).toHaveLength(2);
-    expect(new Set(merged.map((record) => record.info.id)))
+    bindClaude('ses_live', FOREIGN_ID);
+    const created = Date.parse('2026-07-28T10:00:02.000Z');
+    applyMessage('ses_live', 'msg_live_user', 'user', 'live question', created);
+    applyMessage('ses_live', 'msg_live_asst', 'assistant', 'live answer', created);
+    expect(new Set(mergeHarnessMessagesIntoSessionMessages([], 'ses_live').map(({ info }) => info.id)))
       .toEqual(new Set(['msg_live_user', 'msg_live_asst']));
   });
 
-  it('hides synthetic recovery continuation records in the merged result and keeps post-recovery assistant grouped under the original user turn', () => {
-    const recoveryText = `${RECOVERY_MARKER}\nContinue the interrupted response.`;
+  it('hides recovery prompts without closing the original turn', () => {
     writeTranscript([
-      transcriptUser('u1', '2026-07-28T10:00:00.000Z', 'imported question'),
-      transcriptAssistant('a1', '2026-07-28T10:00:01.000Z', 'imported answer'),
-      // Synthetic recovery continuation injected by the recovery launch —
-      // must stay invisible in the merged chat surface.
-      JSON.stringify({
-        type: 'user',
-        uuid: 'u_recovery',
-        timestamp: '2026-07-28T10:00:02.000Z',
-        sessionId: FOREIGN_ID,
-        cwd: '/repo',
-        isSynthetic: true,
-        message: { role: 'user', content: [{ type: 'text', text: recoveryText }] },
-      }),
-      transcriptAssistant('a2', '2026-07-28T10:00:03.000Z', 'recovered continuation'),
+      transcriptLine('user', 'u1', '2026-07-28T10:00:00.000Z', 'imported question'),
+      transcriptLine('assistant', 'a1', '2026-07-28T10:00:01.000Z', 'imported answer'),
+      transcriptLine(
+        'user',
+        'u_recovery',
+        '2026-07-28T10:00:02.000Z',
+        `${RECOVERY_MARKER}\nContinue the interrupted response.`,
+        { isSynthetic: true },
+      ),
+      transcriptLine('assistant', 'a2', '2026-07-28T10:00:03.000Z', 'recovered continuation'),
     ]);
-    bindSession({
-      sessionId: 'ses_recovery',
-      harnessId: 'claude-code',
-      directory: '/repo',
-      target: { harnessId: 'claude-code', modelRef: 'sonnet' },
-      foreignSessionId: FOREIGN_ID,
-    });
+    bindClaude('ses_recovery', FOREIGN_ID);
 
     const merged = mergeHarnessMessagesIntoSessionMessages([], 'ses_recovery');
-    // Only the original user + the (merged) assistant surface; the
-    // synthetic continuation is not a visible user bubble.
     expect(merged).toHaveLength(2);
-    expect(merged[0].info.role).toBe('user');
-    expect(merged[0].parts?.[0]?.text).toBe('imported question');
-    // Verify no merged user message contains the hidden marker text.
-    const surfacedUserTexts = merged
-      .filter((record) => record.info.role === 'user')
-      .flatMap((record) => (record.parts || []).map((part) => part.text || ''));
-    expect(surfacedUserTexts.some((text) => text.startsWith(RECOVERY_MARKER))).toBe(false);
-    expect(merged[1].info.role).toBe('assistant');
-    // Hiding did not close the original user turn: the post-recovery
-    // assistant stays grouped under the original user.
     expect(merged[1].info.parentID).toBe(merged[0].info.id);
-    expect(merged[1].parts.filter((part) => part.type === 'text').map((part) => part.text))
+    expect(merged[1].parts.filter(({ type }) => type === 'text').map(({ text }) => text))
       .toEqual(['imported answer', 'recovered continuation']);
+    expect(merged.flatMap(({ parts }) => parts.map(({ text }) => text || '')))
+      .not.toContain(`${RECOVERY_MARKER}\nContinue the interrupted response.`);
   });
 });

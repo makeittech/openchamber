@@ -17,13 +17,6 @@ export type ActiveHarnessTargetArgs = {
   lastUsedTarget?: ExecutionTarget | null;
 };
 
-/**
- * Resolve the harness target the composer is currently acting on, from targets
- * the caller already holds (no store read).
- *
- * Preference: session target → pending handoff → last used. A pending handoff
- * counts only for a real session; without one there is nothing to hand off from.
- */
 export function resolveActiveHarnessTarget(args: ActiveHarnessTargetArgs): ExecutionTarget | null {
   const sessionId = typeof args.sessionId === 'string' ? args.sessionId.trim() : '';
   if (sessionId) {
@@ -38,13 +31,6 @@ export function resolveActiveHarnessTarget(args: ActiveHarnessTargetArgs): Execu
   return null;
 }
 
-/**
- * Resolve the sticky ExecutionTarget for a session.
- * Preference: sessionTargets[sessionId] → lastUsedTarget → OpenCode from provider/model args.
- *
- * Callers that open existing OpenCode sessions should hydrate an opencode
- * sessionTarget when missing so a Claude lastUsedTarget does not leak across sessions.
- */
 export function resolveExecutionTarget(args: ResolveExecutionTargetArgs): ExecutionTarget {
   const selection = useSelectionStore.getState();
   const sessionId = args.sessionId.trim();
@@ -84,7 +70,6 @@ export function buildOpenCodeExecutionTarget(args: {
   };
 }
 
-/** Persist the active target for a session (and as last-used). */
 export function persistSessionExecutionTarget(sessionId: string, target: ExecutionTarget): void {
   if (!sessionId.trim() || !isExecutionTarget(target)) {
     return;

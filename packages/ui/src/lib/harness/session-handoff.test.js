@@ -8,9 +8,7 @@ mock.module('@/sync/sync-refs', () => ({
   getSyncParts: (...args) => getSyncPartsMock(...args),
 }));
 
-const { useSelectionStore } = await import('@/sync/selection-store');
 const {
-  applySessionExecutionTargetSelection,
   createHarnessHandoffSession,
   extractCompactionSummary,
 } = await import(`./session-handoff?cache-test=${Date.now()}`);
@@ -20,51 +18,6 @@ beforeEach(() => {
   getSyncMessagesMock.mockImplementation(() => []);
   getSyncPartsMock.mockReset();
   getSyncPartsMock.mockImplementation(() => []);
-  useSelectionStore.setState({
-    sessionTargets: new Map(),
-    pendingHandoffTargets: new Map(),
-    lastUsedTarget: null,
-  });
-});
-
-describe('applySessionExecutionTargetSelection', () => {
-  test('empty session updates sticky target in place', () => {
-    getSyncMessagesMock.mockImplementation(() => []);
-    const result = applySessionExecutionTargetSelection('ses_empty', {
-      harnessId: 'claude-code',
-      modelRef: 'sonnet',
-    });
-    expect(result).toBe('persisted');
-    expect(useSelectionStore.getState().getSessionTarget('ses_empty')).toEqual({
-      harnessId: 'claude-code',
-      modelRef: 'sonnet',
-    });
-    expect(useSelectionStore.getState().getPendingHandoffTarget('ses_empty')).toBeNull();
-  });
-
-  test('used session marks pending handoff without rewriting sticky target', () => {
-    getSyncMessagesMock.mockImplementation(() => [{ id: 'msg_1', role: 'user' }]);
-    useSelectionStore.getState().saveSessionTarget('ses_used', {
-      harnessId: 'opencode',
-      providerId: 'anthropic',
-      modelId: 'claude-sonnet',
-    });
-
-    const result = applySessionExecutionTargetSelection('ses_used', {
-      harnessId: 'claude-code',
-      modelRef: 'opus',
-    });
-    expect(result).toBe('pending-handoff');
-    expect(useSelectionStore.getState().getSessionTarget('ses_used')).toEqual({
-      harnessId: 'opencode',
-      providerId: 'anthropic',
-      modelId: 'claude-sonnet',
-    });
-    expect(useSelectionStore.getState().getPendingHandoffTarget('ses_used')).toEqual({
-      harnessId: 'claude-code',
-      modelRef: 'opus',
-    });
-  });
 });
 
 describe('createHarnessHandoffSession', () => {

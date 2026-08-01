@@ -161,24 +161,17 @@ export function assertClaudeWorkingDirectory(cwd, fsLike = fs) {
     throw error;
   }
   const resolved = path.resolve(cwd.trim());
+  let isDirectory = false;
   try {
-    if (!fsLike.existsSync(resolved) || !fsLike.statSync(resolved).isDirectory()) {
-      const error = new Error(`Claude Code working directory is not a directory: ${resolved}`);
-      error.code = 'CLAUDE_CWD_ENOTDIR';
-      error.statusCode = 400;
-      throw error;
-    }
+    isDirectory = fsLike.existsSync(resolved) && fsLike.statSync(resolved).isDirectory();
   } catch (error) {
-    if (error && typeof error === 'object' && 'code' in error && error.code === 'CLAUDE_CWD_ENOTDIR') {
-      throw error;
-    }
-    if (error && typeof error === 'object' && 'code' in error && error.code === 'CLAUDE_CWD_INVALID') {
-      throw error;
-    }
-    const wrapped = new Error(`Claude Code working directory is not a directory: ${resolved}`);
-    wrapped.code = 'CLAUDE_CWD_ENOTDIR';
-    wrapped.statusCode = 400;
-    throw wrapped;
+    if (error?.code === 'CLAUDE_CWD_ENOTDIR' || error?.code === 'CLAUDE_CWD_INVALID') throw error;
+    isDirectory = false;
   }
-  return resolved;
+  if (isDirectory) return resolved;
+
+  const error = new Error(`Claude Code working directory is not a directory: ${resolved}`);
+  error.code = 'CLAUDE_CWD_ENOTDIR';
+  error.statusCode = 400;
+  throw error;
 }

@@ -1,41 +1,27 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import type { ClaudeSessionCapabilities } from '@/lib/harness/client';
 
-let harnessCapabilitiesImpl: () => Promise<{
-  capabilities: {
-    sessionId: string;
-    slashCommands: string[];
-    skills: string[];
-    agents: string[];
-    tools: string[];
-    mcpServers: string[];
-    updatedAt: number;
-  };
-}> = async () => ({
-  capabilities: {
-    sessionId: 'sess-1',
-    slashCommands: [],
-    skills: [],
-    agents: [],
-    tools: [],
-    mcpServers: [],
-    updatedAt: 1,
-  },
+const capabilities = (
+  overrides: Partial<ClaudeSessionCapabilities> = {},
+): ClaudeSessionCapabilities => ({
+  sessionId: 'sess-1',
+  slashCommands: [],
+  skills: [],
+  agents: [],
+  tools: [],
+  mcpServers: [],
+  updatedAt: 1,
+  ...overrides,
 });
 
-// `mock.module` is global to the run, so a partial mock would strip the real
-// module's other exports for every test file that loads after this one.
+let loadCapabilities: () => Promise<{ capabilities: ClaudeSessionCapabilities }>;
 const actualClient = await import('@/lib/harness/client');
 
 mock.module('@/lib/harness/client', () => ({
   ...actualClient,
   harnessSessionCapabilities: async (sessionId: string) => {
-    const result = await harnessCapabilitiesImpl();
-    return {
-      capabilities: {
-        ...result.capabilities,
-        sessionId,
-      },
-    };
+    const result = await loadCapabilities();
+    return { capabilities: { ...result.capabilities, sessionId } };
   },
 }));
 
@@ -45,56 +31,53 @@ const {
   useClaudeSessionCapabilitiesStore,
 } = await import('./useClaudeSessionCapabilitiesStore');
 
-describe('useClaudeSessionCapabilitiesStore slash selectors', () => {
-  beforeEach(() => {
-    useClaudeSessionCapabilitiesStore.getState().reset();
-    harnessCapabilitiesImpl = async () => ({
-      capabilities: {
-        sessionId: 'sess-1',
-        slashCommands: [],
-        skills: [],
-        agents: [],
-        tools: [],
-        mcpServers: [],
-        updatedAt: 1,
-      },
-    });
-  });
+beforeEach(() => {
+  useClaudeSessionCapabilitiesStore.getState().reset();
+  loadCapabilities = async () => ({ capabilities: capabilities() });
+});
 
-  test('builtin fallback returns a stable reference across calls', () => {
+describe('useClaudeSessionCapabilitiesStore', () => {
+  test('builtin slash fallback keeps one stable reference', async () => {
     const state = useClaudeSessionCapabilitiesStore.getState();
-    const a = selectClaudeSlashCommands(state, null);
-    const b = selectClaudeSlashCommands(state, 'missing-session');
-    const c = state.getSlashCommands('also-missing');
-    expect(a).toBe(CLAUDE_BUILTIN_SLASH_COMMANDS);
-    expect(b).toBe(CLAUDE_BUILTIN_SLASH_COMMANDS);
-    expect(c).toBe(CLAUDE_BUILTIN_SLASH_COMMANDS);
+    expect(selectClaudeSlashCommands(state, null)).toBe(CLAUDE_BUILTIN_SLASH_COMMANDS);
+    expect(state.getSlashCommands('missing')).toBe(CLAUDE_BUILTIN_SLASH_COMMANDS);
+
+    await state.refresh('sess-1');
+    expect(useClaudeSessionCapabilitiesStore.getState().getSlashCommands('sess-1'))
+      .toBe(CLAUDE_BUILTIN_SLASH_COMMANDS);
   });
 
-  test('refresh with empty server slash list keeps the stable builtin reference', async () => {
-    const before = selectClaudeSlashCommands(useClaudeSessionCapabilitiesStore.getState(), 'sess-1');
+  test('server slash commands are returned by reference', async () => {
+    const slashCommands = ['usage', 'compact'];
+    loadCapabilities = async () => ({ capabilities: capabilities({ slashCommands, updatedAt: 2 }) });
     await useClaudeSessionCapabilitiesStore.getState().refresh('sess-1');
-    const after = selectClaudeSlashCommands(useClaudeSessionCapabilitiesStore.getState(), 'sess-1');
-    expect(before).toBe(CLAUDE_BUILTIN_SLASH_COMMANDS);
-    expect(after).toBe(CLAUDE_BUILTIN_SLASH_COMMANDS);
-  });
 
-  test('refresh with server slash list returns that session array by reference', async () => {
-    const serverSlash = ['usage', 'compact'];
-    harnessCapabilitiesImpl = async () => ({
-      capabilities: {
-        sessionId: 'sess-1',
-        slashCommands: serverSlash,
-        skills: [],
-        agents: [],
-        tools: [],
-        mcpServers: [],
-        updatedAt: 2,
-      },
-    });
-    await useClaudeSessionCapabilitiesStore.getState().refresh('sess-1');
-    const selected = selectClaudeSlashCommands(useClaudeSessionCapabilitiesStore.getState(), 'sess-1');
-    expect(selected).toBe(serverSlash);
+    const selected = useClaudeSessionCapabilitiesStore.getState().getSlashCommands('sess-1');
+    expect(selected).toBe(slashCommands);
     expect(selected).toEqual(['usage', 'compact']);
+  });
+
+  test('failure keeps prior capabilities and provides defaults on first failure', async () => {
+    const slashCommands = ['usage'];
+    loadCapabilities = async () => ({ capabilities: capabilities({ slashCommands, updatedAt: 2 }) });
+    await useClaudeSessionCapabilitiesStore.getState().refresh('sess-1');
+
+    loadCapabilities = async () => { throw new Error('offline'); };
+    expect(await useClaudeSessionCapabilitiesStore.getState().refresh('sess-1'))
+      .toBe(useClaudeSessionCapabilitiesStore.getState().getCapabilities('sess-1'));
+    expect(useClaudeSessionCapabilitiesStore.getState().getSlashCommands('sess-1')).toBe(slashCommands);
+
+    const failed = await useClaudeSessionCapabilitiesStore.getState().refresh('sess-2');
+    expect(failed?.updatedAt).toBe(0);
+    expect(failed?.slashCommands).toBe(CLAUDE_BUILTIN_SLASH_COMMANDS);
+  });
+
+  test('an older server result cannot replace newer capabilities', async () => {
+    loadCapabilities = async () => ({ capabilities: capabilities({ slashCommands: ['new'], updatedAt: 10 }) });
+    await useClaudeSessionCapabilitiesStore.getState().refresh('sess-1');
+    loadCapabilities = async () => ({ capabilities: capabilities({ slashCommands: ['old'], updatedAt: 5 }) });
+    await useClaudeSessionCapabilitiesStore.getState().refresh('sess-1');
+
+    expect(useClaudeSessionCapabilitiesStore.getState().getSlashCommands('sess-1')).toEqual(['new']);
   });
 });

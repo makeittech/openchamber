@@ -1,5 +1,4 @@
 import { describe, expect, test } from 'bun:test';
-
 import {
   HARNESS_SETTINGS_DEFAULTS,
   sanitizeHarnessSettings,
@@ -7,96 +6,69 @@ import {
 } from './settings';
 
 describe('sanitizeHarnessSettings', () => {
-  test('keeps valid harness id, booleans, and agents mode', () => {
-    expect(sanitizeHarnessSettings({
+  const cases: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
+    ['valid fields', {
       harnessDefaultId: 'claude-code',
       harnessWarnOnSwitch: false,
       harnessClaudeCodeEnabled: true,
       harnessClaudeCodeAgentsMode: 'claude',
-    })).toEqual({
+    }, {
       harnessDefaultId: 'claude-code',
       harnessWarnOnSwitch: false,
       harnessClaudeCodeEnabled: true,
       harnessClaudeCodeAgentsMode: 'claude',
-    });
-  });
-
-  test('invalid harness id falls back to opencode', () => {
-    expect(sanitizeHarnessSettings({
+    }],
+    ['invalid enums', {
       harnessDefaultId: 'codex-cli',
-    })).toEqual({
-      harnessDefaultId: 'opencode',
-    });
-  });
-
-  test('invalid agents mode falls back to opencode', () => {
-    expect(sanitizeHarnessSettings({
       harnessClaudeCodeAgentsMode: 'cursor',
-    })).toEqual({
+    }, {
+      harnessDefaultId: 'opencode',
       harnessClaudeCodeAgentsMode: 'opencode',
-    });
-  });
-
-  test('omits wrong-typed boolean fields', () => {
-    expect(sanitizeHarnessSettings({
+    }],
+    ['wrong-typed booleans', {
       harnessWarnOnSwitch: 'yes',
       harnessClaudeCodeEnabled: 1,
-    })).toEqual({});
-  });
-
-  test('omits missing fields', () => {
-    expect(sanitizeHarnessSettings({})).toEqual({});
-  });
-
-  test('migrates legacy engines* keys when new keys are absent', () => {
-    expect(sanitizeHarnessSettings({
+    }, {}],
+    ['missing fields', {}, {}],
+    ['legacy fields', {
       enginesDefaultHarnessId: 'claude-code',
       enginesClaudeCodeWarnOnOpenCodeHandoff: false,
       enginesClaudeCodeEnabled: false,
       enginesClaudeCodeAgentsMode: 'claude',
-    })).toEqual({
+    }, {
       harnessDefaultId: 'claude-code',
       harnessWarnOnSwitch: false,
       harnessClaudeCodeEnabled: false,
       harnessClaudeCodeAgentsMode: 'claude',
-    });
-  });
-
-  test('new keys win over legacy engines* keys', () => {
-    expect(sanitizeHarnessSettings({
+    }],
+    ['new fields over legacy fields', {
       harnessWarnOnSwitch: true,
       enginesClaudeCodeWarnOnOpenCodeHandoff: false,
-    })).toEqual({
-      harnessWarnOnSwitch: true,
+    }, { harnessWarnOnSwitch: true }],
+  ];
+  for (const [name, input, expected] of cases) {
+    test(`sanitizes ${name}`, () => {
+      expect(sanitizeHarnessSettings(input)).toEqual(expected);
     });
-  });
-
-  test('legacy invalid values fall back like new ones', () => {
-    expect(sanitizeHarnessSettings({
-      enginesDefaultHarnessId: 'codex-cli',
-      enginesClaudeCodeAgentsMode: 'cursor',
-    })).toEqual({
-      harnessDefaultId: 'opencode',
-      harnessClaudeCodeAgentsMode: 'opencode',
-    });
-  });
+  }
 });
 
 describe('withHarnessSettingsDefaults', () => {
-  test('applies product defaults when empty', () => {
-    expect(withHarnessSettingsDefaults(undefined)).toEqual(HARNESS_SETTINGS_DEFAULTS);
-    expect(withHarnessSettingsDefaults({})).toEqual(HARNESS_SETTINGS_DEFAULTS);
-  });
+  for (const partial of [undefined, {}]) {
+    test(`applies defaults to ${String(partial)}`, () => {
+      expect(withHarnessSettingsDefaults(partial)).toEqual(HARNESS_SETTINGS_DEFAULTS);
+    });
+  }
 
-  test('preserves sanitized overrides', () => {
+  test('preserves overrides', () => {
     expect(withHarnessSettingsDefaults({
       harnessDefaultId: 'claude-code',
       harnessWarnOnSwitch: false,
       harnessClaudeCodeAgentsMode: 'claude',
     })).toEqual({
+      ...HARNESS_SETTINGS_DEFAULTS,
       harnessDefaultId: 'claude-code',
       harnessWarnOnSwitch: false,
-      harnessClaudeCodeEnabled: true,
       harnessClaudeCodeAgentsMode: 'claude',
     });
   });

@@ -1,7 +1,3 @@
-/**
- * Express route registration for /api/harness/*
- */
-
 import express from 'express';
 import { detectAllHarnesses, detectHarness } from './detect.js';
 import { isKnownHarnessId } from './registry.js';
@@ -24,46 +20,30 @@ import { createOpenCodeCommandResolver } from './translators/claude-code/opencod
 import { createOpenCodeAgentResolver } from './translators/claude-code/opencode-agents.js';
 import { listClaudeAgents } from './translators/claude-code/claude-agents.js';
 
-/**
- * @param {import('express').Express} app
- * @param {object} [deps]
- * @param {() => ((payload: object, options?: object) => void) | null | undefined} [deps.getBroadcastGlobalUiEvent]
- * @param {boolean | (() => boolean)} [deps.getOpenCodeReady]
- * @param {ReturnType<typeof createHarnessRouter>} [deps.router]
- * @param {typeof detectAllHarnesses} [deps.detectAll]
- * @param {typeof detectHarness} [deps.detectOne]
- * @param {Parameters<typeof initSessionBindings>[0]} [deps.sessionBindings]
- * @param {boolean} [deps.initBindings]
- * @param {(path: string, directory?: string) => string} [deps.buildOpenCodeUrl]
- * @param {() => Record<string, string>} [deps.getOpenCodeAuthHeaders]
- * @param {typeof listClaudeAgents} [deps.listClaudeAgents]
- * @param {typeof listClaudeImportCandidates} [deps.listClaudeImportCandidates]
- * @param {typeof importClaudeSessions} [deps.importClaudeSessions]
- * @param {(directory: string, title?: string | null) => Promise<string>} [deps.createOpenCodeSession]
- */
+function httpError(statusCode, code, message) {
+  const error = new Error(message);
+  error.code = code;
+  error.statusCode = statusCode;
+  return error;
+}
+
+const queryString = (req, key) => (typeof req.query?.[key] === 'string' ? req.query[key] : '');
+
 export function registerHarnessRoutes(app, deps = {}) {
-  const getBroadcast = typeof deps.getBroadcastGlobalUiEvent === 'function'
-    ? deps.getBroadcastGlobalUiEvent
-    : () => null;
+  const dep = (name, fallback) => (typeof deps[name] === 'function' ? deps[name] : fallback);
+  const getBroadcast = dep('getBroadcastGlobalUiEvent', () => null);
   const getOpenCodeReady = () => {
     if (typeof deps.getOpenCodeReady === 'function') return deps.getOpenCodeReady() !== false;
     if (typeof deps.getOpenCodeReady === 'boolean') return deps.getOpenCodeReady;
     return true;
   };
-  const detectAll = deps.detectAll || detectAllHarnesses;
-  const detectOne = deps.detectOne || detectHarness;
-  const buildOpenCodeUrl = typeof deps.buildOpenCodeUrl === 'function' ? deps.buildOpenCodeUrl : null;
-  const getOpenCodeAuthHeaders = typeof deps.getOpenCodeAuthHeaders === 'function'
-    ? deps.getOpenCodeAuthHeaders
-    : () => ({});
-  const resolveOpenCodeCommand = createOpenCodeCommandResolver({
-    buildOpenCodeUrl,
-    getOpenCodeAuthHeaders,
-  });
-  const resolveOpenCodeAgents = createOpenCodeAgentResolver({
-    buildOpenCodeUrl,
-    getOpenCodeAuthHeaders,
-  });
+  const detectAll = dep('detectAll', detectAllHarnesses);
+  const detectOne = dep('detectOne', detectHarness);
+  const buildOpenCodeUrl = dep('buildOpenCodeUrl', null);
+  const getOpenCodeAuthHeaders = dep('getOpenCodeAuthHeaders', () => ({}));
+  const openCodeDeps = { buildOpenCodeUrl, getOpenCodeAuthHeaders };
+  const resolveOpenCodeCommand = createOpenCodeCommandResolver(openCodeDeps);
+  const resolveOpenCodeAgents = createOpenCodeAgentResolver(openCodeDeps);
   const router = deps.router || createHarnessRouter({
     getBroadcast,
     ...(resolveOpenCodeCommand ? { resolveOpenCodeCommand } : {}),
@@ -76,40 +56,26 @@ export function registerHarnessRoutes(app, deps = {}) {
 
   const json = express.json({ limit: '50mb' });
 
-  const sendError = (res, error) => {
-    const statusCode = Number(error?.statusCode) || 500;
-    if (statusCode >= 500) {
-      console.error('[harness]', error?.code || 'HARNESS_ERROR', error?.message || error);
+  /** Wraps a handler so thrown coded errors become the shared JSON error response. */
+  const respond = (handler, status = 200) => async (req, res) => {
+    try {
+      res.status(status).json(await handler(req));
+    } catch (error) {
+      const statusCode = Number(error?.statusCode) || 500;
+      if (statusCode >= 500) {
+        console.error('[harness]', error?.code || 'HARNESS_ERROR', error?.message || error);
+      }
+      res.status(statusCode).json({
+        error: error?.message || 'Harness request failed',
+        code: error?.code || 'HARNESS_ERROR',
+        ...(error?.status ? { status: error.status } : {}),
+      });
     }
-    res.status(statusCode).json({
-      error: error?.message || 'Harness request failed',
-      code: error?.code || 'HARNESS_ERROR',
-      ...(error?.status ? { status: error.status } : {}),
-    });
   };
 
-  // Overlay Claude busy onto OpenCode session status so UI poll/resync cannot
-  // clear Stop / queue auto-send while a harness turn is active.
-  // Also overlay harness turn-snapshot messages onto /session/:id/message —
-  // OpenCode stores nothing for Claude turns, and an authoritative empty
-  // refetch would wipe optimistic / event-applied chat (and stall the queue).
   if (buildOpenCodeUrl) {
-    /**
-     * GET an OpenCode path, or `null` when the overlay cannot be built.
-     *
-     * `null` means "no authoritative upstream answer" — callers fall through to
-     * the generic proxy so the existing error contract is preserved rather than
-     * turning an upstream failure into an empty success.
-     *
-     * @param {string} path
-     * @param {Record<string, string>} query
-     * @returns {Promise<unknown | null>}
-     */
     const getFromOpenCode = async (path, query) => {
-      const params = new URLSearchParams();
-      for (const [key, value] of Object.entries(query)) {
-        if (value) params.set(key, value);
-      }
+      const params = new URLSearchParams(Object.entries(query).filter(([, value]) => value));
       const search = params.toString();
       const base = buildOpenCodeUrl(path, '');
       const response = await fetch(search ? `${base}?${search}` : base, {
@@ -126,7 +92,7 @@ export function registerHarnessRoutes(app, deps = {}) {
 
     app.get('/api/session/status', async (req, res, next) => {
       try {
-        const directory = typeof req.query?.directory === 'string' ? req.query.directory : '';
+        const directory = queryString(req, 'directory');
         const statuses = await getFromOpenCode('/session/status', { directory });
         if (statuses === null) return next();
         res.json(mergeHarnessActiveIntoSessionStatuses(statuses, directory));
@@ -141,21 +107,14 @@ export function registerHarnessRoutes(app, deps = {}) {
         if (!sessionId) return next();
         const messages = await getFromOpenCode(
           `/session/${encodeURIComponent(sessionId)}/message`,
-          {
-            directory: typeof req.query?.directory === 'string' ? req.query.directory : '',
-            limit: typeof req.query?.limit === 'string' ? req.query.limit : '',
-          },
+          { directory: queryString(req, 'directory'), limit: queryString(req, 'limit') },
         );
         if (messages === null) {
-          // OpenCode fetch failed — still serve harness overlay when present so
-          // Claude transcripts are not replaced by an authoritative-looking empty
-          // proxy response that skips mergeHarnessMessagesIntoSessionMessages.
+          // Upstream failure must not clear the session: serve live harness state when we have it.
           const harnessOnly = mergeHarnessMessagesIntoSessionMessages([], sessionId);
-          if (harnessOnly.length > 0) {
-            res.json(harnessOnly);
-            return;
-          }
-          return next();
+          if (harnessOnly.length === 0) return next();
+          res.json(harnessOnly);
+          return;
         }
         res.json(mergeHarnessMessagesIntoSessionMessages(messages, sessionId));
       } catch {
@@ -164,168 +123,66 @@ export function registerHarnessRoutes(app, deps = {}) {
     });
   }
 
-  app.get('/api/harness', async (_req, res) => {
-    try {
-      const catalogs = await detectAll({ openCodeReady: getOpenCodeReady() });
-      res.json({ catalogs });
-    } catch (error) {
-      sendError(res, error);
-    }
-  });
+  app.get('/api/harness', respond(async () => ({
+    catalogs: await detectAll({ openCodeReady: getOpenCodeReady() }),
+  })));
 
-  app.get('/api/harness/sessions/:sessionId', (req, res) => {
+  app.get('/api/harness/sessions/:sessionId', respond((req) => {
     const binding = getSessionBinding(req.params.sessionId);
-    if (!binding) {
-      return res.status(404).json({ error: 'Session binding not found', code: 'BINDING_NOT_FOUND' });
-    }
-    res.json({ binding });
-  });
+    if (!binding) throw httpError(404, 'BINDING_NOT_FOUND', 'Session binding not found');
+    return { binding };
+  }));
 
-  app.get('/api/harness/sessions/:sessionId/capabilities', (req, res) => {
+  app.get('/api/harness/sessions/:sessionId/capabilities', respond((req) => {
     const sessionId = typeof req.params.sessionId === 'string' ? req.params.sessionId : '';
-    if (!sessionId) {
-      return res.status(400).json({ error: 'sessionId is required', code: 'PROMPT_INVALID' });
-    }
-    // Capabilities are useful before the first Claude turn (built-in slash
-    // defaults). Binding may be absent for brand-new sessions that have only
-    // selected Claude in the picker — still return defaults.
-    const binding = getSessionBinding(sessionId);
-    const capabilities = getOrCreateSessionCapabilities(sessionId);
-    res.json({
+    if (!sessionId) throw httpError(400, 'PROMPT_INVALID', 'sessionId is required');
+    return {
       sessionId,
-      harnessId: binding?.harnessId || 'claude-code',
-      capabilities,
-    });
-  });
+      harnessId: getSessionBinding(sessionId)?.harnessId || 'claude-code',
+      capabilities: getOrCreateSessionCapabilities(sessionId),
+    };
+  }));
 
-  // Claude-native agents for the composer picker when agents mode is `claude`.
-  // Registered before /api/harness/:id so path segments stay unambiguous.
-  app.get('/api/harness/claude-code/agents', async (req, res) => {
-    try {
-      const listAgents = typeof deps.listClaudeAgents === 'function'
-        ? deps.listClaudeAgents
-        : listClaudeAgents;
-      const directory = typeof req.query?.directory === 'string' ? req.query.directory : '';
-      const payload = await listAgents({ directory });
-      res.json(payload);
-    } catch (error) {
-      sendError(res, error);
-    }
-  });
+  app.get('/api/harness/claude-code/agents', respond((req) => (
+    dep('listClaudeAgents', listClaudeAgents)({ directory: queryString(req, 'directory') })
+  )));
 
-  // Claude Code local import — list candidates and bind OpenCode shells.
-  app.get('/api/harness/claude-code/import/candidates', async (_req, res) => {
-    try {
-      const listCandidates = typeof deps.listClaudeImportCandidates === 'function'
-        ? deps.listClaudeImportCandidates
-        : listClaudeImportCandidates;
-      const payload = await listCandidates();
-      res.json(payload);
-    } catch (error) {
-      sendError(res, error);
-    }
-  });
+  app.get('/api/harness/claude-code/import/candidates', respond(() => (
+    dep('listClaudeImportCandidates', listClaudeImportCandidates)()
+  )));
 
-  app.post('/api/harness/claude-code/import', json, async (req, res) => {
-    try {
-      const body = req.body || {};
-      const sessions = Array.isArray(body.sessions) ? body.sessions : null;
-      if (!sessions) {
-        return res.status(400).json({
-          error: 'sessions array is required',
-          code: 'IMPORT_INVALID',
-        });
-      }
+  const createSession = dep('createOpenCodeSession', createOpenCodeSessionFactory(openCodeDeps));
+  app.post('/api/harness/claude-code/import', json, respond((req) => {
+    const sessions = req.body?.sessions;
+    if (!Array.isArray(sessions)) throw httpError(400, 'IMPORT_INVALID', 'sessions array is required');
+    return dep('importClaudeSessions', importClaudeSessions)({ sessions, createSession });
+  }));
 
-      const createSession = typeof deps.createOpenCodeSession === 'function'
-        ? deps.createOpenCodeSession
-        : createOpenCodeSessionFactory({
-          buildOpenCodeUrl,
-          getOpenCodeAuthHeaders,
-        });
-
-      const importSessions = typeof deps.importClaudeSessions === 'function'
-        ? deps.importClaudeSessions
-        : importClaudeSessions;
-
-      const payload = await importSessions({
-        sessions,
-        createSession,
-      });
-      res.json(payload);
-    } catch (error) {
-      sendError(res, error);
-    }
-  });
-
-  // Read and re-probe are the same operation: detection is never cached, so GET
-  // and POST share one handler.
-  // Detect failure must not look like ready+empty success — the `status` field
-  // on the returned catalog is authoritative.
-  const handleDetectOne = async (req, res) => {
+  const handleDetectOne = respond(async (req) => {
     const id = req.params.id;
-    if (!isKnownHarnessId(id)) {
-      return res.status(404).json({ error: 'Unknown harness', code: 'HARNESS_NOT_FOUND' });
-    }
-    try {
-      const catalog = await detectOne(id, { openCodeReady: getOpenCodeReady() });
-      if (!catalog) {
-        return res.status(404).json({ error: 'Unknown harness', code: 'HARNESS_NOT_FOUND' });
-      }
-      res.json(catalog);
-    } catch (error) {
-      sendError(res, error);
-    }
-  };
+    const catalog = isKnownHarnessId(id)
+      ? await detectOne(id, { openCodeReady: getOpenCodeReady() })
+      : null;
+    if (!catalog) throw httpError(404, 'HARNESS_NOT_FOUND', 'Unknown harness');
+    return catalog;
+  });
 
   app.get('/api/harness/:id', handleDetectOne);
   app.post('/api/harness/:id/detect', handleDetectOne);
 
-  app.post('/api/harness/prompt', json, async (req, res) => {
-    try {
-      const result = await router.prompt(req.body || {});
-      res.status(202).json(result);
-    } catch (error) {
-      sendError(res, error);
-    }
-  });
+  app.post('/api/harness/prompt', json, respond((req) => router.prompt(req.body || {}), 202));
+  app.post('/api/harness/abort', json, respond((req) => router.abort(req.body || {})));
 
-  app.post('/api/harness/abort', json, async (req, res) => {
-    try {
-      const result = await router.abort(req.body || {});
-      res.json(result);
-    } catch (error) {
-      sendError(res, error);
-    }
-  });
-
-  app.post('/api/harness/permission/reply', json, async (req, res) => {
-    try {
-      if (typeof router.replyPermission !== 'function') {
-        const error = new Error('Permission reply is unavailable');
-        error.code = 'PERMISSION_UNAVAILABLE';
-        error.statusCode = 503;
-        throw error;
+  const replies = [
+    ['permission', 'replyPermission', 'Permission', 'PERMISSION'],
+    ['question', 'replyQuestion', 'Question', 'QUESTION'],
+  ];
+  for (const [path, method, label, code] of replies) {
+    app.post(`/api/harness/${path}/reply`, json, respond((req) => {
+      if (typeof router[method] !== 'function') {
+        throw httpError(503, `${code}_UNAVAILABLE`, `${label} reply is unavailable`);
       }
-      const result = await router.replyPermission(req.body || {});
-      res.json(result);
-    } catch (error) {
-      sendError(res, error);
-    }
-  });
-
-  app.post('/api/harness/question/reply', json, async (req, res) => {
-    try {
-      if (typeof router.replyQuestion !== 'function') {
-        const error = new Error('Question reply is unavailable');
-        error.code = 'QUESTION_UNAVAILABLE';
-        error.statusCode = 503;
-        throw error;
-      }
-      const result = await router.replyQuestion(req.body || {});
-      res.json(result);
-    } catch (error) {
-      sendError(res, error);
-    }
-  });
+      return router[method](req.body || {});
+    }));
+  }
 }

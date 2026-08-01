@@ -1,25 +1,6 @@
 /**
- * OpenCode / OpenChamber slash-command translation for the Claude Code harness.
- *
- * Claude Code has no concept of an OpenCode command, so a Claude session used to
- * reject `/pr-review` outright. This module is the translating layer: it resolves
- * the command definition from OpenCode itself (authoritative `GET /command`) and
- * expands the template into ordinary prompt text before the Claude turn starts.
- *
- * Template syntax follows what OpenChamber documents for command templates:
- *
- * | Token          | Behavior                                                  |
- * | -------------- | --------------------------------------------------------- |
- * | `$ARGUMENTS`   | Replaced with the text typed after the command name        |
- * | ``!`cmd` ``    | Replaced with the command's output, run in the session cwd |
- * | `@file`        | Left as-is — Claude Code resolves file mentions natively   |
- *
- * `@file` is a deliberate runtime difference: OpenCode inlines file contents
- * server-side, while Claude Code already understands `@path` mentions and can
- * `Read` the file itself, so inlining here would only duplicate the bytes.
- *
- * The template is never taken from the client. It is fetched from OpenCode per
- * turn, so a client cannot hand the server an arbitrary shell-bearing template.
+ * Translate authoritative OpenCode command templates into Claude prompt text.
+ * Templates are fetched server-side because they may contain shell substitutions.
  */
 
 import { execFile } from 'node:child_process';
@@ -172,7 +153,7 @@ export async function expandOpenCodeCommandTemplate(params) {
   let cursor = 0;
   let out = '';
   for (const [index, match] of matches.entries()) {
-    const start = match.index ?? 0;
+    const start = match.index;
     out += text.slice(cursor, start) + replacements[index];
     cursor = start + match[0].length;
   }

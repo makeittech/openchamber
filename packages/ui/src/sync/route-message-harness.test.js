@@ -65,6 +65,46 @@ const { useSkillsStore } = await import('@/stores/useSkillsStore');
 const { setCachedClaudeAgentsMode } = await import('@/lib/harness/settings');
 const { useClaudeAgentsStore } = await import('@/stores/useClaudeAgentsStore');
 
+const DIRECTORY = '/claude/project';
+
+const CLAUDE_ENGINE = {
+  id: 'claude-code',
+  displayName: 'Claude Code',
+  shortName: 'Claude',
+  auth: { mode: 'subscription-cli' },
+  capabilities: {},
+  install: { binaryNames: ['claude'], docsUrl: 'https://example.com' },
+};
+
+const READY_SECTIONS = [
+  { id: 'models', name: 'Models', kind: 'models', models: [{ id: 'sonnet', name: 'Sonnet' }] },
+];
+
+function setClaudeCatalog(status, sections) {
+  useHarnessStore.setState({
+    catalogsById: { 'claude-code': { engine: CLAUDE_ENGINE, status, sections } },
+    loadState: 'ready',
+    error: null,
+  });
+}
+
+function selectClaude(sessionId, overrides = {}) {
+  useSelectionStore.getState().saveSessionTarget(sessionId, {
+    harnessId: 'claude-code',
+    modelRef: 'sonnet',
+    ...overrides,
+  });
+}
+
+function route(overrides) {
+  return routeMessage({
+    directory: DIRECTORY,
+    providerID: 'anthropic',
+    modelID: 'claude-sonnet',
+    ...overrides,
+  });
+}
+
 describe('routeMessage Claude harness branch', () => {
   const sendMessageCalls = [];
   const shellSessionCalls = [];
@@ -92,7 +132,7 @@ describe('routeMessage Claude harness branch', () => {
       ensureChild: () => childStore,
       getChild: () => childStore,
     };
-    setActionRefs(opencodeClient, childStores, () => '/claude/project');
+    setActionRefs(opencodeClient, childStores, () => DIRECTORY);
     setOptimisticRefs(() => {}, () => {});
     useConfigStore.setState({ isConnected: true });
     useCommandsStore.setState({ commands: [] });
@@ -101,24 +141,7 @@ describe('routeMessage Claude harness branch', () => {
       sessionTargets: new Map(),
       lastUsedTarget: null,
     });
-    useHarnessStore.setState({
-      catalogsById: {
-        'claude-code': {
-          engine: {
-            id: 'claude-code',
-            displayName: 'Claude Code',
-            shortName: 'Claude',
-            auth: { mode: 'subscription-cli' },
-            capabilities: {},
-            install: { binaryNames: ['claude'], docsUrl: 'https://example.com' },
-          },
-          status: 'ready',
-          sections: [{ id: 'models', name: 'Models', kind: 'models', models: [{ id: 'sonnet', name: 'Sonnet' }] }],
-        },
-      },
-      loadState: 'ready',
-      error: null,
-    });
+    setClaudeCatalog('ready', READY_SECTIONS);
 
     originalSendMessage = opencodeClient.sendMessage;
     opencodeClient.sendMessage = async (params) => {
@@ -142,23 +165,17 @@ describe('routeMessage Claude harness branch', () => {
   });
 
   test('routes Claude targets through harnessPrompt and skips OpenCode sendMessage', async () => {
-    useSelectionStore.getState().saveSessionTarget('session-claude', {
-      harnessId: 'claude-code',
-      modelRef: 'sonnet',
-    });
+    selectClaude('session-claude');
 
-    await routeMessage({
+    await route({
       sessionId: 'session-claude',
-      directory: '/claude/project',
       content: 'hello claude',
-      providerID: 'anthropic',
-      modelID: 'claude-sonnet',
       files: [{ type: 'file', mime: 'image/png', url: 'data:image/png;base64,x', filename: 'a.png' }],
     });
 
     expect(harnessPromptCalls).toHaveLength(1);
     expect(harnessPromptCalls[0].sessionId).toBe('session-claude');
-    expect(harnessPromptCalls[0].directory).toBe('/claude/project');
+    expect(harnessPromptCalls[0].directory).toBe(DIRECTORY);
     expect(harnessPromptCalls[0].target).toEqual({
       harnessId: 'claude-code',
       modelRef: 'sonnet',
@@ -172,17 +189,11 @@ describe('routeMessage Claude harness branch', () => {
 
   test('claude agents mode omits OpenCode-derived permissionMode', async () => {
     setCachedClaudeAgentsMode('claude');
-    useSelectionStore.getState().saveSessionTarget('session-claude-native', {
-      harnessId: 'claude-code',
-      modelRef: 'opus',
-      permissionMode: 'acceptEdits',
-    });
+    selectClaude('session-claude-native', { modelRef: 'opus', permissionMode: 'acceptEdits' });
 
-    await routeMessage({
+    await route({
       sessionId: 'session-claude-native',
-      directory: '/claude/project',
       content: 'native agents',
-      providerID: 'anthropic',
       modelID: 'claude-opus',
       agent: 'build',
     });
@@ -198,19 +209,9 @@ describe('routeMessage Claude harness branch', () => {
   });
 
   test('opencode agents mode sends the agent name for server-side resolution', async () => {
-    useSelectionStore.getState().saveSessionTarget('session-agent-name', {
-      harnessId: 'claude-code',
-      modelRef: 'sonnet',
-    });
+    selectClaude('session-agent-name');
 
-    await routeMessage({
-      sessionId: 'session-agent-name',
-      directory: '/claude/project',
-      content: 'inherit build',
-      providerID: 'anthropic',
-      modelID: 'claude-sonnet',
-      agent: 'build',
-    });
+    await route({ sessionId: 'session-agent-name', content: 'inherit build', agent: 'build' });
 
     expect(harnessPromptCalls).toHaveLength(1);
     // The server re-reads this agent's prompt + permission ruleset from
@@ -223,12 +224,9 @@ describe('routeMessage Claude harness branch', () => {
     // Shape used by a harness handoff and by MultiRun: the target is supplied
     // directly instead of being resolved from the session. Both used to drop
     // the agent name for Claude, which left the turn inheriting nothing.
-    await routeMessage({
+    await route({
       sessionId: 'session-handoff-claude',
-      directory: '/claude/project',
       content: 'seeded turn',
-      providerID: 'anthropic',
-      modelID: 'claude-sonnet',
       agent: 'build',
       executionTarget: { harnessId: 'claude-code', modelRef: 'sonnet' },
       seedFromSessionId: 'session-source',
@@ -243,19 +241,9 @@ describe('routeMessage Claude harness branch', () => {
   test('claude agents mode sends the native Claude agent and no OpenCode agent', async () => {
     setCachedClaudeAgentsMode('claude');
     useClaudeAgentsStore.getState().select('session-claude-agent', 'Explore');
-    useSelectionStore.getState().saveSessionTarget('session-claude-agent', {
-      harnessId: 'claude-code',
-      modelRef: 'sonnet',
-    });
+    selectClaude('session-claude-agent');
 
-    await routeMessage({
-      sessionId: 'session-claude-agent',
-      directory: '/claude/project',
-      content: 'native agent',
-      providerID: 'anthropic',
-      modelID: 'claude-sonnet',
-      agent: 'build',
-    });
+    await route({ sessionId: 'session-claude-agent', content: 'native agent', agent: 'build' });
 
     expect(harnessPromptCalls).toHaveLength(1);
     // Selection comes from the session-scoped store, so a queued follow-up
@@ -266,18 +254,9 @@ describe('routeMessage Claude harness branch', () => {
 
   test('claude agents mode sends no agent when the session picked Claude default', async () => {
     setCachedClaudeAgentsMode('claude');
-    useSelectionStore.getState().saveSessionTarget('session-claude-default', {
-      harnessId: 'claude-code',
-      modelRef: 'sonnet',
-    });
+    selectClaude('session-claude-default');
 
-    await routeMessage({
-      sessionId: 'session-claude-default',
-      directory: '/claude/project',
-      content: 'default agent',
-      providerID: 'anthropic',
-      modelID: 'claude-sonnet',
-    });
+    await route({ sessionId: 'session-claude-default', content: 'default agent' });
 
     expect(harnessPromptCalls).toHaveLength(1);
     expect(harnessPromptCalls[0].claudeAgent).toBeUndefined();
@@ -285,17 +264,11 @@ describe('routeMessage Claude harness branch', () => {
   });
 
   test('routes shell mode through OpenCode session.shell on Claude sessions', async () => {
-    useSelectionStore.getState().saveSessionTarget('session-claude', {
-      harnessId: 'claude-code',
-      modelRef: 'sonnet',
-    });
+    selectClaude('session-claude');
 
-    await routeMessage({
+    await route({
       sessionId: 'session-claude',
-      directory: '/claude/project',
       content: 'ls',
-      providerID: 'anthropic',
-      modelID: 'claude-sonnet',
       agent: 'build',
       inputMode: 'shell',
     });
@@ -303,7 +276,7 @@ describe('routeMessage Claude harness branch', () => {
     expect(shellSessionCalls).toHaveLength(1);
     expect(shellSessionCalls[0]).toEqual({
       sessionId: 'session-claude',
-      directory: '/claude/project',
+      directory: DIRECTORY,
       agent: 'build',
       model: { providerID: 'anthropic', modelID: 'claude-sonnet' },
       command: 'ls',
@@ -319,9 +292,8 @@ describe('routeMessage Claude harness branch', () => {
       modelId: 'model-a',
     });
 
-    await routeMessage({
+    await route({
       sessionId: 'session-oc',
-      directory: '/claude/project',
       content: 'hello opencode',
       providerID: 'provider-a',
       modelID: 'model-a',
@@ -332,38 +304,12 @@ describe('routeMessage Claude harness branch', () => {
   });
 
   test('blocks Claude send when engine is not ready', async () => {
-    useSelectionStore.getState().saveSessionTarget('session-claude', {
-      harnessId: 'claude-code',
-      modelRef: 'sonnet',
-    });
-    useHarnessStore.setState({
-      catalogsById: {
-        'claude-code': {
-          engine: {
-            id: 'claude-code',
-            displayName: 'Claude Code',
-            shortName: 'Claude',
-            auth: { mode: 'subscription-cli' },
-            capabilities: {},
-            install: { binaryNames: ['claude'], docsUrl: 'https://example.com' },
-          },
-          status: 'needs-login',
-          sections: [],
-        },
-      },
-      loadState: 'ready',
-      error: null,
-    });
+    selectClaude('session-claude');
+    setClaudeCatalog('needs-login', []);
 
     let caught = null;
     try {
-      await routeMessage({
-        sessionId: 'session-claude',
-        directory: '/claude/project',
-        content: 'hello',
-        providerID: 'anthropic',
-        modelID: 'claude-sonnet',
-      });
+      await route({ sessionId: 'session-claude', content: 'hello' });
     } catch (error) {
       caught = error;
     }
@@ -372,119 +318,75 @@ describe('routeMessage Claude harness branch', () => {
     expect(harnessPromptCalls).toHaveLength(0);
   });
 
-  test('routes Claude-native /compact through harnessPrompt', async () => {
-    useSelectionStore.getState().saveSessionTarget('session-claude', {
-      harnessId: 'claude-code',
-      modelRef: 'sonnet',
-    });
+  // Claude-native and unknown slash tokens both travel as literal prompt text.
+  const literalPromptCases = [
+    ['routes Claude-native /compact through harnessPrompt', '/compact'],
+    ['leaves unknown slash tokens as literal harness prompt text', '/not-a-known-command'],
+  ];
 
-    await routeMessage({
-      sessionId: 'session-claude',
-      directory: '/claude/project',
-      content: '/compact',
-      providerID: 'anthropic',
-      modelID: 'claude-sonnet',
-    });
+  for (const [name, content] of literalPromptCases) {
+    test(name, async () => {
+      selectClaude('session-claude');
 
-    expect(harnessPromptCalls).toHaveLength(1);
-    expect(harnessPromptCalls[0].text).toBe('/compact');
-    expect(sendMessageCalls).toHaveLength(0);
-  });
+      await route({ sessionId: 'session-claude', content });
 
-  test('translates OpenCode commands into a harness command payload', async () => {
-    useSelectionStore.getState().saveSessionTarget('session-claude', {
-      harnessId: 'claude-code',
-      modelRef: 'sonnet',
+      expect(harnessPromptCalls).toHaveLength(1);
+      expect(harnessPromptCalls[0].command).toBeUndefined();
+      expect(harnessPromptCalls[0].text).toBe(content);
+      expect(sendMessageCalls).toHaveLength(0);
     });
-    useCommandsStore.setState({
-      commands: [{ name: 'pr-review', description: 'oc', scope: 'global' }],
-    });
+  }
 
-    await routeMessage({
-      sessionId: 'session-claude',
-      directory: '/claude/project',
+  const commandTranslationCases = [
+    {
+      name: 'translates OpenCode commands into a harness command payload',
       content: '/pr-review 2480 extra',
-      providerID: 'anthropic',
-      modelID: 'claude-sonnet',
-    });
-
-    expect(harnessPromptCalls).toHaveLength(1);
-    // The server owns expansion, so the literal "/name args" line never travels
-    // as prompt text — only the command reference does.
-    expect(harnessPromptCalls[0].command).toEqual({ name: 'pr-review', arguments: '2480 extra' });
-    expect(harnessPromptCalls[0].text).toBe('');
-    expect(sendMessageCalls).toHaveLength(0);
-  });
-
-  test('translates a command whose argument is on the next line', async () => {
-    useSelectionStore.getState().saveSessionTarget('session-claude', {
-      harnessId: 'claude-code',
-      modelRef: 'sonnet',
-    });
-    useCommandsStore.setState({
-      commands: [{ name: 'pr-review', description: 'oc', scope: 'global' }],
-    });
-
-    // Typing the URL on its own line is the normal way to pass a long argument.
-    // Splitting the name on " " alone swallowed the whole message into the
-    // command name, so nothing matched and Claude received literal text.
-    await routeMessage({
-      sessionId: 'session-claude',
-      directory: '/claude/project',
+      command: { name: 'pr-review', arguments: '2480 extra' },
+      text: '',
+    },
+    {
+      // Typing the URL on its own line is the normal way to pass a long
+      // argument. Splitting the name on " " alone swallowed the whole message
+      // into the command name, so nothing matched and Claude received literal
+      // text.
+      name: 'translates a command whose argument is on the next line',
       content: '/pr-review\nhttps://github.com/openchamber/openchamber/pull/2513',
-      providerID: 'anthropic',
-      modelID: 'claude-sonnet',
-    });
-
-    expect(harnessPromptCalls).toHaveLength(1);
-    expect(harnessPromptCalls[0].command).toEqual({
-      name: 'pr-review',
-      arguments: 'https://github.com/openchamber/openchamber/pull/2513',
-    });
-  });
-
-  test('keeps queued follow-up text alongside a translated command', async () => {
-    useSelectionStore.getState().saveSessionTarget('session-claude', {
-      harnessId: 'claude-code',
-      modelRef: 'sonnet',
-    });
-    useCommandsStore.setState({
-      commands: [{ name: 'pr-review', description: 'oc', scope: 'global' }],
-    });
-
-    await routeMessage({
-      sessionId: 'session-claude',
-      directory: '/claude/project',
+      command: {
+        name: 'pr-review',
+        arguments: 'https://github.com/openchamber/openchamber/pull/2513',
+      },
+      text: '',
+    },
+    {
+      name: 'keeps queued follow-up text alongside a translated command',
       content: '/pr-review 2480',
-      providerID: 'anthropic',
-      modelID: 'claude-sonnet',
       additionalParts: [{ text: 'also check the tests' }],
+      command: { name: 'pr-review', arguments: '2480' },
+      text: 'also check the tests',
+    },
+  ];
+
+  for (const testCase of commandTranslationCases) {
+    test(testCase.name, async () => {
+      selectClaude('session-claude');
+      useCommandsStore.setState({
+        commands: [{ name: 'pr-review', description: 'oc', scope: 'global' }],
+      });
+
+      await route({
+        sessionId: 'session-claude',
+        content: testCase.content,
+        additionalParts: testCase.additionalParts,
+      });
+
+      expect(harnessPromptCalls).toHaveLength(1);
+      // The server owns expansion, so the literal "/name args" line never
+      // travels as prompt text — only the command reference does.
+      expect(harnessPromptCalls[0].command).toEqual(testCase.command);
+      expect(harnessPromptCalls[0].text).toBe(testCase.text);
+      expect(sendMessageCalls).toHaveLength(0);
     });
-
-    expect(harnessPromptCalls).toHaveLength(1);
-    expect(harnessPromptCalls[0].command).toEqual({ name: 'pr-review', arguments: '2480' });
-    expect(harnessPromptCalls[0].text).toBe('also check the tests');
-  });
-
-  test('leaves unknown slash tokens as literal harness prompt text', async () => {
-    useSelectionStore.getState().saveSessionTarget('session-claude', {
-      harnessId: 'claude-code',
-      modelRef: 'sonnet',
-    });
-    useCommandsStore.setState({ commands: [] });
-
-    await routeMessage({
-      sessionId: 'session-claude',
-      directory: '/claude/project',
-      content: '/not-a-known-command',
-      providerID: 'anthropic',
-      modelID: 'claude-sonnet',
-    });
-
-    expect(harnessPromptCalls).toHaveLength(1);
-    expect(harnessPromptCalls[0].command).toBeUndefined();
-    expect(harnessPromptCalls[0].text).toBe('/not-a-known-command');
-  });
+  }
 
   test('sendMessage handoff to Claude still sends the agent name for server-side resolution', async () => {
     // Regression: the handoff branch in session-ui-store's sendMessage used to
@@ -494,7 +396,7 @@ describe('routeMessage Claude harness branch', () => {
     // after the handoff inherited nothing (asked for every tool).
     handoffSessionResult = {
       sessionId: 'session-handoff-dest',
-      directory: '/claude/project',
+      directory: DIRECTORY,
       seed: { text: '', omittedTurns: 0, includedTurns: 0 },
     };
 
@@ -518,7 +420,7 @@ describe('routeMessage Claude harness branch', () => {
       undefined,
       undefined,
       undefined,
-      { sessionId: 'session-handoff-source', directory: '/claude/project' },
+      { sessionId: 'session-handoff-source', directory: DIRECTORY },
     );
 
     expect(harnessPromptCalls).toHaveLength(1);

@@ -1,9 +1,3 @@
-/**
- * Target-aware favorites / recents helpers.
- * Legacy { providerID, modelID } is treated as an OpenCode target.
- * Claude favorites use harnessId: 'claude-code' (or providerID sentinel 'claude-code').
- */
-
 import type { ExecutionTarget } from '@/types/harness';
 import { isClaudeEffort, isClaudePermissionMode, isExecutionTarget, isHarnessId } from '@/types/harness';
 
@@ -14,7 +8,6 @@ export type LegacyModelRef = { providerID: string; modelID: string };
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-/** Identity key for favorites/recents (excludes permissionMode / effort / agent / variant). */
 export function executionTargetIdentityKey(target: ExecutionTarget): string {
   if (target.harnessId === 'claude-code') {
     return `claude-code:${target.modelRef}`;
@@ -26,7 +19,6 @@ export function executionTargetsMatchIdentity(a: ExecutionTarget, b: ExecutionTa
   return executionTargetIdentityKey(a) === executionTargetIdentityKey(b);
 }
 
-/** Strip session-specific fields so favorites only key by harness + model. */
 export function normalizeFavoriteTarget(target: ExecutionTarget): ExecutionTarget {
   if (target.harnessId === 'claude-code') {
     return { harnessId: 'claude-code', modelRef: target.modelRef };
@@ -59,18 +51,13 @@ export function executionTargetFromFavoriteRef(ref: LegacyModelRef): ExecutionTa
   };
 }
 
-/**
- * Parse one persisted favorite/recent entry.
- * Accepts ExecutionTarget, legacy {providerID,modelID}, and mixed camelCase variants.
- */
-export function parseFavoriteTargetEntry(value: unknown): ExecutionTarget | null {
+function parseFavoriteTargetEntry(value: unknown): ExecutionTarget | null {
   if (!isRecord(value)) return null;
 
   if (isExecutionTarget(value)) {
     return normalizeFavoriteTarget(value);
   }
 
-  // harnessId + legacy providerID/modelID fields
   if (value.harnessId === 'opencode' || value.harnessId === undefined) {
     const providerId = typeof value.providerId === 'string'
       ? value.providerId.trim()
@@ -100,7 +87,6 @@ export function parseFavoriteTargetEntry(value: unknown): ExecutionTarget | null
           : '';
     if (!modelRef) return null;
     const permissionMode = value.permissionMode;
-    // Favorites ignore permissionMode/effort; reject unknown values if present.
     if (permissionMode !== undefined && !isClaudePermissionMode(permissionMode)) {
       return null;
     }
@@ -142,7 +128,6 @@ export function sanitizeFavoriteTargets(
   return result;
 }
 
-/** Normalize favorites for legacy DesktopSettings / favoriteModels consumers. */
 export function favoriteTargetsToLegacyRefs(targets: ExecutionTarget[]): LegacyModelRef[] {
   return targets.map(favoriteRefFromExecutionTarget);
 }

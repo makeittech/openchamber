@@ -2,7 +2,6 @@ import { describe, expect, test } from 'bun:test';
 
 import {
   buildHandoffContextText,
-  isHandoffContextText,
   parseHandoffContextText,
 } from './handoff-context';
 
@@ -42,7 +41,7 @@ describe('buildHandoffContextText', () => {
   });
 });
 
-describe('isHandoffContextText / parseHandoffContextText', () => {
+describe('parseHandoffContextText', () => {
   test('round-trips a built message', () => {
     const built = buildHandoffContextText({
       sourceLabel: 'OpenCode',
@@ -50,7 +49,6 @@ describe('isHandoffContextText / parseHandoffContextText', () => {
       body: 'line one\nline two',
       targetHarnessId: 'opencode',
     });
-    expect(isHandoffContextText(built)).toBe(true);
     const parsed = parseHandoffContextText(built);
     expect(parsed).not.toBeNull();
     expect(parsed?.header).toBe('transferred from OpenCode');
@@ -58,7 +56,6 @@ describe('isHandoffContextText / parseHandoffContextText', () => {
   });
 
   test('rejects regular user text', () => {
-    expect(isHandoffContextText('hello world')).toBe(false);
     expect(parseHandoffContextText('hello world')).toBeNull();
   });
 

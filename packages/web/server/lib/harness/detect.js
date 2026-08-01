@@ -1,8 +1,3 @@
-/**
- * Harness runtime detection: binary presence + best-effort login probe.
- * Failure must never masquerade as ready with an empty catalog.
- */
-
 import { spawnSync } from 'node:child_process';
 import {
   CLAUDE_CODE_MODELS,
@@ -15,14 +10,6 @@ import { probeClaudeAgentSdk } from './translators/claude-code/query.js';
 import { buildClaudeCodeChildEnv } from './translators/claude-code/auth-env.js';
 import { hasClaudeCliOAuthCredentials } from '@openchamber/quota-core';
 
-export { findBinaryOnPath } from './binary-path.js';
-
-/**
- * Interpret `claude auth status --json` without treating API-key-only as ready.
- *
- * @param {unknown} payload
- * @returns {{ loggedIn: boolean, detail?: string, authMethod?: string }}
- */
 export function interpretClaudeAuthStatus(payload) {
   if (!payload || typeof payload !== 'object') {
     return { loggedIn: false, detail: 'invalid-auth-status' };
@@ -37,39 +24,33 @@ export function interpretClaudeAuthStatus(payload) {
     return { loggedIn: false, detail: 'auth-status-logged-out', authMethod };
   }
 
-  // API-key / console auth is not Claude subscription login for the harness.
-  if (
-    normalized === 'none'
-    || normalized.includes('api')
-    || normalized.includes('console')
-    || normalized === 'api_key'
-    || normalized === 'apikey'
-  ) {
+  if (normalized === 'none' || normalized.includes('api') || normalized.includes('console')) {
     return { loggedIn: false, detail: 'api-key-only', authMethod };
   }
 
-  if (
-    normalized.includes('oauth')
-    || normalized.includes('claude')
-    || normalized.includes('subscription')
-  ) {
-    return { loggedIn: true, detail: 'auth-status-oauth', authMethod };
-  }
-
-  // loggedIn + unknown method: accept (CLI may omit subscriptionType).
-  return { loggedIn: true, detail: 'auth-status-logged-in', authMethod };
+  const subscription = ['oauth', 'claude', 'subscription'].some((hint) => normalized.includes(hint));
+  return {
+    loggedIn: true,
+    detail: subscription ? 'auth-status-oauth' : 'auth-status-logged-in',
+    authMethod,
+  };
 }
 
-/**
- * Run `claude auth status --json` with subscription-only child env.
- *
- * @param {{
- *   binaryPath: string,
- *   env?: NodeJS.ProcessEnv,
- *   spawnSyncFn?: typeof spawnSync,
- * }} options
- * @returns {{ loggedIn: boolean, detail?: string, authMethod?: string } | null}
- */
+/** Parses CLI stdout that may wrap its JSON object in extra log lines. */
+function parseJsonObjectLoosely(text) {
+  try {
+    return JSON.parse(text);
+  } catch {}
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  try {
+    return JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
 export function probeClaudeAuthStatusCli(options) {
   const binaryPath = typeof options.binaryPath === 'string' ? options.binaryPath.trim() : '';
   if (!binaryPath) return null;
@@ -92,7 +73,6 @@ export function probeClaudeAuthStatusCli(options) {
     try {
       payload = JSON.parse(output);
     } catch {
-      // Some builds may wrap JSON; try first `{...}` slice.
       const start = output.indexOf('{');
       const end = output.lastIndexOf('}');
       if (start < 0 || end <= start) {
@@ -111,20 +91,6 @@ export function probeClaudeAuthStatusCli(options) {
   }
 }
 
-/**
- * Best-effort Claude subscription login probe (no secrets returned).
- * Prefers `claude auth status --json` (API keys stripped from child env),
- * then `CLAUDE_CODE_OAUTH_TOKEN` / credentials-file OAuth presence.
- *
- * @param {{
- *   homeDir?: string,
- *   env?: NodeJS.ProcessEnv,
- *   binaryPath?: string | null,
- *   probeAuthStatus?: () => ({ loggedIn: boolean, detail?: string, authMethod?: string } | null),
- *   hasCredentials?: () => boolean,
- * }} [options]
- * @returns {{ loggedIn: boolean, detail?: string, authMethod?: string }}
- */
 export function probeClaudeLogin(options = {}) {
   const env = options.env || process.env;
   const probeAuthStatus = options.probeAuthStatus || (() => {
@@ -138,7 +104,6 @@ export function probeClaudeLogin(options = {}) {
   });
 
   const status = probeAuthStatus();
-  // Authoritative CLI status wins when it confirms login.
   if (status?.loggedIn) {
     return status;
   }
@@ -146,9 +111,6 @@ export function probeClaudeLogin(options = {}) {
   const hasCredentials = options.hasCredentials
     || (() => hasClaudeCliOAuthCredentials({ homeDir: options.homeDir, env }));
 
-  // Env token / credentials file still count as subscription auth when the CLI
-  // probe is unavailable, or when it reports logged-out while a Cursor/CI
-  // `CLAUDE_CODE_OAUTH_TOKEN` secret is present for this host.
   if (hasCredentials()) {
     const fromEnv = typeof env.CLAUDE_CODE_OAUTH_TOKEN === 'string'
       && env.CLAUDE_CODE_OAUTH_TOKEN.trim().length > 0;
@@ -166,10 +128,6 @@ export function probeClaudeLogin(options = {}) {
   return { loggedIn: false, detail: 'no-credentials-file' };
 }
 
-/**
- * @param {string} binaryPath
- * @returns {string | undefined}
- */
 function probeClaudeVersion(binaryPath) {
   try {
     const result = spawnSync(binaryPath, ['--version'], {
@@ -187,14 +145,15 @@ function probeClaudeVersion(binaryPath) {
   }
 }
 
-/**
- * @param {object} [options]
- * @param {() => string | null} [options.findClaudeBinary]
- * @param {(args?: { binaryPath?: string | null }) => { loggedIn: boolean, detail?: string }} [options.probeLogin]
- * @param {() => Promise<{ available: boolean, error?: string }>} [options.probeSdk]
- * @param {boolean} [options.openCodeReady]
- * @returns {Promise<object>}
- */
+function claudeModelSections() {
+  return [{
+    id: 'models',
+    name: 'Models',
+    kind: 'models',
+    models: [...CLAUDE_CODE_MODELS],
+  }];
+}
+
 export async function detectClaudeCode(options = {}) {
   const findClaudeBinary = options.findClaudeBinary
     || (() => findBinaryOnPath('claude'));
@@ -237,12 +196,7 @@ export async function detectClaudeCode(options = {}) {
           ? 'Claude Code API-key auth was detected, but this harness requires a Claude subscription login. Run `claude auth login`, then re-detect.'
           : 'Claude Code subscription login was not detected. Run `claude auth login`, then re-detect.',
         version,
-        sections: [{
-          id: 'models',
-          name: 'Models',
-          kind: 'models',
-          models: [...CLAUDE_CODE_MODELS],
-        }],
+        sections: claudeModelSections(),
       };
     }
 
@@ -251,12 +205,7 @@ export async function detectClaudeCode(options = {}) {
       status: 'ready',
       statusDetail: undefined,
       version,
-      sections: [{
-        id: 'models',
-        name: 'Models',
-        kind: 'models',
-        models: [...CLAUDE_CODE_MODELS],
-      }],
+      sections: claudeModelSections(),
     };
   } catch (error) {
     return {
@@ -268,11 +217,6 @@ export async function detectClaudeCode(options = {}) {
   }
 }
 
-/**
- * @param {object} [options]
- * @param {boolean} [options.openCodeReady]
- * @returns {object}
- */
 export function detectOpenCode(options = {}) {
   const descriptor = getHarnessDescriptor('opencode');
   const ready = options.openCodeReady !== false;
@@ -284,11 +228,6 @@ export function detectOpenCode(options = {}) {
   };
 }
 
-/**
- * @param {string} harnessId
- * @param {object} [options]
- * @returns {Promise<object | null>}
- */
 export async function detectHarness(harnessId, options = {}) {
   if (!isKnownHarnessId(harnessId)) return null;
   if (harnessId === 'opencode') return detectOpenCode(options);
@@ -296,10 +235,6 @@ export async function detectHarness(harnessId, options = {}) {
   return null;
 }
 
-/**
- * @param {object} [options]
- * @returns {Promise<object[]>}
- */
 export async function detectAllHarnesses(options = {}) {
   const results = [];
   for (const descriptor of listHarnessDescriptors()) {

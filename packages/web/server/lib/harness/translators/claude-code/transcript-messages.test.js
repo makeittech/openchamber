@@ -155,6 +155,85 @@ describe('parseClaudeTranscript', () => {
     expect(tool.state.status).toBe('error');
   });
 
+  it('keeps the session modelRef when the transcript model is a synthetic placeholder', () => {
+    const filePath = writeTranscript([
+      JSON.stringify(baseRecord({
+        type: 'user',
+        uuid: 'u1',
+        timestamp: '2026-07-28T10:00:00.000Z',
+        message: { role: 'user', content: 'debug test prompt' },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a1',
+        timestamp: '2026-07-28T10:00:01.000Z',
+        message: {
+          role: 'assistant',
+          model: '<synthetic>',
+          content: [{ type: 'text', text: 'You have hit your session limit' }],
+        },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a2',
+        timestamp: '2026-07-28T10:00:02.000Z',
+        message: {
+          role: 'assistant',
+          model: 'synthetic',
+          content: [{ type: 'text', text: 'No response requested.' }],
+        },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a3',
+        timestamp: '2026-07-28T10:00:03.000Z',
+        message: {
+          role: 'assistant',
+          model: '<unknown>',
+          content: [{ type: 'text', text: 'Placeholder again.' }],
+        },
+      })),
+    ]);
+
+    const { messages } = parseClaudeTranscript({
+      sessionId: 'ses_shell',
+      modelRef: 'haiku',
+      transcriptPath: filePath,
+    });
+    for (const message of messages) {
+      if (message.info.role !== 'assistant') continue;
+      expect(message.info.modelID).toBe('haiku');
+    }
+  });
+
+  it('still applies a real transcript model id', () => {
+    const filePath = writeTranscript([
+      JSON.stringify(baseRecord({
+        type: 'user',
+        uuid: 'u1',
+        timestamp: '2026-07-28T10:00:00.000Z',
+        message: { role: 'user', content: 'hi' },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a1',
+        timestamp: '2026-07-28T10:00:01.000Z',
+        message: {
+          role: 'assistant',
+          model: 'claude-sonnet-4-5',
+          content: [{ type: 'text', text: 'hello' }],
+        },
+      })),
+    ]);
+
+    const { messages } = parseClaudeTranscript({
+      sessionId: 'ses_shell',
+      modelRef: 'haiku',
+      transcriptPath: filePath,
+    });
+    expect(messages[1].info.modelID).toBe('claude-sonnet-4-5');
+  });
+
   it('skips sidechains, meta, and non-message records; reads ai-title', () => {
     const filePath = writeTranscript([
       JSON.stringify({ type: 'summary', summary: 'Old summary' }),

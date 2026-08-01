@@ -21,14 +21,10 @@ const jsonResponse = (payload, status = 200) => ({
 
 describe('matchesPermissionPattern', () => {
   it('matches anything for wildcard-ish patterns, even an empty candidate', () => {
-    expect(matchesPermissionPattern('*', '')).toBe(true);
-    expect(matchesPermissionPattern('**', '')).toBe(true);
-    expect(matchesPermissionPattern('', '')).toBe(true);
-    expect(matchesPermissionPattern('   ', '')).toBe(true);
-    expect(matchesPermissionPattern('*', 'anything at all')).toBe(true);
-    expect(matchesPermissionPattern('**', 'anything at all')).toBe(true);
-    expect(matchesPermissionPattern('', 'anything at all')).toBe(true);
-    expect(matchesPermissionPattern('   ', 'anything at all')).toBe(true);
+    for (const pattern of ['*', '**', '', '   ']) {
+      expect(matchesPermissionPattern(pattern, '')).toBe(true);
+      expect(matchesPermissionPattern(pattern, 'anything at all')).toBe(true);
+    }
   });
 
   it('fails closed when a concrete pattern has no candidate to check', () => {
@@ -55,21 +51,14 @@ describe('matchesPermissionPattern', () => {
 
 describe('resolveToolPermissionTarget', () => {
   it('maps known Claude tool names to their OpenCode permission key', () => {
-    expect(resolveToolPermissionTarget('Bash', {}).key).toBe('bash');
-    expect(resolveToolPermissionTarget('BashOutput', {}).key).toBe('bash');
-    expect(resolveToolPermissionTarget('Edit', {}).key).toBe('edit');
-    expect(resolveToolPermissionTarget('Write', {}).key).toBe('edit');
-    expect(resolveToolPermissionTarget('MultiEdit', {}).key).toBe('edit');
-    expect(resolveToolPermissionTarget('NotebookEdit', {}).key).toBe('edit');
-    expect(resolveToolPermissionTarget('Read', {}).key).toBe('read');
-    expect(resolveToolPermissionTarget('Glob', {}).key).toBe('glob');
-    expect(resolveToolPermissionTarget('Grep', {}).key).toBe('grep');
-    expect(resolveToolPermissionTarget('WebFetch', {}).key).toBe('webfetch');
-    expect(resolveToolPermissionTarget('WebSearch', {}).key).toBe('websearch');
-    expect(resolveToolPermissionTarget('Task', {}).key).toBe('task');
-    expect(resolveToolPermissionTarget('Agent', {}).key).toBe('task');
-    expect(resolveToolPermissionTarget('TodoWrite', {}).key).toBe('todowrite');
-    expect(resolveToolPermissionTarget('Skill', {}).key).toBe('skill');
+    const cases = {
+      Bash: 'bash', BashOutput: 'bash', Edit: 'edit', Write: 'edit', MultiEdit: 'edit',
+      NotebookEdit: 'edit', Read: 'read', Glob: 'glob', Grep: 'grep', WebFetch: 'webfetch',
+      WebSearch: 'websearch', Task: 'task', Agent: 'task', TodoWrite: 'todowrite', Skill: 'skill',
+    };
+    for (const [tool, permission] of Object.entries(cases)) {
+      expect(resolveToolPermissionTarget(tool, {}).key).toBe(permission);
+    }
   });
 
   it('falls back to the lowercased tool name for an unknown tool', () => {
@@ -97,10 +86,9 @@ describe('resolveToolPermissionTarget', () => {
 
 describe('normalizePermissionRuleset', () => {
   it('returns an empty array for non-array input', () => {
-    expect(normalizePermissionRuleset(null)).toEqual([]);
-    expect(normalizePermissionRuleset(undefined)).toEqual([]);
-    expect(normalizePermissionRuleset('bash')).toEqual([]);
-    expect(normalizePermissionRuleset({ permission: 'bash', action: 'allow' })).toEqual([]);
+    for (const value of [null, undefined, 'bash', { permission: 'bash', action: 'allow' }]) {
+      expect(normalizePermissionRuleset(value)).toEqual([]);
+    }
   });
 
   it('drops entries missing a permission or with an unknown action', () => {
@@ -207,9 +195,10 @@ describe('createOpenCodeToolPolicy', () => {
 
 describe('claudePermissionModeFromEditAction', () => {
   it('maps an inherited edit decision onto an allowlisted Claude permission mode', () => {
-    expect(claudePermissionModeFromEditAction('allow')).toBe('acceptEdits');
-    expect(claudePermissionModeFromEditAction('deny')).toBe('plan');
-    expect(claudePermissionModeFromEditAction('ask')).toBe('default');
+    const cases = { allow: 'acceptEdits', deny: 'plan', ask: 'default' };
+    for (const [action, mode] of Object.entries(cases)) {
+      expect(claudePermissionModeFromEditAction(action)).toBe(mode);
+    }
   });
 
   it('derives the mode from the agent ruleset, not from a client-supplied value', () => {
@@ -240,8 +229,6 @@ describe('buildClaudeAgentDefinitions', () => {
     // registered as a Claude subagent with a one-line config prompt.
     expect(buildClaudeAgentDefinitions([
       { name: 'build', builtIn: true, mode: 'subagent', prompt: 'You build things.' },
-    ])).toEqual({});
-    expect(buildClaudeAgentDefinitions([
       { name: 'explore', native: true, mode: 'subagent', prompt: 'Web search: load a skill.' },
     ])).toEqual({});
   });

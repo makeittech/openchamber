@@ -1,8 +1,3 @@
-/**
- * Resolve context/output limits for the active composer/session target.
- * When Claude Code is selected, OpenCode getCurrentModel() limits must not be used.
- */
-
 import type { HarnessCatalog } from '@/types/harness';
 import { resolveActiveClaudeModel } from '@/lib/harness/claude-models';
 import {
@@ -19,7 +14,6 @@ export type ActiveModelLimits = {
 
 export function resolveActiveModelLimits(args: ActiveHarnessTargetArgs & {
   claudeCatalog?: HarnessCatalog | null;
-  /** OpenCode live/current model limits when harness is OpenCode. */
   openCodeContext?: number | null;
   openCodeOutput?: number | null;
   openCodeModelName?: string | null;

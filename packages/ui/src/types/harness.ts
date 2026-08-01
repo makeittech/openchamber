@@ -1,21 +1,11 @@
-/**
- * Harness contracts for OpenChamber execution backends.
- * UI copy uses "Harness"; code identifiers use harnessId.
- */
-
 export type HarnessId = 'opencode' | 'claude-code';
 
 /**
- * Claude permission modes OpenChamber can produce.
- *
- * This is never a standalone control: it is derived from the selected agent's
- * edit permission on every send (see `claudePermissionModeFromEditPermission`).
- * Auto-approve is a separate mechanism that answers the `canUseTool` bridge,
- * so no bypass mode belongs here — one would silently defeat that bridge.
+ * Derived from the selected agent's edit permission. Auto-approve remains a
+ * separate bridge mechanism, so bypass modes do not belong here.
  */
 export type ClaudePermissionMode = 'default' | 'acceptEdits' | 'plan';
 
-/** Claude Agent SDK effort levels (named). */
 export type ClaudeEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export type ExecutionTarget =
@@ -30,7 +20,6 @@ export type ExecutionTarget =
       harnessId: 'claude-code';
       modelRef: string;
       permissionMode?: ClaudePermissionMode;
-      /** Reasoning effort for Claude Agent SDK; omit for SDK default. */
       effort?: ClaudeEffort;
     };
 
@@ -101,7 +90,6 @@ export type HarnessCatalogSection = {
   models: HarnessCatalogModel[];
 };
 
-/** Server JSON shape for GET /api/harness and GET /api/harness/:id */
 export type HarnessCatalog = {
   descriptor: HarnessDescriptor;
   status: HarnessRuntimeStatus;
@@ -143,12 +131,6 @@ export const isHarnessRuntimeStatus = (value: unknown): value is HarnessRuntimeS
 export const isCapabilityLevel = (value: unknown): value is CapabilityLevel =>
   value === 'full' || value === 'partial' || value === 'none';
 
-const CLAUDE_PERMISSION_MODES: readonly ClaudePermissionMode[] = [
-  'default',
-  'acceptEdits',
-  'plan',
-] as const;
-
 export const CLAUDE_EFFORT_LEVELS: readonly ClaudeEffort[] = [
   'low',
   'medium',
@@ -158,10 +140,10 @@ export const CLAUDE_EFFORT_LEVELS: readonly ClaudeEffort[] = [
 ] as const;
 
 export const isClaudePermissionMode = (value: unknown): value is ClaudePermissionMode =>
-  typeof value === 'string' && (CLAUDE_PERMISSION_MODES as readonly string[]).includes(value);
+  value === 'default' || value === 'acceptEdits' || value === 'plan';
 
 export const isClaudeEffort = (value: unknown): value is ClaudeEffort =>
-  typeof value === 'string' && (CLAUDE_EFFORT_LEVELS as readonly string[]).includes(value);
+  CLAUDE_EFFORT_LEVELS.includes(value as ClaudeEffort);
 
 export const isExecutionTarget = (value: unknown): value is ExecutionTarget => {
   if (typeof value !== 'object' || value === null) {
