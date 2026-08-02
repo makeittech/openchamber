@@ -210,7 +210,7 @@ export const MainLayout: React.FC = () => {
                     return;
                 }
 
-                sessionState.openNewSessionDraft();
+                sessionState.openNewSessionDraft({ automatic: true });
             }, delayMs);
         };
 
