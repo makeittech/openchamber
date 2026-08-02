@@ -1053,3 +1053,442 @@ describe('staleness check', () => {
     expect(result.matches).toHaveLength(1);
   });
 });
+
+describe('AI similar-commit search in the staleness check', () => {
+  const mockGitService = ({ searchResult = [], logEntries = [] } = {}) => {
+    vi.doMock('../git/service.js', () => ({
+      searchCommitsByReference: vi.fn().mockResolvedValue(searchResult),
+      getLog: vi.fn().mockResolvedValue({ all: logEntries }),
+    }));
+  };
+
+  it('asks the model to pick likely-fix commits from the recent log and grounds picks against real hashes', async () => {
+    mockGitService({
+      logEntries: [
+        { hash: 'simhash', date: '2026-07-10 00:00:00 +0000', message: 'Fix crash on save' },
+        { hash: 'unrelated', date: '2026-07-09 00:00:00 +0000', message: 'Bump deps' },
+      ],
+    });
+    const generateSmallModelText = vi.fn().mockResolvedValue({
+      text: JSON.stringify({ hashes: ['simhash', 'invented-hash'] }),
+    });
+    const { checkItemStaleness } = await import('./staleness.js');
+    const { upsertSyncedItems, listItems } = await import('./store.js');
+    upsertSyncedItems([{
+      source: 'github',
+      sourceId: 'acme/repo#7',
+      repo: 'acme/repo',
+      type: 'issue',
+      title: 'Crash on save',
+      createdAt: Date.parse('2026-06-01T00:00:00.000Z'),
+    }]);
+    const [item] = listItems();
+
+    const result = await checkItemStaleness(item, '/repo', { generateSmallModelText });
+
+    expect(result.checked).toBe(true);
+    expect(result.stale).toBe(true);
+    // Only the real hash survives; the invented one is dropped.
+    expect(result.matches).toHaveLength(1);
+    expect(result.matches[0].hash).toBe('simhash');
+    expect(result.matches[0].message).toBe('Fix crash on save');
+    expect(generateSmallModelText).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns no similar matches when the model errors or returns garbage', async () => {
+    mockGitService({
+      logEntries: [{ hash: 'simhash', date: '2026-07-10 00:00:00 +0000', message: 'Fix crash on save' }],
+    });
+    const { checkItemStaleness } = await import('./staleness.js');
+    const { upsertSyncedItems, listItems } = await import('./store.js');
+    upsertSyncedItems([{
+      source: 'github',
+      sourceId: 'acme/repo#8',
+      repo: 'acme/repo',
+      type: 'issue',
+      title: 'Crash',
+      // Before the log commit so the age filter lets it through to the model.
+      createdAt: Date.parse('2026-06-01T00:00:00.000Z'),
+    }]);
+    const [item] = listItems();
+
+    const failed = await checkItemStaleness(item, '/repo', {
+      generateSmallModelText: vi.fn().mockRejectedValue(new Error('model unavailable')),
+    });
+    expect(failed.checked).toBe(true);
+    expect(failed.stale).toBe(false);
+    expect(failed.matches).toEqual([]);
+
+    const garbage = await checkItemStaleness(item, '/repo', {
+      generateSmallModelText: vi.fn().mockResolvedValue({ text: 'not json at all' }),
+    });
+    expect(garbage.matches).toEqual([]);
+  });
+
+  it('skips the AI search when a commit already references the item', async () => {
+    const getLog = vi.fn();
+    vi.doMock('../git/service.js', () => ({
+      searchCommitsByReference: vi.fn().mockResolvedValue([
+        { hash: 'refhash', date: '2026-07-10 00:00:00 +0000', message: 'Fix acme/repo#9' },
+      ]),
+      getLog,
+    }));
+    const generateSmallModelText = vi.fn();
+    const { checkItemStaleness } = await import('./staleness.js');
+    const { upsertSyncedItems, listItems } = await import('./store.js');
+    upsertSyncedItems([{ source: 'github', sourceId: 'acme/repo#9', repo: 'acme/repo', type: 'issue', title: 'Bug' }]);
+    const [item] = listItems();
+
+    const result = await checkItemStaleness(item, '/repo', { generateSmallModelText });
+
+    expect(result.matches).toHaveLength(1);
+    expect(result.matches[0].hash).toBe('refhash');
+    expect(getLog).not.toHaveBeenCalled();
+    expect(generateSmallModelText).not.toHaveBeenCalled();
+  });
+
+  it('folds model-found similar commits into the analysis evidence so alreadySolved grounds on them', async () => {
+    mockGitService({
+      logEntries: [{ hash: 'simhash', date: '2026-07-10 00:00:00 +0000', message: 'Fix crash on save' }],
+    });
+    const generateSmallModelText = vi.fn()
+      // First call: the similarity search inside the staleness check.
+      .mockResolvedValueOnce({ text: JSON.stringify({ hashes: ['simhash'] }) })
+      // Second call: the analysis itself, referencing the similar commit.
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          summary: 'Summary',
+          complexity: 'easy',
+          priority: 'low',
+          confidence: 50,
+          estimateMinutes: 10,
+          needsHeadless: false,
+          needsBrowser: false,
+          needsDocker: false,
+          generatedPrompt: '',
+          alreadySolved: true,
+          alreadySolvedHash: 'simhash',
+          duplicateOfId: null,
+          duplicateReasoning: '',
+        }),
+      });
+    const { analyzeItem } = await import('./analysis.js');
+    const { upsertSyncedItems, listItems } = await import('./store.js');
+    upsertSyncedItems([{
+      source: 'github',
+      sourceId: 'acme/repo#1',
+      repo: 'acme/repo',
+      type: 'issue',
+      title: 'Crash',
+      // Before the log commit so the age filter lets it through to the model.
+      createdAt: Date.parse('2026-06-01T00:00:00.000Z'),
+    }]);
+    const [item] = listItems();
+
+    const updated = await analyzeItem(item, { generateSmallModelText, directory: '/repo' });
+
+    expect(updated.aiAnalysis.alreadySolved).toBe(true);
+    expect(updated.aiAnalysis.alreadySolvedReference.hash).toBe('simhash');
+    expect(updated.aiAnalysis.alreadySolvedReference.message).toBe('Fix crash on save');
+  });
+});
+
+describe('duplicate candidate prefilter', () => {
+  it('surfaces other open items with overlapping title words, ranked by similarity', async () => {
+    const { findDuplicateCandidates } = await import('./dedup.js');
+    const { upsertSyncedItems, listItems } = await import('./store.js');
+    upsertSyncedItems([
+      { source: 'github', sourceId: 'acme/repo#1', repo: 'acme/repo', type: 'issue', title: 'Cards overlap on the work queue board' },
+      { source: 'github', sourceId: 'acme/repo#2', repo: 'acme/repo', type: 'issue', title: 'Work queue board cards overlap each other' },
+      { source: 'github', sourceId: 'acme/repo#3', repo: 'acme/repo', type: 'issue', title: 'Completely unrelated dark mode bug' },
+      { source: 'github', sourceId: 'acme/repo#4', repo: 'acme/repo', type: 'pr', title: 'Cards overlap on the work queue board' },
+    ]);
+    const items = listItems();
+    const target = items.find((item) => item.sourceId === 'acme/repo#1');
+
+    const candidates = findDuplicateCandidates(target, items);
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].sourceId).toBe('acme/repo#2');
+  });
+
+  it('never returns the item itself, archived items, or PRs', async () => {
+    const { findDuplicateCandidates } = await import('./dedup.js');
+    const { upsertSyncedItems, listItems, patchItem } = await import('./store.js');
+    upsertSyncedItems([
+      { source: 'github', sourceId: 'acme/repo#1', repo: 'acme/repo', type: 'issue', title: 'Login button does nothing' },
+      { source: 'github', sourceId: 'acme/repo#2', repo: 'acme/repo', type: 'issue', title: 'Login button does nothing at all' },
+    ]);
+    const items = listItems();
+    const target = items.find((item) => item.sourceId === 'acme/repo#1');
+    const other = items.find((item) => item.sourceId === 'acme/repo#2');
+    patchItem(other.id, { archivedAt: Date.now() });
+
+    expect(findDuplicateCandidates(target, [target, { ...other, archivedAt: Date.now() }])).toEqual([]);
+  });
+});
+
+describe('AI analysis grounding for already-solved and duplicate claims', () => {
+  const analysisWithClaims = (overrides) => JSON.stringify({
+    summary: 'Summary',
+    complexity: 'easy',
+    priority: 'low',
+    confidence: 50,
+    estimateMinutes: 10,
+    needsHeadless: false,
+    needsBrowser: false,
+    needsDocker: false,
+    generatedPrompt: '',
+    ...overrides,
+  });
+
+  it('only persists an already-solved commit that was actually offered as evidence', async () => {
+    vi.doMock('../git/service.js', () => ({
+      searchCommitsByReference: vi.fn().mockResolvedValue([
+        { hash: 'realcommit', date: '2026-07-01 00:00:00 +0000', message: 'Fix the thing' },
+      ]),
+    }));
+    const { analyzeItem } = await import('./analysis.js');
+    const { upsertSyncedItems, listItems } = await import('./store.js');
+    upsertSyncedItems([{ source: 'github', sourceId: 'acme/repo#1', repo: 'acme/repo', type: 'issue', title: 'Bug' }]);
+    const [item] = listItems();
+
+    // The model hallucinates a hash it was never shown.
+    const generateSmallModelText = vi.fn().mockResolvedValue({
+      text: analysisWithClaims({ alreadySolved: true, alreadySolvedHash: 'madeup', duplicateOfId: null, duplicateReasoning: '' }),
+    });
+    const hallucinated = await analyzeItem(item, { generateSmallModelText, directory: '/repo' });
+    expect(hallucinated.aiAnalysis.alreadySolved).toBe(false);
+    expect(hallucinated.aiAnalysis.alreadySolvedReference).toBeNull();
+
+    // The model correctly references the real commit hash it was shown.
+    generateSmallModelText.mockResolvedValue({
+      text: analysisWithClaims({ alreadySolved: true, alreadySolvedHash: 'realcommit', duplicateOfId: null, duplicateReasoning: '' }),
+    });
+    const grounded = await analyzeItem(item, { generateSmallModelText, directory: '/repo' });
+    expect(grounded.aiAnalysis.alreadySolved).toBe(true);
+    expect(grounded.aiAnalysis.alreadySolvedReference.hash).toBe('realcommit');
+    expect(grounded.aiAnalysis.alreadySolvedReference.message).toBe('Fix the thing');
+  });
+
+  it('only persists a duplicateOfId that was actually offered as a candidate, denormalizing its title/url', async () => {
+    const { analyzeItem } = await import('./analysis.js');
+    const { upsertSyncedItems, listItems } = await import('./store.js');
+    upsertSyncedItems([
+      { source: 'github', sourceId: 'acme/repo#1', repo: 'acme/repo', type: 'issue', title: 'Board cards overlap' },
+      { source: 'github', sourceId: 'acme/repo#2', repo: 'acme/repo', type: 'issue', title: 'Board cards overlap on the queue', url: 'https://github.com/acme/repo/issues/2' },
+    ]);
+    const items = listItems();
+    const target = items.find((item) => item.sourceId === 'acme/repo#1');
+    const candidate = items.find((item) => item.sourceId === 'acme/repo#2');
+
+    const generateSmallModelText = vi.fn().mockResolvedValue({
+      text: analysisWithClaims({ duplicateOfId: 'not-a-real-id', duplicateReasoning: 'hallucinated' }),
+    });
+    const hallucinated = await analyzeItem(target, { generateSmallModelText, allItems: items });
+    expect(hallucinated.aiAnalysis.duplicateOfId).toBe('');
+    expect(hallucinated.aiAnalysis.duplicateOfUrl).toBe('');
+
+    generateSmallModelText.mockResolvedValue({
+      text: analysisWithClaims({ duplicateOfId: candidate.id, duplicateReasoning: 'Same underlying overlap bug, reported first' }),
+    });
+    const grounded = await analyzeItem(target, { generateSmallModelText, allItems: items });
+    expect(grounded.aiAnalysis.duplicateOfId).toBe(candidate.id);
+    expect(grounded.aiAnalysis.duplicateOfTitle).toBe(candidate.title);
+    expect(grounded.aiAnalysis.duplicateOfUrl).toBe(candidate.url);
+    expect(grounded.aiAnalysis.duplicateReasoning).toBe('Same underlying overlap bug, reported first');
+  });
+});
+
+describe('Linear sync filters out issues already mirrored from GitHub', () => {
+  it('does not add a mirrored Linear issue as a second, separate card', async () => {
+    vi.doMock('../linear/client.js', () => ({
+      graphqlWithStoredAuth: vi.fn().mockResolvedValue({
+        issues: {
+          nodes: [
+            { id: 'mirrored-issue', identifier: 'OPE-1', title: 'Mirrored', team: { id: 'team-1', key: 'OPE' } },
+            { id: 'other-issue', identifier: 'OPE-2', title: 'Genuinely new', team: { id: 'team-1', key: 'OPE' } },
+          ],
+        },
+      }),
+      ISSUES_ASSIGNED_QUERY: 'query {}',
+      fetchTeamsWithStoredAuth: vi.fn(),
+    }));
+    const { syncAll } = await import('./sources.js');
+    const { upsertSyncedItems, listItems } = await import('./store.js');
+    upsertSyncedItems([{
+      source: 'github',
+      sourceId: 'acme/repo#1',
+      repo: 'acme/repo',
+      type: 'issue',
+      title: 'Bug',
+      linkedLinearId: 'mirrored-issue',
+    }]);
+
+    await syncAll();
+
+    const linearItems = listItems({ source: 'linear' });
+    expect(linearItems).toHaveLength(1);
+    expect(linearItems[0].sourceId).toBe('other-issue');
+  });
+});
+
+describe('resolveDefaultLinearTeam', () => {
+  it('prefers the team already used by synced Linear items over the connection\'s first team', async () => {
+    const fetchTeamsWithStoredAuth = vi.fn().mockResolvedValue([{ id: 'unrelated-team' }]);
+    vi.doMock('../linear/client.js', () => ({ fetchTeamsWithStoredAuth }));
+    const { resolveDefaultLinearTeam } = await import('./sources.js');
+    const { upsertSyncedItems } = await import('./store.js');
+    upsertSyncedItems([
+      { source: 'linear', sourceId: 'issue-1', team: 'team-used-twice', type: 'issue', title: 'A' },
+      { source: 'linear', sourceId: 'issue-2', team: 'team-used-twice', type: 'issue', title: 'B' },
+      { source: 'linear', sourceId: 'issue-3', team: 'team-used-once', type: 'issue', title: 'C' },
+    ]);
+
+    const teamId = await resolveDefaultLinearTeam();
+    expect(teamId).toBe('team-used-twice');
+    expect(fetchTeamsWithStoredAuth).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the connection\'s first team when no Linear item has synced yet', async () => {
+    const fetchTeamsWithStoredAuth = vi.fn().mockResolvedValue([{ id: 'first-team' }, { id: 'second-team' }]);
+    vi.doMock('../linear/client.js', () => ({ fetchTeamsWithStoredAuth }));
+    const { resolveDefaultLinearTeam } = await import('./sources.js');
+
+    const teamId = await resolveDefaultLinearTeam();
+    expect(teamId).toBe('first-team');
+  });
+});
+
+describe('mirroring a GitHub item into Linear on first take-into-progress', () => {
+  it('creates, assigns, and moves a new Linear issue, and links it on the item', async () => {
+    const createIssue = vi.fn().mockResolvedValue({ id: 'linear-issue-1', identifier: 'OPE-9', url: 'https://linear.app/acme/issue/OPE-9' });
+    const assignIssueToViewer = vi.fn().mockResolvedValue({ changed: true, assigneeName: 'Ada Lovelace' });
+    const moveIssueToStateType = vi.fn().mockResolvedValue({ changed: true, stateName: 'In Progress' });
+    vi.doMock('../linear/auth.js', () => ({ getLinearAuth: () => ({ accessToken: 'token' }) }));
+    vi.doMock('../linear/client.js', () => ({ createIssue, assignIssueToViewer, moveIssueToStateType }));
+
+    const { registerWorkQueueRoutes } = await import('./routes.js');
+    const { upsertSyncedItems, listItems } = await import('./store.js');
+    upsertSyncedItems([{ source: 'linear', sourceId: 'existing-issue', team: 'team-42', type: 'issue', title: 'Existing' }]);
+    upsertSyncedItems([{ source: 'github', sourceId: 'acme/repo#4', repo: 'acme/repo', type: 'issue', title: 'Bug', body: 'Steps', url: 'https://github.com/acme/repo/issues/4', status: 'backlog' }]);
+    const item = listItems().find((entry) => entry.source === 'github');
+
+    const app = createFakeApp();
+    registerWorkQueueRoutes(app, { getSmallModelService: vi.fn() });
+    const res = createFakeRes();
+    await app.handler('PATCH', '/api/workqueue/items/:id')({ params: { id: item.id }, body: { status: 'in_progress' } }, res);
+
+    expect(res.statusCode).toBe(200);
+    // The already-used team ("team-42", from the existing Linear item) is
+    // preferred over an arbitrary pick.
+    expect(createIssue).toHaveBeenCalledWith(expect.objectContaining({ teamId: 'team-42', title: 'Bug' }));
+    expect(assignIssueToViewer).toHaveBeenCalledWith({ issueId: 'linear-issue-1' });
+    expect(moveIssueToStateType).toHaveBeenCalledWith(expect.objectContaining({ issueId: 'linear-issue-1', stateType: 'started' }));
+    expect(res.body.item.linkedLinearId).toBe('linear-issue-1');
+    expect(res.body.item.linkedLinearUrl).toBe('https://linear.app/acme/issue/OPE-9');
+    expect(res.body.item.identifier).toBe('OPE-9');
+    expect(res.body.linearCreateWarning).toBeUndefined();
+  });
+
+  it('is skipped silently (no warning) when Linear is not connected', async () => {
+    vi.doMock('../linear/auth.js', () => ({ getLinearAuth: () => null }));
+    const { registerWorkQueueRoutes } = await import('./routes.js');
+    const { upsertSyncedItems, listItems } = await import('./store.js');
+    upsertSyncedItems([{ source: 'github', sourceId: 'acme/repo#5', repo: 'acme/repo', type: 'issue', title: 'Bug', status: 'backlog' }]);
+    const [item] = listItems();
+
+    const app = createFakeApp();
+    registerWorkQueueRoutes(app, { getSmallModelService: vi.fn() });
+    const res = createFakeRes();
+    await app.handler('PATCH', '/api/workqueue/items/:id')({ params: { id: item.id }, body: { status: 'in_progress' } }, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.linearCreateWarning).toBeUndefined();
+    expect(res.body.item.linkedLinearId).toBe('');
+  });
+
+  it('never mirrors twice: a second in_progress transition with linkedLinearId already set is a no-op', async () => {
+    const createIssue = vi.fn();
+    vi.doMock('../linear/auth.js', () => ({ getLinearAuth: () => ({ accessToken: 'token' }) }));
+    vi.doMock('../linear/client.js', () => ({ createIssue, assignIssueToViewer: vi.fn(), moveIssueToStateType: vi.fn() }));
+    const { registerWorkQueueRoutes } = await import('./routes.js');
+    const { upsertSyncedItems, listItems, patchItem } = await import('./store.js');
+    upsertSyncedItems([{ source: 'github', sourceId: 'acme/repo#6', repo: 'acme/repo', type: 'issue', title: 'Bug', status: 'in_progress', linkedLinearId: 'already-linked' }]);
+    let [item] = listItems();
+    patchItem(item.id, { status: 'todo' });
+    item = listItems()[0];
+
+    const app = createFakeApp();
+    registerWorkQueueRoutes(app, { getSmallModelService: vi.fn() });
+    const res = createFakeRes();
+    await app.handler('PATCH', '/api/workqueue/items/:id')({ params: { id: item.id }, body: { status: 'in_progress' } }, res);
+
+    expect(createIssue).not.toHaveBeenCalled();
+  });
+});
+
+describe('close reasons on Finish', () => {
+  it('closes a GitHub issue as not_planned with a duplicate-of comment when closeReason is duplicate', async () => {
+    const createComment = vi.fn().mockResolvedValue({});
+    const update = vi.fn().mockResolvedValue({});
+    vi.doMock('../github/octokit.js', () => ({
+      getOctokitOrNull: () => ({ rest: { issues: { createComment, update } } }),
+    }));
+    const { finishItem } = await import('./finish.js');
+    const { upsertSyncedItems, listItems } = await import('./store.js');
+    upsertSyncedItems([{ source: 'github', sourceId: 'acme/repo#7', repo: 'acme/repo', type: 'issue', title: 'Bug' }]);
+    const [item] = listItems();
+
+    const result = await finishItem(item, { closeReason: 'duplicate', duplicateOfUrl: 'https://github.com/acme/repo/issues/1' });
+
+    expect(createComment).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining('https://github.com/acme/repo/issues/1'),
+    }));
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ state: 'closed', state_reason: 'not_planned' }));
+    expect(result.issueClosedGitHub).toBe(true);
+    const { getItem } = await import('./store.js');
+    expect(getItem(item.id).closeReason).toBe('duplicate');
+  });
+
+  it('prefers a Linear state named "Duplicate" over the first canceled-type state', async () => {
+    const moveIssueToStateType = vi.fn().mockResolvedValue({ changed: true, stateName: 'Duplicate' });
+    vi.doMock('../linear/client.js', () => ({ moveIssueToStateType }));
+    const { finishItem } = await import('./finish.js');
+    const { upsertSyncedItems, listItems } = await import('./store.js');
+    upsertSyncedItems([{ source: 'linear', sourceId: 'issue-20', team: 'team-1', type: 'issue', title: 'T' }]);
+    const [item] = listItems();
+
+    await finishItem(item, { closeReason: 'duplicate' });
+
+    expect(moveIssueToStateType).toHaveBeenCalledWith(expect.objectContaining({
+      stateType: 'canceled',
+      preferNameMatch: expect.any(RegExp),
+    }));
+    expect(moveIssueToStateType.mock.calls[0][0].preferNameMatch.test('Duplicate')).toBe(true);
+  });
+
+  it('also closes the mirrored Linear issue when finishing a GitHub item that has one', async () => {
+    const moveIssueToStateType = vi.fn().mockResolvedValue({ changed: true, stateName: 'Done' });
+    vi.doMock('../github/octokit.js', () => ({
+      getOctokitOrNull: () => ({ rest: { issues: { update: vi.fn().mockResolvedValue({}) } } }),
+    }));
+    vi.doMock('../linear/client.js', () => ({ moveIssueToStateType }));
+    const { finishItem } = await import('./finish.js');
+    const { upsertSyncedItems, listItems } = await import('./store.js');
+    upsertSyncedItems([{
+      source: 'github',
+      sourceId: 'acme/repo#8',
+      repo: 'acme/repo',
+      type: 'issue',
+      title: 'Bug',
+      linkedLinearId: 'linear-issue-2',
+      team: 'team-1',
+    }]);
+    const [item] = listItems();
+
+    await finishItem(item, { closeReason: 'completed' });
+
+    expect(moveIssueToStateType).toHaveBeenCalledWith(expect.objectContaining({ issueId: 'linear-issue-2', teamId: 'team-1', stateType: 'completed' }));
+  });
+});

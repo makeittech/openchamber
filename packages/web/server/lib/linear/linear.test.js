@@ -90,6 +90,108 @@ describe('assignIssueToViewer', () => {
   });
 });
 
+describe('moveIssueToStateType', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('prefers the state whose name matches preferNameMatch over the lowest-position state of that type', async () => {
+    const { moveIssueToStateType } = await import('./client.js');
+    const { setLinearAuth } = await import('./auth.js');
+    setLinearAuth({ accessToken: 'token', user: null, organization: null });
+
+    let updatedStateId;
+    vi.stubGlobal('fetch', stubLinearFetch([
+      ['OpenChamberTeamStates', () => graphqlResponse({
+        team: {
+          id: 'team-1',
+          states: {
+            nodes: [
+              { id: 'canceled-1', name: 'Canceled', type: 'canceled', position: 0 },
+              { id: 'canceled-2', name: 'Duplicate', type: 'canceled', position: 1 },
+            ],
+          },
+        },
+      })],
+      ['OpenChamberIssueUpdateState', (variables) => {
+        updatedStateId = variables.stateId;
+        return graphqlResponse({ issueUpdate: { success: true, issue: { id: variables.id, state: { name: 'Duplicate', type: 'canceled' } } } });
+      }],
+    ]));
+
+    const result = await moveIssueToStateType({ issueId: 'issue-1', teamId: 'team-1', stateType: 'canceled', preferNameMatch: /duplicate/i });
+    expect(result).toEqual({ changed: true, stateName: 'Duplicate' });
+    expect(updatedStateId).toBe('canceled-2');
+  });
+
+  it('falls back to the lowest-position state of that type when no name matches', async () => {
+    const { moveIssueToStateType } = await import('./client.js');
+    const { setLinearAuth } = await import('./auth.js');
+    setLinearAuth({ accessToken: 'token', user: null, organization: null });
+
+    let updatedStateId;
+    vi.stubGlobal('fetch', stubLinearFetch([
+      ['OpenChamberTeamStates', () => graphqlResponse({
+        team: {
+          id: 'team-1',
+          states: { nodes: [{ id: 'canceled-1', name: 'Canceled', type: 'canceled', position: 0 }] },
+        },
+      })],
+      ['OpenChamberIssueUpdateState', (variables) => {
+        updatedStateId = variables.stateId;
+        return graphqlResponse({ issueUpdate: { success: true, issue: { id: variables.id, state: { name: 'Canceled', type: 'canceled' } } } });
+      }],
+    ]));
+
+    const result = await moveIssueToStateType({ issueId: 'issue-1', teamId: 'team-1', stateType: 'canceled', preferNameMatch: /duplicate/i });
+    expect(result).toEqual({ changed: true, stateName: 'Canceled' });
+    expect(updatedStateId).toBe('canceled-1');
+  });
+});
+
+describe('createIssue', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('creates an issue under the given team and returns it', async () => {
+    const { createIssue } = await import('./client.js');
+    const { setLinearAuth } = await import('./auth.js');
+    setLinearAuth({ accessToken: 'token', user: null, organization: null });
+
+    vi.stubGlobal('fetch', stubLinearFetch([
+      ['OpenChamberIssueCreate', (variables) => {
+        expect(variables.input).toEqual({ teamId: 'team-1', title: 'Mirrored bug', description: 'body\n\nGitHub: https://github.com/acme/repo/issues/1' });
+        return graphqlResponse({
+          issueCreate: {
+            success: true,
+            issue: { id: 'issue-new', identifier: 'OPE-42', title: 'Mirrored bug', url: 'https://linear.app/acme/issue/OPE-42' },
+          },
+        });
+      }],
+    ]));
+
+    const issue = await createIssue({
+      teamId: 'team-1',
+      title: 'Mirrored bug',
+      description: 'body\n\nGitHub: https://github.com/acme/repo/issues/1',
+    });
+    expect(issue).toEqual(expect.objectContaining({ id: 'issue-new', identifier: 'OPE-42' }));
+  });
+
+  it('throws instead of guessing success when Linear rejects the mutation', async () => {
+    const { createIssue } = await import('./client.js');
+    const { setLinearAuth } = await import('./auth.js');
+    setLinearAuth({ accessToken: 'token', user: null, organization: null });
+
+    vi.stubGlobal('fetch', stubLinearFetch([
+      ['OpenChamberIssueCreate', () => graphqlResponse({ issueCreate: { success: false, issue: null } })],
+    ]));
+
+    await expect(createIssue({ teamId: 'team-1', title: 'X' })).rejects.toThrow();
+  });
+});
+
 describe('oauth state', () => {
   it('creates single-use states', async () => {
     const { createOAuthState, consumeOAuthState } = await import('./oauth.js');

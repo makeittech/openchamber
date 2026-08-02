@@ -91,11 +91,16 @@ export const createWebWorkQueueAPI = (): WorkQueueAPI => ({
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(patch),
     });
-    const payload = await jsonOrNull<{ item?: WorkQueueItem; linearSyncWarning?: string; assigneeSyncWarning?: string; error?: string }>(response);
+    const payload = await jsonOrNull<{ item?: WorkQueueItem; linearSyncWarning?: string; assigneeSyncWarning?: string; linearCreateWarning?: string; error?: string }>(response);
     if (!response.ok || !payload?.item) {
       throw new Error(payload?.error || response.statusText || 'Failed to update work queue item');
     }
-    return { item: payload.item, linearSyncWarning: payload.linearSyncWarning, assigneeSyncWarning: payload.assigneeSyncWarning };
+    return {
+      item: payload.item,
+      linearSyncWarning: payload.linearSyncWarning,
+      assigneeSyncWarning: payload.assigneeSyncWarning,
+      linearCreateWarning: payload.linearCreateWarning,
+    };
   },
 
   async staleness(id: string, directory: string): Promise<WorkQueueStalenessResult> {
@@ -111,7 +116,7 @@ export const createWebWorkQueueAPI = (): WorkQueueAPI => ({
     return payload;
   },
 
-  async finish(id: string, options?: { mergePr?: boolean }): Promise<WorkQueueFinishResult> {
+  async finish(id: string, options?: { mergePr?: boolean; closeReason?: import('@openchamber/ui/lib/api/types').WorkQueueCloseReason; duplicateOfUrl?: string }): Promise<WorkQueueFinishResult> {
     const response = await runtimeFetch(`/api/workqueue/items/${encodeURIComponent(id)}/finish`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },

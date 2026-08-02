@@ -11,9 +11,10 @@ import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useUIStore } from '@/stores/useUIStore';
 import { useWorkQueueStore } from '@/stores/useWorkQueueStore';
-import type { WorkQueueItem, WorkQueueStalenessResult } from '@/lib/api/types';
+import type { WorkQueueCloseReason, WorkQueueItem, WorkQueueStalenessResult } from '@/lib/api/types';
 import { WorkQueueComplexityBadge, WorkQueueEnvBadges, WorkQueuePriorityBadge } from './workQueueBadges';
 import { WorkQueueCloudAgentDialog } from './WorkQueueCloudAgentDialog';
+import { WorkQueueFinishDialog } from './WorkQueueFinishDialog';
 
 const buildItemContextText = (item: WorkQueueItem): string => {
   const payload = {
@@ -39,6 +40,15 @@ interface WorkQueueDetailPanelProps {
 // PR review comments instead of an analysis pass.
 type DetailTab = 'overview' | 'analysis' | 'review';
 
+const FINISH_TOAST_KEY_BY_CLOSE_REASON: Record<
+  WorkQueueCloseReason,
+  'workQueue.detail.toast.finished' | 'workQueue.detail.toast.closedDuplicate' | 'workQueue.detail.toast.closedNotPlanned'
+> = {
+  completed: 'workQueue.detail.toast.finished',
+  duplicate: 'workQueue.detail.toast.closedDuplicate',
+  not_planned: 'workQueue.detail.toast.closedNotPlanned',
+};
+
 export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item, onClose }) => {
   const { t } = useI18n();
   const { workQueue } = useRuntimeAPIs();
@@ -56,6 +66,7 @@ export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item
   const [isLaunchingCloud, setIsLaunchingCloud] = React.useState(false);
   const [isFinishing, setIsFinishing] = React.useState(false);
   const [isCloudDialogOpen, setIsCloudDialogOpen] = React.useState(false);
+  const [isFinishDialogOpen, setIsFinishDialogOpen] = React.useState(false);
   const [stalenessResult, setStalenessResult] = React.useState<WorkQueueStalenessResult | null>(null);
   const [isCheckingStaleness, setIsCheckingStaleness] = React.useState(false);
   const [prUrlInput, setPrUrlInput] = React.useState('');
@@ -99,11 +110,48 @@ export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item
     }
   };
 
+  // Manual, on-demand re-check of the same commit-log search analysis already
+  // runs automatically when a project directory is available — useful right
+  // after a fix just landed, without waiting for a full re-analysis.
+  const handleCheckStaleness = async () => {
+    if (!workQueue || !projectDirectory) return;
+    setIsCheckingStaleness(true);
+    try {
+      const result = await workQueue.staleness(item.id, projectDirectory);
+      setStalenessResult(result);
+    } catch (error) {
+      toast.error(t('workQueue.detail.toast.stalenessCheckFailed'), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setIsCheckingStaleness(false);
+    }
+  };
+
+  // Lets the user record a PR they already know resolves this item, even
+  // when the automated duplicate/already-solved detection didn't surface it.
+  const handleAttachPr = async () => {
+    if (!workQueue || !prUrlInput.trim()) return;
+    setIsAttachingPr(true);
+    try {
+      const succeeded = await attachPr(workQueue, item.id, prUrlInput.trim());
+      if (succeeded) {
+        setPrUrlInput('');
+        toast.success(t('workQueue.detail.toast.prAttached'));
+      } else {
+        toast.error(t('workQueue.detail.toast.prAttachFailed'));
+      }
+    } finally {
+      setIsAttachingPr(false);
+    }
+  };
+
   const handleTake = async () => {
     if (!workQueue) return;
     const warning = await moveItem(workQueue, item.id, 'in_progress');
     if (warning?.linearSyncWarning) toast.warning(t('workQueue.board.toast.linearSyncFailed'));
     if (warning?.assigneeSyncWarning) toast.warning(t('workQueue.board.toast.assigneeSyncFailed'));
+    if (warning?.linearCreateWarning) toast.warning(t('workQueue.board.toast.linearCreateFailed'));
   };
 
   const handleCopyPrompt = async () => {
@@ -167,13 +215,13 @@ export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item
     }
   };
 
-  const handleFinish = async () => {
+  const handleFinish = async (options: { closeReason: WorkQueueCloseReason; duplicateOfUrl?: string }) => {
     if (!workQueue) return;
     setIsFinishing(true);
     try {
-      const result = await finishItem(workQueue, item.id, { mergePr: item.type === 'pr' });
+      const result = await finishItem(workQueue, item.id, { mergePr: item.type === 'pr', ...options });
       if (result?.archived) {
-        toast.success(t('workQueue.detail.toast.finished'));
+        toast.success(t(FINISH_TOAST_KEY_BY_CLOSE_REASON[options.closeReason]));
         onClose();
       } else {
         toast.error(t('workQueue.detail.toast.finishIncomplete'));
@@ -336,6 +384,53 @@ export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item
               <Icon name="sparkling" className={isAnalyzing ? 'h-3.5 w-3.5 animate-spin' : 'h-3.5 w-3.5'} />
               {item.aiAnalysis ? t('workQueue.detail.actions.reanalyze') : t('workQueue.detail.actions.analyze')}
             </Button>
+
+            {/* Grounded in an actual commit match found in the repo's log — never a
+                bare model guess (see analysis.js's groundDuplicateAndStalenessClaims). */}
+            {item.aiAnalysis?.alreadySolved && item.aiAnalysis.alreadySolvedReference && (
+              <div className="space-y-1 rounded-md border border-status-warning/40 bg-status-warning/10 p-2.5">
+                <div className="flex items-center gap-1.5 typography-ui-label font-medium text-foreground">
+                  <Icon name="git-commit" className="h-3.5 w-3.5 text-status-warning" />
+                  {t('workQueue.detail.analysis.alreadySolvedTitle')}
+                </div>
+                <p className="typography-micro text-muted-foreground">
+                  {t('workQueue.detail.analysis.alreadySolvedEvidence', {
+                    hash: item.aiAnalysis.alreadySolvedReference.hash.slice(0, 7),
+                    message: item.aiAnalysis.alreadySolvedReference.message,
+                  })}
+                </p>
+              </div>
+            )}
+
+            {/* The candidate's identity is denormalized onto the analysis at
+                analysis time, so this keeps working even if that item later
+                gets archived/finished. */}
+            {item.aiAnalysis?.duplicateOfId && (
+              <div className="space-y-1.5 rounded-md border border-status-info/40 bg-status-info/10 p-2.5">
+                <div className="flex items-center gap-1.5 typography-ui-label font-medium text-foreground">
+                  <Icon name="file-copy-2" className="h-3.5 w-3.5 text-status-info" />
+                  {t('workQueue.detail.analysis.duplicateTitle')}
+                </div>
+                <p className="typography-micro text-muted-foreground">
+                  {t('workQueue.detail.analysis.duplicateOf', { title: item.aiAnalysis.duplicateOfTitle })}
+                </p>
+                {item.aiAnalysis.duplicateReasoning && (
+                  <p className="typography-micro text-muted-foreground/80">{item.aiAnalysis.duplicateReasoning}</p>
+                )}
+                {item.aiAnalysis.duplicateOfUrl && (
+                  <a
+                    href={item.aiAnalysis.duplicateOfUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 typography-micro text-status-info hover:underline"
+                  >
+                    {t('workQueue.detail.actions.viewDuplicate')}
+                    <Icon name="external-link" className="h-3 w-3" />
+                  </a>
+                )}
+              </div>
+            )}
+
             {item.aiAnalysis?.generatedPrompt && (
               <div className="space-y-1.5">
                 <div className="typography-micro font-medium uppercase tracking-wide text-muted-foreground/60">
@@ -346,6 +441,66 @@ export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item
                 </pre>
               </div>
             )}
+
+            <div className="space-y-2 border-t border-border/40 pt-3">
+              <div className="typography-micro font-medium uppercase tracking-wide text-muted-foreground/60">
+                {t('workQueue.detail.field.manualEvidence')}
+              </div>
+
+              <div className="space-y-1.5">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCheckStaleness}
+                  disabled={isCheckingStaleness || !projectDirectory}
+                  className="gap-1.5"
+                >
+                  <Icon name="history" className={isCheckingStaleness ? 'h-3.5 w-3.5 animate-spin' : 'h-3.5 w-3.5'} />
+                  {t('workQueue.detail.actions.checkStaleness')}
+                </Button>
+                {stalenessResult && (
+                  stalenessResult.matches.length > 0 ? (
+                    <ul className="space-y-1">
+                      {stalenessResult.matches.map((match) => (
+                        <li key={match.hash} className="typography-micro text-muted-foreground">
+                          {t('workQueue.detail.staleness.match', { hash: match.hash.slice(0, 7), message: match.message })}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="typography-micro text-muted-foreground">{t('workQueue.detail.staleness.noMatches')}</p>
+                  )
+                )}
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="typography-micro text-muted-foreground" htmlFor="workqueue-attach-pr">
+                  {t('workQueue.detail.field.attachedPr')}
+                </label>
+                {item.attachedPrUrl && (
+                  <a
+                    href={item.attachedPrUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="block typography-micro text-status-info hover:underline truncate"
+                  >
+                    {item.attachedPrUrl}
+                  </a>
+                )}
+                <div className="flex gap-1.5">
+                  <Input
+                    id="workqueue-attach-pr"
+                    value={prUrlInput}
+                    onChange={(event) => setPrUrlInput(event.target.value)}
+                    placeholder={t('workQueue.detail.finishDialog.duplicateOfPlaceholder')}
+                    className="h-8"
+                  />
+                  <Button size="sm" variant="outline" onClick={handleAttachPr} disabled={isAttachingPr || !prUrlInput.trim()}>
+                    <Icon name="attachment-2" className={isAttachingPr ? 'h-3.5 w-3.5 animate-spin' : 'h-3.5 w-3.5'} />
+                  </Button>
+                </div>
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -394,7 +549,7 @@ export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item
             </Button>
           )}
         </div>
-        <Button size="sm" variant="destructive" onClick={handleFinish} disabled={isFinishing} className="gap-1.5">
+        <Button size="sm" variant="destructive" onClick={() => setIsFinishDialogOpen(true)} disabled={isFinishing} className="gap-1.5">
           <Icon name="check" className="h-3.5 w-3.5" />
           {t('workQueue.detail.actions.finish')}
         </Button>
@@ -405,6 +560,13 @@ export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item
         open={isCloudDialogOpen}
         onOpenChange={setIsCloudDialogOpen}
         onSubmit={handleLaunchCloudAgent}
+      />
+
+      <WorkQueueFinishDialog
+        item={isFinishDialogOpen ? item : null}
+        open={isFinishDialogOpen}
+        onOpenChange={setIsFinishDialogOpen}
+        onSubmit={handleFinish}
       />
     </div>
   );

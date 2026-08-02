@@ -1260,6 +1260,13 @@ export type WorkQueueItemStatus = 'backlog' | 'todo' | 'in_progress' | 'done';
 export type WorkQueueComplexity = 'easy' | 'medium' | 'hard' | 'huge';
 export type WorkQueuePriority = 'critical' | 'high' | 'medium' | 'low';
 
+export type WorkQueueAlreadySolvedReference = {
+  hash: string;
+  message: string;
+  url: string;
+  date: string;
+};
+
 export type WorkQueueAnalysis = {
   summary: string;
   complexity: WorkQueueComplexity;
@@ -1270,6 +1277,14 @@ export type WorkQueueAnalysis = {
   needsBrowser: boolean;
   needsDocker: boolean;
   generatedPrompt: string;
+  /** True only when grounded in an actual commit match (see alreadySolvedReference), never a bare model guess. */
+  alreadySolved: boolean;
+  alreadySolvedReference: WorkQueueAlreadySolvedReference | null;
+  /** Id of another open queue item this is likely a duplicate of; '' when none was found. */
+  duplicateOfId: string;
+  duplicateOfTitle: string;
+  duplicateOfUrl: string;
+  duplicateReasoning: string;
   analyzedAt: number;
 };
 
@@ -1344,6 +1359,9 @@ export type WorkQueueItem = {
   identifier: string;
   /** Set on a Linear-sourced item when a referencing GitHub issue/PR was merged into it. */
   linkedGithubUrl: string;
+  /** Set on a GitHub-sourced item once a Linear issue was auto-created for it (first "take into progress"). */
+  linkedLinearId: string;
+  linkedLinearUrl: string;
   /** A PR the user manually attached from the AI analysis panel as evidence this item is already done. */
   attachedPrUrl: string;
   assignee: string;
@@ -1353,12 +1371,17 @@ export type WorkQueueItem = {
   linkedSessionId: string;
   finishedAt: number | null;
   archivedAt: number | null;
+  /** How the card was closed via Finish; null while still open. */
+  closeReason: WorkQueueCloseReason | null;
 };
 
 export type WorkQueueSyncResult = {
   github: { connected: boolean | null; added: number; updated: number; failedRepos?: string[] };
   linear: { connected: boolean; added: number; updated: number; failed?: boolean };
 };
+
+/** Mirrors GitHub's own close reasons plus a Linear-style "duplicate" state. */
+export type WorkQueueCloseReason = 'completed' | 'duplicate' | 'not_planned';
 
 export type WorkQueueFinishResult = {
   prMerged: boolean;
@@ -1387,8 +1410,8 @@ export interface WorkQueueAPI {
   analyze(id: string, directory?: string): Promise<{ item: WorkQueueItem }>;
   /** Analyzes every not-yet-analyzed issue; PRs are excluded by design. */
   analyzeBulk(directory?: string): Promise<WorkQueueBulkAnalysisResult>;
-  patch(id: string, patch: { status?: WorkQueueItemStatus; assignee?: string; linkedSessionId?: string; attachedPrUrl?: string }): Promise<{ item: WorkQueueItem; linearSyncWarning?: string; assigneeSyncWarning?: string }>;
-  finish(id: string, options?: { mergePr?: boolean }): Promise<WorkQueueFinishResult>;
+  patch(id: string, patch: { status?: WorkQueueItemStatus; assignee?: string; linkedSessionId?: string; attachedPrUrl?: string }): Promise<{ item: WorkQueueItem; linearSyncWarning?: string; assigneeSyncWarning?: string; linearCreateWarning?: string }>;
+  finish(id: string, options?: { mergePr?: boolean; closeReason?: WorkQueueCloseReason; duplicateOfUrl?: string }): Promise<WorkQueueFinishResult>;
   /** Advisory freshness check: searches the repo's commit log for a reference to this item. Not persisted. */
   staleness(id: string, directory: string): Promise<WorkQueueStalenessResult>;
   /** The prompt/model/repository that would be sent, for review before dispatch. */

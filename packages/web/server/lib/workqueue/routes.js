@@ -1,13 +1,14 @@
 import { listItems, getItem, patchItem } from './store.js';
-import { syncAll } from './sources.js';
+import { syncAll, resolveDefaultLinearTeam } from './sources.js';
 import { analyzeItem, analyzeAllPending } from './analysis.js';
 import { checkItemStaleness } from './staleness.js';
 import { finishItem } from './finish.js';
 import { getCursorApiVersion, isCursorApiVersionConfiguredViaEnv, setCursorApiVersion, getTrackedRepos, setTrackedRepos } from './settings.js';
 import { columnToLinearStateType } from './columns.js';
-import { moveIssueToStateType, assignIssueToViewer } from '../linear/client.js';
+import { moveIssueToStateType, assignIssueToViewer, createIssue } from '../linear/client.js';
 import { getGitHubAuth } from '../github/auth.js';
 import { getOctokitOrNull } from '../github/octokit.js';
+import { getLinearAuth } from '../linear/auth.js';
 import { getCursorApiKey, setCursorApiKey, clearCursorApiKey, isCursorConfiguredViaEnv } from './cursor/auth.js';
 import {
   launchCursorAgent,
@@ -74,6 +75,49 @@ async function assignGitHubIssueToViewer(octokit, repo, sourceId) {
   return { changed: true, assigneeName: login };
 }
 
+// Mirrors a GitHub-sourced item into Linear the first time someone starts
+// work on it: GitHub items otherwise never show up in Linear at all, so
+// "who's on this" was invisible outside OpenChamber. Creates a new Linear
+// issue (best-effort default team resolution), assigns it to the connected
+// viewer, and moves it to the team's first "started" state. Best-effort:
+// failure is reported via a warning and must never undo the already-applied
+// local status change. Returns `{ patch }` on success or `{ warning }`.
+async function mirrorGithubItemToLinear(before) {
+  const teamId = await resolveDefaultLinearTeam();
+  if (!teamId) {
+    return { warning: 'linear-team-unresolved' };
+  }
+  const description = [before.body || '', '', `GitHub: ${before.url}`].join('\n').trim();
+  let issue;
+  try {
+    issue = await createIssue({ teamId, title: before.title, description });
+  } catch (error) {
+    console.warn('[workqueue] Linear issue creation failed:', error?.message || error);
+    return { warning: 'linear-create-failed' };
+  }
+  const patch = {
+    linkedLinearId: issue.id,
+    linkedLinearUrl: issue.url || '',
+    identifier: issue.identifier || '',
+    // Reused by finish.js: a GitHub item with a linked Linear mirror needs
+    // the team id to move that Linear issue's state on Finish, the same way
+    // a Linear-sourced item already does via its own `team` field.
+    team: teamId,
+  };
+  try {
+    const assigned = await assignIssueToViewer({ issueId: issue.id });
+    if (assigned.changed) patch.assignee = assigned.assigneeName;
+  } catch (error) {
+    console.warn('[workqueue] Linear assignee sync failed for a newly created issue:', error?.message || error);
+  }
+  try {
+    await moveIssueToStateType({ issueId: issue.id, teamId, stateType: 'started' });
+  } catch (error) {
+    console.warn('[workqueue] Linear state sync failed for a newly created issue:', error?.message || error);
+  }
+  return { patch };
+}
+
 export function registerWorkQueueRoutes(app, { getSmallModelService }) {
   app.get('/api/workqueue/items', (req, res) => {
     const { status, repo, assignee, type, source } = req.query || {};
@@ -114,6 +158,7 @@ export function registerWorkQueueRoutes(app, { getSmallModelService }) {
       const updated = await analyzeItem(item, {
         generateSmallModelText,
         directory: typeof req.body?.directory === 'string' ? req.body.directory : undefined,
+        allItems: listItems(),
       });
       res.json({ item: updated });
     } catch (error) {
@@ -123,8 +168,10 @@ export function registerWorkQueueRoutes(app, { getSmallModelService }) {
   });
 
   // Advisory freshness check: searches the repo's commit log for a reference
-  // to this item and reports how long it has been open. Not persisted — this
-  // is a point-in-time prompt for the user to look, not authoritative state.
+  // to this item — and, when the small model is available, for commits that
+  // merely look like fixes — and reports how long it has been open. Not
+  // persisted — this is a point-in-time prompt for the user to look, not
+  // authoritative state.
   app.post('/api/workqueue/items/:id/staleness', async (req, res) => {
     const item = getItem(req.params.id);
     if (!item) return res.status(404).json({ error: 'Item not found' });
@@ -133,7 +180,15 @@ export function registerWorkQueueRoutes(app, { getSmallModelService }) {
       return res.status(400).json({ error: 'directory is required' });
     }
     try {
-      const result = await checkItemStaleness(item, directory);
+      // The AI similarity search is a bonus, never a requirement: when the
+      // small model is unavailable the check still runs on exact references.
+      let generateSmallModelText;
+      try {
+        ({ generateSmallModelText } = await getSmallModelService());
+      } catch {
+        generateSmallModelText = undefined;
+      }
+      const result = await checkItemStaleness(item, directory, { generateSmallModelText });
       res.json(result);
     } catch (error) {
       console.error('[workqueue] staleness check failed:', error);
@@ -224,18 +279,38 @@ export function registerWorkQueueRoutes(app, { getSmallModelService }) {
       }
     }
 
+    // A GitHub-sourced item has no Linear presence at all until now — taking
+    // it into progress is the trigger to mirror it into Linear (create +
+    // assign) so it is visible there too. Only runs once per item (skipped
+    // once `linkedLinearId` is set) and only when Linear is actually
+    // connected, so disconnected setups get no noisy warning.
+    let linearCreateWarning;
+    if (startingWork && before.source === 'github' && !before.linkedLinearId && getLinearAuth()) {
+      const mirrored = await mirrorGithubItemToLinear(before);
+      if (mirrored.patch) {
+        updated = patchItem(req.params.id, mirrored.patch) || updated;
+      } else if (mirrored.warning) {
+        linearCreateWarning = mirrored.warning;
+      }
+    }
+
     res.json({
       item: updated,
       ...(linearSyncWarning ? { linearSyncWarning } : {}),
       ...(assigneeSyncWarning ? { assigneeSyncWarning } : {}),
+      ...(linearCreateWarning ? { linearCreateWarning } : {}),
     });
   });
 
   app.post('/api/workqueue/items/:id/finish', async (req, res) => {
     const item = getItem(req.params.id);
     if (!item) return res.status(404).json({ error: 'Item not found' });
+    const closeReason = ['completed', 'duplicate', 'not_planned'].includes(req.body?.closeReason)
+      ? req.body.closeReason
+      : 'completed';
+    const duplicateOfUrl = typeof req.body?.duplicateOfUrl === 'string' ? req.body.duplicateOfUrl.trim() : undefined;
     try {
-      const result = await finishItem(item, { mergePr: req.body?.mergePr === true });
+      const result = await finishItem(item, { mergePr: req.body?.mergePr === true, closeReason, duplicateOfUrl });
       res.json(result);
     } catch (error) {
       console.error('[workqueue] finish failed:', error);

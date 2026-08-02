@@ -45,6 +45,25 @@ const normalizeAnalysis = (analysis) => {
     needsBrowser: Boolean(analysis.needsBrowser),
     needsDocker: Boolean(analysis.needsDocker),
     generatedPrompt: typeof analysis.generatedPrompt === 'string' ? analysis.generatedPrompt : '',
+    // "Already solved?" signal: only ever set from an actual commit match
+    // found in the repo's log (see staleness.js) — never a model guess with
+    // no evidence attached.
+    alreadySolved: Boolean(analysis.alreadySolved) && Boolean(analysis.alreadySolvedReference),
+    alreadySolvedReference: analysis.alreadySolvedReference && typeof analysis.alreadySolvedReference === 'object'
+      ? {
+        hash: typeof analysis.alreadySolvedReference.hash === 'string' ? analysis.alreadySolvedReference.hash : '',
+        message: typeof analysis.alreadySolvedReference.message === 'string' ? analysis.alreadySolvedReference.message : '',
+        url: typeof analysis.alreadySolvedReference.url === 'string' ? analysis.alreadySolvedReference.url : '',
+        date: typeof analysis.alreadySolvedReference.date === 'string' ? analysis.alreadySolvedReference.date : '',
+      }
+      : null,
+    // Possible-duplicate signal: the candidate's identity is denormalized
+    // here (not just an id) so the card keeps showing where it points even
+    // if the candidate item is later archived/finished.
+    duplicateOfId: typeof analysis.duplicateOfId === 'string' ? analysis.duplicateOfId : '',
+    duplicateOfTitle: typeof analysis.duplicateOfTitle === 'string' ? analysis.duplicateOfTitle : '',
+    duplicateOfUrl: typeof analysis.duplicateOfUrl === 'string' ? analysis.duplicateOfUrl : '',
+    duplicateReasoning: typeof analysis.duplicateReasoning === 'string' ? analysis.duplicateReasoning : '',
     analyzedAt: typeof analysis.analyzedAt === 'number' ? analysis.analyzedAt : Date.now(),
   };
 };
@@ -91,6 +110,11 @@ const normalizeItem = (entry) => {
     // Set on a Linear-sourced item when a GitHub issue/PR referencing it was
     // found and merged into this card instead of shown separately.
     linkedGithubUrl: typeof entry.linkedGithubUrl === 'string' ? entry.linkedGithubUrl : '',
+    // Set on a GitHub-sourced item once a Linear issue was auto-created for
+    // it (on first "take into progress"), so it mirrors into Linear without
+    // ever appearing as a second, separate card on the next Linear sync.
+    linkedLinearId: typeof entry.linkedLinearId === 'string' ? entry.linkedLinearId : '',
+    linkedLinearUrl: typeof entry.linkedLinearUrl === 'string' ? entry.linkedLinearUrl : '',
     // A PR the user manually attached from the AI analysis panel as evidence
     // this item is already done — set via PATCH, never inferred.
     attachedPrUrl: typeof entry.attachedPrUrl === 'string' ? entry.attachedPrUrl : '',
@@ -115,6 +139,10 @@ const normalizeItem = (entry) => {
     linkedSessionId: typeof entry.linkedSessionId === 'string' ? entry.linkedSessionId : '',
     finishedAt: typeof entry.finishedAt === 'number' ? entry.finishedAt : null,
     archivedAt: typeof entry.archivedAt === 'number' ? entry.archivedAt : null,
+    // How the card was closed via the Finish action — mirrors GitHub's own
+    // close reasons plus a Linear-style "duplicate" state. Never set outside
+    // finish.js.
+    closeReason: ['completed', 'duplicate', 'not_planned'].includes(entry.closeReason) ? entry.closeReason : null,
   };
 };
 

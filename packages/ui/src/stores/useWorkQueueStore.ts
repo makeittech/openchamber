@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type {
   RuntimeAPIs,
   WorkQueueBulkAnalysisResult,
+  WorkQueueCloseReason,
   WorkQueueFinishResult,
   WorkQueueItem,
   WorkQueueItemStatus,
@@ -30,13 +31,17 @@ type WorkQueueStore = {
     api: WorkQueueAPI,
     id: string,
     status: WorkQueueItemStatus,
-  ) => Promise<{ linearSyncWarning?: string; assigneeSyncWarning?: string } | undefined>;
+  ) => Promise<{ linearSyncWarning?: string; assigneeSyncWarning?: string; linearCreateWarning?: string } | undefined>;
   linkSession: (api: WorkQueueAPI, id: string, sessionId: string) => Promise<void>;
   /** Records a PR the user manually attached as evidence this item is already done. */
   attachPr: (api: WorkQueueAPI, id: string, prUrl: string) => Promise<boolean>;
   analyzeItem: (api: WorkQueueAPI, id: string, directory?: string) => Promise<void>;
   analyzeAll: (api: WorkQueueAPI, directory?: string) => Promise<WorkQueueBulkAnalysisResult | null>;
-  finishItem: (api: WorkQueueAPI, id: string, options?: { mergePr?: boolean }) => Promise<WorkQueueFinishResult | null>;
+  finishItem: (
+    api: WorkQueueAPI,
+    id: string,
+    options?: { mergePr?: boolean; closeReason?: WorkQueueCloseReason; duplicateOfUrl?: string },
+  ) => Promise<WorkQueueFinishResult | null>;
   launchCloudAgent: (api: WorkQueueAPI, id: string, options?: { prompt?: string; model?: string; repository?: string }) => Promise<void>;
   refreshCloudAgentStatus: (api: WorkQueueAPI, id: string) => Promise<void>;
 };
@@ -96,7 +101,7 @@ export const useWorkQueueStore = create<WorkQueueStore>((set, get) => ({
       pendingIds: new Set(state.pendingIds).add(id),
     }));
     try {
-      const { item, linearSyncWarning, assigneeSyncWarning } = await api.patch(id, { status });
+      const { item, linearSyncWarning, assigneeSyncWarning, linearCreateWarning } = await api.patch(id, { status });
       set((state) => {
         const nextPending = new Set(state.pendingIds);
         nextPending.delete(id);
@@ -105,8 +110,8 @@ export const useWorkQueueStore = create<WorkQueueStore>((set, get) => ({
       // The local move already succeeded server-side even if the Linear/
       // assignee write-back didn't — surface the warning without rolling
       // anything back.
-      if (!linearSyncWarning && !assigneeSyncWarning) return undefined;
-      return { linearSyncWarning, assigneeSyncWarning };
+      if (!linearSyncWarning && !assigneeSyncWarning && !linearCreateWarning) return undefined;
+      return { linearSyncWarning, assigneeSyncWarning, linearCreateWarning };
     } catch (error) {
       // Roll back to the pre-drag state so the board never shows a status
       // the server didn't actually accept.

@@ -77,6 +77,12 @@ const BoardColumn: React.FC<{
     count: sorted.length,
     enabled: shouldVirtualize,
     getScrollElement: () => scrollRef.current,
+    // 104 is only the *starting* estimate for the first measurement pass.
+    // Cards are variable height (wrapping titles, badge rows that wrap on
+    // narrow columns), so every rendered row is re-measured via
+    // `measureElement` below — without that, rows keep the fixed estimate
+    // forever and taller cards spill into the next absolutely-positioned
+    // row, visually overlapping it.
     estimateSize: () => 104,
     overscan: 6,
     getItemKey: (index) => sorted[index]?.id ?? index,
@@ -108,7 +114,9 @@ const BoardColumn: React.FC<{
                 return (
                   <div
                     key={item.id}
-                    style={{ position: 'absolute', top: virtualRow.start, left: 0, right: 0, paddingBottom: 8 }}
+                    ref={virtualizer.measureElement}
+                    data-index={virtualRow.index}
+                    style={{ position: 'absolute', top: 0, left: 0, right: 0, transform: `translateY(${virtualRow.start}px)`, paddingBottom: 8 }}
                   >
                     <SortableCard item={item} selected={item.id === selectedId} onSelect={onSelect} />
                   </div>

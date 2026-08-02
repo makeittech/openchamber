@@ -27,10 +27,16 @@ message stream hub in `server/index.js`.
   in-memory, single-use OAuth state store (10 minute TTL).
 - `client.js` — minimal GraphQL client for `https://api.linear.app/graphql`
   with transparent access-token refresh (OAuth connections only), a 15 s
-  request timeout, workflow-state transitions (`moveIssueToStateType`: team's
-  lowest-position state of a given type), and `assignIssueToViewer` (assigns
-  an issue to the connected account via `issueUpdate(assigneeId)`, used by the
-  Work Queue's take-into-progress flow).
+  request timeout, workflow-state transitions (`moveIssueToStateType`: the
+  team's lowest-position state of a given type, or the first state whose name
+  matches an optional `preferNameMatch` regex — used to distinguish
+  "Duplicate" from "Won't fix" within the same `canceled` type), and
+  `assignIssueToViewer` (assigns an issue to the connected account via
+  `issueUpdate(assigneeId)`, used by the Work Queue's take-into-progress
+  flow). Also `fetchTeamsWithStoredAuth` (lists teams visible to the
+  connection) and `createIssue` (creates a new issue under a team) — both
+  used by the Work Queue to mirror a GitHub-sourced item into Linear the
+  first time it's taken into progress.
 - `links.js` — `linear-sessions.json` mapping of Linear issue ↔ OpenChamber
   session (one link per session, pruned to 500 entries). Records keep the
   issue `teamId` so lifecycle transitions can resolve workflow states later.

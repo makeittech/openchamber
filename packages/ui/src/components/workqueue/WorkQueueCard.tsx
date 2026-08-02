@@ -1,7 +1,13 @@
 import React from 'react';
 import { Icon } from '@/components/icon/Icon';
+import { Button } from '@/components/ui/button';
+import { toast } from '@/components/ui';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
+import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
+import { useWorkQueueStore } from '@/stores/useWorkQueueStore';
+import { useProjectsStore } from '@/stores/useProjectsStore';
+import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import type { WorkQueueItem, WorkQueuePriority } from '@/lib/api/types';
 import {
   WorkQueueComplexityBadge,
@@ -36,10 +42,54 @@ interface WorkQueueCardProps {
 export const WorkQueueCard = React.forwardRef<HTMLDivElement, WorkQueueCardProps>(
   ({ item, selected, onSelect, dragHandleProps, className, style }, ref) => {
     const { t } = useI18n();
+    const { workQueue } = useRuntimeAPIs();
+    const analyzeItem = useWorkQueueStore((state) => state.analyzeItem);
+    const pendingIds = useWorkQueueStore((state) => state.pendingIds);
+    const projects = useProjectsStore((state) => state.projects);
+    const activeProject = useProjectsStore((state) => state.getActiveProject());
+    const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
+    const [isAnalyzing, setIsAnalyzing] = React.useState(false);
+
     const analysis = item.aiAnalysis;
     const issueType = deriveIssueType(item);
     const borderClass = analysis ? PRIORITY_BORDER_CLASS[analysis.priority] : 'border-l-border';
     const issueNumber = item.source === 'github' ? (item.sourceId.match(/#\d+$/)?.[0] ?? '') : item.identifier;
+
+    // Same project-directory resolution as the detail panel: analysis needs a
+    // checkout to ground its claims in the real commit log.
+    const projectDirectory = React.useMemo(() => {
+      if (activeProject?.path) return activeProject.path;
+      if (currentDirectory) {
+        const match = projects.find((project) => project.path === currentDirectory);
+        if (match) return match.path;
+      }
+      return projects[0]?.path || null;
+    }, [activeProject?.path, currentDirectory, projects]);
+
+    // The card root handles click (select) and drag (dnd-kit listeners), so a
+    // button nested inside must stop both or pressing it would select the
+    // card / start a drag instead of analyzing.
+    const stopCardInteraction = (event: React.SyntheticEvent) => {
+      event.stopPropagation();
+    };
+
+    const isBusy = isAnalyzing || pendingIds.has(item.id);
+    const isPullRequest = item.type === 'pr';
+
+    const handleAnalyze = async (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.stopPropagation();
+      if (!workQueue || isBusy) return;
+      setIsAnalyzing(true);
+      try {
+        await analyzeItem(workQueue, item.id, projectDirectory || undefined);
+      } catch (error) {
+        toast.error(t('workQueue.detail.toast.analyzeFailed'), {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        setIsAnalyzing(false);
+      }
+    };
 
     return (
       <div
@@ -110,15 +160,64 @@ export const WorkQueueCard = React.forwardRef<HTMLDivElement, WorkQueueCardProps
               needsBrowser={analysis.needsBrowser}
               needsDocker={analysis.needsDocker}
             />
-            <span className="ml-auto inline-flex items-center gap-1 typography-micro text-muted-foreground/70">
-              <Icon name="sparkling" className="h-3 w-3" />
-              {t('workQueue.card.confidence', { confidence: analysis.confidence })}
+            <span className="ml-auto inline-flex items-center gap-1.5">
+              <span className="inline-flex items-center gap-1 typography-micro text-muted-foreground/70">
+                <Icon name="sparkling" className="h-3 w-3" />
+                {t('workQueue.card.confidence', { confidence: analysis.confidence })}
+              </span>
+              {!isPullRequest && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  aria-label={t('workQueue.card.reanalyze')}
+                  title={t('workQueue.card.reanalyze')}
+                  onClick={handleAnalyze}
+                  onPointerDown={stopCardInteraction}
+                  onKeyDown={stopCardInteraction}
+                  disabled={isBusy}
+                >
+                  <Icon name="sparkling" className={isBusy ? 'h-3 w-3 animate-spin' : 'h-3 w-3'} />
+                </Button>
+              )}
             </span>
           </div>
+        ) : isPullRequest ? (
+          // PRs are never AI-analyzed (their review comments are automated
+          // instead), so they get no analyze affordance and no misleading
+          // "not analyzed" line.
+          null
         ) : item.aiAnalysisError ? (
-          <span className="typography-micro text-destructive">{t('workQueue.card.analysisError')}</span>
+          <div className="flex flex-wrap items-center justify-between gap-1.5">
+            <span className="typography-micro text-destructive">{t('workQueue.card.analysisError')}</span>
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              className="gap-1"
+              onClick={handleAnalyze}
+              onPointerDown={stopCardInteraction}
+              onKeyDown={stopCardInteraction}
+              disabled={isBusy}
+            >
+              <Icon name="sparkling" className={isBusy ? 'h-3 w-3 animate-spin' : 'h-3 w-3'} />
+              {t('workQueue.card.analyze')}
+            </Button>
+          </div>
         ) : (
-          <span className="typography-micro text-muted-foreground/60">{t('workQueue.card.notAnalyzed')}</span>
+          <Button
+            type="button"
+            variant="default"
+            size="xs"
+            className="gap-1 self-start"
+            onClick={handleAnalyze}
+            onPointerDown={stopCardInteraction}
+            onKeyDown={stopCardInteraction}
+            disabled={isBusy}
+          >
+            <Icon name="sparkling" className={isBusy ? 'h-3 w-3 animate-spin' : 'h-3 w-3'} />
+            {isBusy ? t('workQueue.card.analyzing') : t('workQueue.card.analyze')}
+          </Button>
         )}
       </div>
     );

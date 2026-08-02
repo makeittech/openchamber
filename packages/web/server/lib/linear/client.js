@@ -243,11 +243,14 @@ const ISSUE_UPDATE_STATE_MUTATION = `mutation OpenChamberIssueUpdateState($id: S
   }
 }`;
 
-// Moves an issue to the team's first (lowest-position) workflow state of the
-// requested type, e.g. 'started' → "In Progress". Returns
+// Moves an issue to a workflow state of the requested type. When a team has
+// several states of that type (e.g. "canceled" commonly covers both
+// "Duplicate" and "Won't fix" as distinct named states), `preferNameMatch`
+// picks the one whose name matches first; otherwise the lowest-position
+// (first) state of that type is used, same as before. Returns
 // { changed, stateName } or { changed: false, reason } when the team has no
 // such state. Callers decide whether a transition is appropriate.
-export const moveIssueToStateType = async ({ issueId, teamId, stateType, fetchImpl = fetch }) => {
+export const moveIssueToStateType = async ({ issueId, teamId, stateType, preferNameMatch, fetchImpl = fetch }) => {
   if (!issueId || !teamId || !stateType) {
     return { changed: false, reason: 'missing-arguments' };
   }
@@ -257,9 +260,12 @@ export const moveIssueToStateType = async ({ issueId, teamId, stateType, fetchIm
     fetchImpl,
   });
   const states = Array.isArray(teamData?.team?.states?.nodes) ? teamData.team.states.nodes : [];
-  const target = states
+  const candidates = states
     .filter((state) => state && state.type === stateType && typeof state.id === 'string')
-    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))[0];
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+  const target = (preferNameMatch instanceof RegExp
+    ? candidates.find((state) => preferNameMatch.test(state.name || ''))
+    : null) ?? candidates[0];
   if (!target) {
     return { changed: false, reason: 'no-matching-state' };
   }
@@ -273,6 +279,48 @@ export const moveIssueToStateType = async ({ issueId, teamId, stateType, fetchIm
     return { changed: false, reason: 'update-failed' };
   }
   return { changed: true, stateName: payload.issue?.state?.name ?? target.name ?? '' };
+};
+
+const TEAMS_QUERY = `query OpenChamberTeams($first: Int!) {
+  teams(first: $first) {
+    nodes { id key name }
+  }
+}`;
+
+// Lists teams visible to the connected account. Used to pick a default team
+// when creating a brand-new Linear issue from a GitHub-sourced Work Queue
+// item that has no team of its own.
+export const fetchTeamsWithStoredAuth = async ({ fetchImpl = fetch } = {}) => {
+  const data = await graphqlWithStoredAuth({ query: TEAMS_QUERY, variables: { first: 100 }, fetchImpl });
+  return Array.isArray(data?.teams?.nodes) ? data.teams.nodes : [];
+};
+
+const ISSUE_CREATE_MUTATION = `mutation OpenChamberIssueCreate($input: IssueCreateInput!) {
+  issueCreate(input: $input) {
+    success
+    issue { ${ISSUE_FIELDS} }
+  }
+}`;
+
+// Creates a new Linear issue, e.g. to mirror a GitHub-sourced Work Queue item
+// into Linear the first time someone starts work on it. Returns the created
+// issue (with its `identifier`) or throws on failure — callers treat this as
+// best-effort and must not undo an already-applied local status change.
+export const createIssue = async ({ teamId, title, description, fetchImpl = fetch }) => {
+  if (!teamId || !title) {
+    const error = new LinearApiError('teamId and title are required to create a Linear issue', { status: 400 });
+    throw error;
+  }
+  const data = await graphqlWithStoredAuth({
+    query: ISSUE_CREATE_MUTATION,
+    variables: { input: { teamId, title, description: description || undefined } },
+    fetchImpl,
+  });
+  const payload = data?.issueCreate;
+  if (!payload?.success || !payload.issue) {
+    throw new LinearApiError('Linear rejected issue creation', { status: 0 });
+  }
+  return payload.issue;
 };
 
 const ISSUE_UPDATE_ASSIGNEE_MUTATION = `mutation OpenChamberIssueUpdateAssignee($id: String!, $assigneeId: String!) {

@@ -1,5 +1,5 @@
 import { getOctokitOrNull } from '../github/octokit.js';
-import { graphqlWithStoredAuth, ISSUES_ASSIGNED_QUERY } from '../linear/client.js';
+import { graphqlWithStoredAuth, ISSUES_ASSIGNED_QUERY, fetchTeamsWithStoredAuth } from '../linear/client.js';
 import { upsertSyncedItems, listItems, findItem, patchItem } from './store.js';
 import { getTrackedRepos } from './settings.js';
 import { extractLinearRef } from './dedup.js';
@@ -177,6 +177,18 @@ async function syncGitHub() {
   return { connected: true, added, updated, failedRepos };
 }
 
+// A GitHub item that already had a Linear issue auto-created for it (see
+// routes.js's in-progress transition) must not also appear as its own,
+// second card once that Linear issue shows up in a normal Linear sync — the
+// GitHub card is the single source of truth for that pairing.
+function alreadyLinkedFromGithub() {
+  return new Set(
+    listItems({ source: 'github' })
+      .filter((item) => item.linkedLinearId)
+      .map((item) => item.linkedLinearId),
+  );
+}
+
 async function syncLinear() {
   let data;
   try {
@@ -192,7 +204,9 @@ async function syncLinear() {
     return { connected: true, added: 0, updated: 0, failed: true };
   }
 
-  const nodes = Array.isArray(data?.issues?.nodes) ? data.issues.nodes : [];
+  const linkedFromGithub = alreadyLinkedFromGithub();
+  const nodes = (Array.isArray(data?.issues?.nodes) ? data.issues.nodes : [])
+    .filter((issue) => !linkedFromGithub.has(issue.id));
   const items = nodes.map((issue) => ({
     source: 'linear',
     sourceId: issue.id,
@@ -220,4 +234,29 @@ export async function syncAll() {
   const linear = await syncLinear();
   const github = await syncGitHub();
   return { github, linear };
+}
+
+// Picks a team to create a brand-new Linear issue under when a GitHub item
+// (which has no team of its own) is taken into progress. Prefers the team
+// already used by this workspace's synced Linear issues (authoritative — it
+// reflects where this user's actual work lives) over an arbitrary pick from
+// every team the connection can see; only falls back to the latter when no
+// Linear item has synced yet.
+export async function resolveDefaultLinearTeam() {
+  const used = new Map();
+  for (const item of listItems({ source: 'linear' })) {
+    if (!item.team) continue;
+    used.set(item.team, (used.get(item.team) || 0) + 1);
+  }
+  if (used.size > 0) {
+    const [teamId] = Array.from(used.entries()).sort((a, b) => b[1] - a[1])[0];
+    return teamId;
+  }
+  try {
+    const teams = await fetchTeamsWithStoredAuth();
+    return teams[0]?.id || null;
+  } catch (error) {
+    console.warn('[workqueue] failed to resolve a default Linear team:', error?.message || error);
+    return null;
+  }
 }

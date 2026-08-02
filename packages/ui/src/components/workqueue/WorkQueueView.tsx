@@ -115,6 +115,7 @@ export const WorkQueueView: React.FC<WorkQueueViewProps> = ({ onClose }) => {
     void moveItem(workQueue, id, status).then((warning) => {
       if (warning?.linearSyncWarning) toast.warning(t('workQueue.board.toast.linearSyncFailed'));
       if (warning?.assigneeSyncWarning) toast.warning(t('workQueue.board.toast.assigneeSyncFailed'));
+      if (warning?.linearCreateWarning) toast.warning(t('workQueue.board.toast.linearCreateFailed'));
     });
   };
 
