@@ -1,13 +1,7 @@
-/**
- * Map Claude Agent SDK messages → OpenCode-shaped canonical events.
- * Unknown event types are ignored safely (no throw).
- *
- * Part/message IDs use OpenCode ascending format so the UI Binary.search
- * ordering matches chronological stream order (random UUIDs break tool/text
- * interleaving in the transcript).
- */
+/** Map Claude Agent SDK messages to OpenCode-shaped canonical events. */
 
 import crypto from 'node:crypto';
+import { selectRejectedRateLimit } from '../retry-policy.js';
 
 const ID_RANDOM_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
 const ID_RANDOM_LENGTH = 14;
@@ -15,14 +9,10 @@ const ID_RANDOM_LENGTH = 14;
 let lastIdTimestamp = 0;
 let idCounter = 0;
 
-/**
- * @param {number} length
- * @returns {string}
- */
-function randomBase62(length) {
-  const bytes = crypto.randomBytes(length);
+function randomBase62() {
+  const bytes = crypto.randomBytes(ID_RANDOM_LENGTH);
   let result = '';
-  for (let i = 0; i < length; i += 1) {
+  for (let i = 0; i < ID_RANDOM_LENGTH; i += 1) {
     result += ID_RANDOM_CHARS[bytes[i] % ID_RANDOM_CHARS.length];
   }
   return result;
@@ -44,17 +34,13 @@ export function createOpenCodeId(prefix) {
   idCounter += 1;
 
   const value = BigInt(now) * BigInt(0x1000) + BigInt(idCounter);
-  const bytes = new Uint8Array(6);
-  for (let i = 0; i < 6; i += 1) {
-    bytes[i] = Number((value >> BigInt(40 - 8 * i)) & BigInt(0xff));
-  }
-
   let hex = '';
-  for (let i = 0; i < bytes.length; i += 1) {
-    hex += bytes[i].toString(16).padStart(2, '0');
+  for (let i = 0; i < 6; i += 1) {
+    const byte = Number((value >> BigInt(40 - 8 * i)) & BigInt(0xff));
+    hex += byte.toString(16).padStart(2, '0');
   }
 
-  return `${prefix}_${hex}${randomBase62(ID_RANDOM_LENGTH)}`;
+  return `${prefix}_${hex}${randomBase62()}`;
 }
 
 /** Test helper — reset ascending id clock state. */
@@ -62,6 +48,24 @@ export function resetOpenCodeIdState() {
   lastIdTimestamp = 0;
   idCounter = 0;
 }
+
+/**
+ * @typedef {object} ClaudeSubagentContext
+ * @property {string} sessionId
+ * @property {string} assistantMessageId
+ * @property {string} userMessageId
+ * @property {string} title
+ * @property {string} textPartId
+ * @property {string} reasoningPartId
+ * @property {Map<string, { partId: string, toolName: string, input: object, settled?: boolean }>} toolParts
+ * @property {string} accumulatedText
+ * @property {boolean} textPartStarted
+ * @property {boolean} needsNewTextSegment
+ * @property {string} accumulatedReasoning
+ * @property {boolean} reasoningPartStarted
+ * @property {boolean} needsNewReasoningSegment
+ * @property {boolean} created
+ */
 
 /**
  * @typedef {object} ClaudeMapperContext
@@ -82,30 +86,33 @@ export function resetOpenCodeIdState() {
  * @property {boolean} [needsNewReasoningSegment]
  * @property {boolean} [reasoningPartStarted]
  * @property {Set<string>} [askUserQuestionCallIds]
- * @property {Map<string, {
- *   sessionId: string,
- *   assistantMessageId: string,
- *   userMessageId: string,
- *   title: string,
- *   textPartId: string,
- *   reasoningPartId: string,
- *   toolParts: Map<string, { partId: string, toolName: string, input: object, settled?: boolean }>,
- *   accumulatedText: string,
- *   textPartStarted: boolean,
- *   needsNewTextSegment: boolean,
- *   accumulatedReasoning: string,
- *   reasoningPartStarted: boolean,
- *   needsNewReasoningSegment: boolean,
- *   created: boolean,
- * }>} [subagentByToolUseId]
+ * @property {Map<string, ClaudeSubagentContext>} [subagentByToolUseId]
  * @property {object | null} [lastInitCapabilities]
+ * @property {object | null} [latestRateLimitInfo]
+ * @property {{ uuid: string } | null} [parentRateLimitError]
+ * @property {boolean} [sdkRetryActive]
  */
 
-/**
- * Streamed assistant segments share one shape: an OpenCode part that grows by
- * deltas until a tool (or the turn end) closes it. Keyed by part type so text
- * and reasoning do not need parallel implementations.
- */
+const RATE_LIMIT_INFO_FIELDS = [
+  'status',
+  'resetsAt',
+  'rateLimitType',
+  'overageStatus',
+  'overageResetsAt',
+  'overageInUse',
+  'isUsingOverage',
+];
+
+function sanitizeRateLimitInfo(info) {
+  if (!info || typeof info !== 'object') return null;
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  for (const key of RATE_LIMIT_INFO_FIELDS) {
+    if (key in info) out[key] = info[key];
+  }
+  return out;
+}
+
 const SEGMENT_FIELDS = {
   text: {
     partId: 'textPartId',
@@ -121,21 +128,27 @@ const SEGMENT_FIELDS = {
   },
 };
 
+function trimmedText(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function finiteOrZero(value) {
+  return Number.isFinite(value) ? value : 0;
+}
+
+function emptyTokens() {
+  return { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };
+}
+
 /**
  * @param {Partial<ClaudeMapperContext>} input
  * @returns {ClaudeMapperContext}
  */
 export function createClaudeMapperContext(input) {
-  /** @type {Map<string, { partId: string, toolName: string, input: object }>} */
-  let toolParts = input.toolParts || new Map();
-  // Back-compat for older callers/tests that passed toolPartIds: Map<callId, partId>
-  if (!input.toolParts && input.toolPartIds instanceof Map) {
-    toolParts = new Map();
-    for (const [callId, partId] of input.toolPartIds.entries()) {
-      toolParts.set(callId, { partId, toolName: 'tool', input: {} });
-    }
-  }
-
   return {
     sessionId: input.sessionId,
     directory: input.directory,
@@ -143,7 +156,7 @@ export function createClaudeMapperContext(input) {
     assistantMessageId: input.assistantMessageId || createOpenCodeId('msg'),
     modelRef: input.modelRef || 'sonnet',
     textPartId: input.textPartId || createOpenCodeId('prt'),
-    toolParts,
+    toolParts: input.toolParts || new Map(),
     foreignSessionId: input.foreignSessionId,
     assistantCreatedAt: input.assistantCreatedAt || Date.now(),
     accumulatedText: input.accumulatedText || '',
@@ -156,10 +169,11 @@ export function createClaudeMapperContext(input) {
       || Boolean(input.accumulatedReasoning),
     subagentByToolUseId: input.subagentByToolUseId || new Map(),
     lastInitCapabilities: input.lastInitCapabilities || null,
+    latestRateLimitInfo: input.latestRateLimitInfo ?? null,
+    parentRateLimitError: input.parentRateLimitError ?? null,
+    sdkRetryActive: input.sdkRetryActive === true,
     askUserQuestionCallIds: input.askUserQuestionCallIds || new Set(),
-    tokens: input.tokens && typeof input.tokens === 'object'
-      ? input.tokens
-      : { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    tokens: input.tokens && typeof input.tokens === 'object' ? input.tokens : emptyTokens(),
     cost: Number.isFinite(input.cost) ? input.cost : 0,
   };
 }
@@ -167,24 +181,49 @@ export function createClaudeMapperContext(input) {
 const SUBAGENT_SESSION_PREFIX = 'ses_claude_sub_';
 
 /**
- * Deterministic child session id for a Claude Agent tool_use call.
+ * Map a Claude tool name onto the OpenCode tool id the shared UI renders.
+ * Claude's own subagent tools (`Agent`, `Task`) render through the OpenCode
+ * `task` tool part (Agent Task row, nested summary, "Open subtask" link), so
+ * they must arrive with the `task` id instead of their internal name.
+ *
+ * @param {string} toolName
+ * @returns {string}
+ */
+export function claudeToolNameToOpenCodeId(toolName) {
+  const name = trimmedText(toolName);
+  if (name === 'Agent' || name === 'Task') return 'task';
+  return name || 'tool';
+}
+
+/**
+ * Human label for a tool part title on completion. The mapped `task` tool
+ * shows "Agent Task" rather than the raw internal `Agent`/`Task` name.
+ *
+ * @param {string} toolName
+ * @returns {string}
+ */
+export function claudeToolPartTitle(toolName) {
+  const name = trimmedText(toolName);
+  if (name === 'Agent' || name === 'Task') return 'Agent Task';
+  return name || 'tool';
+}
+
+/**
+ * Deterministic synthetic OpenCode session id for a Claude subagent. The
+ * parent session tail plus the Agent/Task tool_use id keep it stable for the
+ * whole turn and reproducible for permission asks spawned inside the
+ * subagent (see `permissions.js`).
+ *
  * @param {string} parentSessionId
  * @param {string} toolUseId
  * @returns {string}
  */
-function claudeSubagentSessionId(parentSessionId, toolUseId) {
+export function claudeSubagentSessionId(parentSessionId, toolUseId) {
   const safeTool = String(toolUseId || 'agent').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24) || 'agent';
   return `${SUBAGENT_SESSION_PREFIX}${parentSessionId.slice(-12)}_${safeTool}`;
 }
 
-/**
- * Subagent sessions exist only in the transcript: no `session.status` is ever
- * emitted for them, so a turn snapshot keyed by one would sit `idle` forever
- * and consume the bounded snapshot budget that real sessions need.
- *
- * @param {string} sessionId
- * @returns {boolean}
- */
+/** Subagent sessions are transcript-only and must not consume snapshot space. */
 export function isClaudeSubagentSessionId(sessionId) {
   return typeof sessionId === 'string' && sessionId.startsWith(SUBAGENT_SESSION_PREFIX);
 }
@@ -193,22 +232,23 @@ export function isClaudeSubagentSessionId(sessionId) {
  * @param {ClaudeMapperContext} parentCtx
  * @param {string} toolUseId
  * @param {string} [title]
+ * @returns {ClaudeSubagentContext | null}
  */
 function ensureSubagentContext(parentCtx, toolUseId, title) {
   if (!toolUseId) return null;
-  let child = parentCtx.subagentByToolUseId.get(toolUseId);
-  if (child) {
-    if (title && title.trim() && child.title === 'Subagent') {
-      child.title = title.trim().slice(0, 120);
-    }
-    return child;
+  const requestedTitle = trimmedText(title).slice(0, 120);
+
+  const existing = parentCtx.subagentByToolUseId.get(toolUseId);
+  if (existing) {
+    if (requestedTitle && existing.title === 'Subagent') existing.title = requestedTitle;
+    return existing;
   }
-  const sessionId = claudeSubagentSessionId(parentCtx.sessionId, toolUseId);
-  child = {
-    sessionId,
+
+  const child = {
+    sessionId: claudeSubagentSessionId(parentCtx.sessionId, toolUseId),
     assistantMessageId: createOpenCodeId('msg'),
     userMessageId: createOpenCodeId('msg'),
-    title: (typeof title === 'string' && title.trim() ? title.trim() : 'Subagent').slice(0, 120),
+    title: requestedTitle || 'Subagent',
     textPartId: createOpenCodeId('prt'),
     reasoningPartId: createOpenCodeId('prt'),
     toolParts: new Map(),
@@ -226,90 +266,66 @@ function ensureSubagentContext(parentCtx, toolUseId, title) {
 
 /**
  * @param {ClaudeMapperContext} parentCtx
- * @param {ReturnType<typeof ensureSubagentContext>} child
+ * @param {ClaudeSubagentContext | null} child
  * @returns {object[]}
  */
 function buildSubagentCreatedEvents(parentCtx, child) {
   if (!child || child.created) return [];
   child.created = true;
   const now = Date.now();
-  return [{
-    type: 'session.created',
-    properties: {
-      info: {
-        id: child.sessionId,
-        parentID: parentCtx.sessionId,
-        title: child.title,
-        time: { created: now, updated: now },
-      },
-    },
-  }];
+  return [{ type: 'session.created', properties: { info: {
+    id: child.sessionId,
+    parentID: parentCtx.sessionId,
+    title: child.title,
+    time: { created: now, updated: now },
+  } } }];
 }
 
-/**
- * Temporarily project a child subagent onto the mapper context fields that
- * content-block helpers read/write, then restore.
- *
- * @param {ClaudeMapperContext} parentCtx
- * @param {NonNullable<ReturnType<typeof ensureSubagentContext>>} child
- * @param {() => object[]} fn
- * @returns {object[]}
- */
-function withSubagentContext(parentCtx, child, fn) {
-  const snapshot = {
-    sessionId: parentCtx.sessionId,
-    assistantMessageId: parentCtx.assistantMessageId,
-    userMessageId: parentCtx.userMessageId,
-    textPartId: parentCtx.textPartId,
-    reasoningPartId: parentCtx.reasoningPartId,
-    toolParts: parentCtx.toolParts,
-    accumulatedText: parentCtx.accumulatedText,
-    textPartStarted: parentCtx.textPartStarted,
-    needsNewTextSegment: parentCtx.needsNewTextSegment,
-    accumulatedReasoning: parentCtx.accumulatedReasoning,
-    reasoningPartStarted: parentCtx.reasoningPartStarted,
-    needsNewReasoningSegment: parentCtx.needsNewReasoningSegment,
-  };
+/** Identity fields are read from the child but never written back. */
+const CHILD_IDENTITY_FIELDS = ['sessionId', 'assistantMessageId', 'userMessageId'];
+const CHILD_STREAM_FIELDS = [
+  'textPartId', 'reasoningPartId', 'toolParts', 'accumulatedText', 'textPartStarted',
+  'needsNewTextSegment', 'accumulatedReasoning', 'reasoningPartStarted', 'needsNewReasoningSegment',
+];
 
-  parentCtx.sessionId = child.sessionId;
-  parentCtx.assistantMessageId = child.assistantMessageId;
-  parentCtx.userMessageId = child.userMessageId;
-  parentCtx.textPartId = child.textPartId;
-  parentCtx.reasoningPartId = child.reasoningPartId;
-  parentCtx.toolParts = child.toolParts;
-  parentCtx.accumulatedText = child.accumulatedText;
-  parentCtx.textPartStarted = child.textPartStarted;
-  parentCtx.needsNewTextSegment = child.needsNewTextSegment;
-  parentCtx.accumulatedReasoning = child.accumulatedReasoning;
-  parentCtx.reasoningPartStarted = child.reasoningPartStarted;
-  parentCtx.needsNewReasoningSegment = child.needsNewReasoningSegment;
+/** Temporarily map shared content helpers over a child context. */
+function withSubagentContext(parentCtx, child, fn) {
+  const snapshot = {};
+  for (const field of [...CHILD_IDENTITY_FIELDS, ...CHILD_STREAM_FIELDS]) {
+    snapshot[field] = parentCtx[field];
+    parentCtx[field] = child[field];
+  }
 
   try {
     return fn();
   } finally {
-    child.textPartId = parentCtx.textPartId;
-    child.reasoningPartId = parentCtx.reasoningPartId;
-    child.toolParts = parentCtx.toolParts;
-    child.accumulatedText = parentCtx.accumulatedText;
-    child.textPartStarted = parentCtx.textPartStarted;
-    child.needsNewTextSegment = parentCtx.needsNewTextSegment;
-    child.accumulatedReasoning = parentCtx.accumulatedReasoning;
-    child.reasoningPartStarted = parentCtx.reasoningPartStarted;
-    child.needsNewReasoningSegment = parentCtx.needsNewReasoningSegment;
-
-    parentCtx.sessionId = snapshot.sessionId;
-    parentCtx.assistantMessageId = snapshot.assistantMessageId;
-    parentCtx.userMessageId = snapshot.userMessageId;
-    parentCtx.textPartId = snapshot.textPartId;
-    parentCtx.reasoningPartId = snapshot.reasoningPartId;
-    parentCtx.toolParts = snapshot.toolParts;
-    parentCtx.accumulatedText = snapshot.accumulatedText;
-    parentCtx.textPartStarted = snapshot.textPartStarted;
-    parentCtx.needsNewTextSegment = snapshot.needsNewTextSegment;
-    parentCtx.accumulatedReasoning = snapshot.accumulatedReasoning;
-    parentCtx.reasoningPartStarted = snapshot.reasoningPartStarted;
-    parentCtx.needsNewReasoningSegment = snapshot.needsNewReasoningSegment;
+    for (const field of CHILD_STREAM_FIELDS) child[field] = parentCtx[field];
+    for (const field of Object.keys(snapshot)) parentCtx[field] = snapshot[field];
   }
+}
+
+function sessionStatusEvent(sessionId, status) {
+  return { type: 'session.status', properties: { sessionID: sessionId, status } };
+}
+
+function assistantUpdatedEvent(ctx, completed) {
+  return { type: 'message.updated', properties: { info: assistantInfo(ctx, completed) } };
+}
+
+/** Wrap part fields in the canonical `message.part.updated` envelope. */
+function partEvent(ctx, part) {
+  return {
+    type: 'message.part.updated',
+    properties: {
+      sessionID: ctx.sessionId,
+      part: {
+        id: part.id,
+        sessionID: ctx.sessionId,
+        messageID: part.messageID || ctx.assistantMessageId,
+        ...part,
+      },
+    },
+  };
 }
 
 /**
@@ -337,68 +353,34 @@ export function buildUserMessageEvents(ctx, text, files) {
         },
       },
     },
-    {
-      type: 'message.part.updated',
-      properties: {
-        sessionID: ctx.sessionId,
-        part: {
-          id: createOpenCodeId('prt'),
-          sessionID: ctx.sessionId,
-          messageID: ctx.userMessageId,
-          type: 'text',
-          text: typeof text === 'string' ? text : '',
-          time: { start: now, end: now },
-        },
-      },
-    },
+    partEvent(ctx, {
+      id: createOpenCodeId('prt'),
+      messageID: ctx.userMessageId,
+      type: 'text',
+      text: typeof text === 'string' ? text : '',
+      time: { start: now, end: now },
+    }),
   ];
 
-  if (Array.isArray(files)) {
-    for (const file of files) {
-      if (!file || typeof file !== 'object') continue;
-      const mime = typeof file.mime === 'string' ? file.mime : '';
-      const url = typeof file.url === 'string' ? file.url : '';
-      const filename = typeof file.filename === 'string' && file.filename.trim()
-        ? file.filename.trim()
-        : 'attachment';
-      if (!url) continue;
-      events.push({
-        type: 'message.part.updated',
-        properties: {
-          sessionID: ctx.sessionId,
-          part: {
-            id: createOpenCodeId('prt'),
-            sessionID: ctx.sessionId,
-            messageID: ctx.userMessageId,
-            type: 'file',
-            mime,
-            url,
-            filename,
-            time: { start: now, end: now },
-          },
-        },
-      });
-    }
+  for (const file of asArray(files)) {
+    if (!file || typeof file !== 'object') continue;
+    const url = typeof file.url === 'string' ? file.url : '';
+    if (!url) continue;
+    events.push(partEvent(ctx, {
+      id: createOpenCodeId('prt'),
+      messageID: ctx.userMessageId,
+      type: 'file',
+      mime: typeof file.mime === 'string' ? file.mime : '',
+      url,
+      filename: trimmedText(file.filename) || 'attachment',
+      time: { start: now, end: now },
+    }));
   }
 
-  events.push({
-    type: 'session.status',
-    properties: {
-      sessionID: ctx.sessionId,
-      status: { type: 'busy' },
-    },
-  });
-
+  events.push(sessionStatusEvent(ctx.sessionId, { type: 'busy' }));
   return events;
 }
 
-/**
- * Map Claude Agent SDK usage into OpenCode-shaped token counters.
- * Goal budgets read `input + cache.read + output` from the latest assistant.
- *
- * @param {unknown} usage
- * @returns {{ input: number, output: number, reasoning: number, cache: { read: number, write: number } }}
- */
 function mapClaudeUsageToTokens(usage) {
   const source = usage && typeof usage === 'object' ? usage : {};
   const num = (value) => {
@@ -440,9 +422,7 @@ function applyUsageToContext(ctx, usage, totalCostUsd) {
 }
 
 function assistantInfo(ctx, completed) {
-  const tokens = ctx.tokens && typeof ctx.tokens === 'object'
-    ? ctx.tokens
-    : { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };
+  const tokens = ctx.tokens && typeof ctx.tokens === 'object' ? ctx.tokens : emptyTokens();
   const info = {
     id: ctx.assistantMessageId,
     sessionID: ctx.sessionId,
@@ -460,14 +440,14 @@ function assistantInfo(ctx, completed) {
       cwd: ctx.directory,
       root: ctx.directory,
     },
-    cost: Number.isFinite(ctx.cost) ? ctx.cost : 0,
+    cost: finiteOrZero(ctx.cost),
     tokens: {
-      input: Number.isFinite(tokens.input) ? tokens.input : 0,
-      output: Number.isFinite(tokens.output) ? tokens.output : 0,
-      reasoning: Number.isFinite(tokens.reasoning) ? tokens.reasoning : 0,
+      input: finiteOrZero(tokens.input),
+      output: finiteOrZero(tokens.output),
+      reasoning: finiteOrZero(tokens.reasoning),
       cache: {
-        read: Number.isFinite(tokens.cache?.read) ? tokens.cache.read : 0,
-        write: Number.isFinite(tokens.cache?.write) ? tokens.cache.write : 0,
+        read: finiteOrZero(tokens.cache?.read),
+        write: finiteOrZero(tokens.cache?.write),
       },
     },
   };
@@ -475,13 +455,6 @@ function assistantInfo(ctx, completed) {
   return info;
 }
 
-/**
- * After a tool part, subsequent assistant output must use a fresh part id so the
- * transcript shows text → tools → text instead of merging all text above tools.
- *
- * @param {ClaudeMapperContext} ctx
- * @param {'text' | 'reasoning'} kind
- */
 function beginNewSegment(ctx, kind) {
   const field = SEGMENT_FIELDS[kind];
   ctx[field.partId] = createOpenCodeId('prt');
@@ -490,26 +463,35 @@ function beginNewSegment(ctx, kind) {
   ctx[field.needsNew] = false;
 }
 
-/**
- * Open the segment part if needed, then emit one growth delta.
- *
- * @param {ClaudeMapperContext} ctx
- * @param {'text' | 'reasoning'} kind
- * @param {string} delta
- * @returns {object[]}
- */
+function startSegmentEvents(ctx, kind) {
+  const field = SEGMENT_FIELDS[kind];
+  ctx[field.started] = true;
+  return [
+    assistantUpdatedEvent(ctx, false),
+    partEvent(ctx, {
+      id: ctx[field.partId],
+      type: kind,
+      text: '',
+      time: { start: Date.now() },
+    }),
+  ];
+}
+
+/** Open the segment, starting a fresh part when the previous one closed at a tool boundary. */
+function openSegmentEvents(ctx, kind) {
+  const field = SEGMENT_FIELDS[kind];
+  if (ctx[field.needsNew]) {
+    beginNewSegment(ctx, kind);
+  } else if (ctx[field.started]) {
+    return [];
+  }
+  return startSegmentEvents(ctx, kind);
+}
+
 function segmentDeltaEvents(ctx, kind, delta) {
   if (typeof delta !== 'string' || !delta) return [];
   const field = SEGMENT_FIELDS[kind];
-  const events = [];
-
-  if (ctx[field.needsNew]) {
-    beginNewSegment(ctx, kind);
-  }
-
-  if (!ctx[field.started]) {
-    events.push(...startSegmentEvents(ctx, kind));
-  }
+  const events = openSegmentEvents(ctx, kind);
 
   ctx[field.accumulated] = (ctx[field.accumulated] || '') + delta;
   events.push({
@@ -525,51 +507,7 @@ function segmentDeltaEvents(ctx, kind, delta) {
   return events;
 }
 
-/**
- * Emit the assistant-message + empty-part pair that opens a segment.
- *
- * @param {ClaudeMapperContext} ctx
- * @param {'text' | 'reasoning'} kind
- * @returns {object[]}
- */
-function startSegmentEvents(ctx, kind) {
-  const field = SEGMENT_FIELDS[kind];
-  ctx[field.started] = true;
-  return [
-    {
-      type: 'message.updated',
-      properties: { info: assistantInfo(ctx, false) },
-    },
-    {
-      type: 'message.part.updated',
-      properties: {
-        sessionID: ctx.sessionId,
-        part: {
-          id: ctx[field.partId],
-          sessionID: ctx.sessionId,
-          messageID: ctx.assistantMessageId,
-          type: kind,
-          text: '',
-          time: { start: Date.now() },
-        },
-      },
-    },
-  ];
-}
-
-/**
- * Reconcile a complete content block against what streaming already emitted.
- *
- * Deltas are preferred while streaming; the full block fills in when no partials
- * arrived. When the full block diverges from the accumulated stream (rather than
- * merely extending it) the segment is rewritten wholesale — dropping the block
- * would silently lose the tail.
- *
- * @param {ClaudeMapperContext} ctx
- * @param {'text' | 'reasoning'} kind
- * @param {string} full
- * @returns {object[]}
- */
+/** Reconcile a complete block with any deltas already emitted. */
 function segmentCompletionEvents(ctx, kind, full) {
   const field = SEGMENT_FIELDS[kind];
   const accumulated = ctx[field.accumulated] || '';
@@ -588,13 +526,45 @@ function segmentCompletionEvents(ctx, kind, full) {
   return events;
 }
 
+function finalizeSegment(ctx, kind) {
+  const field = SEGMENT_FIELDS[kind];
+  if (!ctx[field.started]) return [];
+  return [partEvent(ctx, {
+    id: ctx[field.partId],
+    type: kind,
+    text: ctx[field.accumulated] || '',
+    time: { start: ctx.assistantCreatedAt, end: Date.now() },
+  })];
+}
+
+/** Reasoning closes before the answer it produced. */
+function finalizeOpenSegments(ctx) {
+  return [...finalizeSegment(ctx, 'reasoning'), ...finalizeSegment(ctx, 'text')];
+}
+
+function toolPartEvent(ctx, callId, entry, state) {
+  return partEvent(ctx, {
+    id: entry.partId,
+    type: 'tool',
+    callID: callId,
+    tool: claudeToolNameToOpenCodeId(entry.toolName),
+    state,
+  });
+}
+
 /**
+ * Subagent metadata attached to the Agent/Task tool part at tool_use time.
+ * The child session id must survive tool completion, otherwise the UI's
+ * "Open subtask" link disappears once the tool finishes.
+ *
  * @param {ClaudeMapperContext} ctx
- * @param {string} delta
- * @returns {object[]}
+ * @param {string} callId
+ * @returns {{ sessionId: string, title: string } | undefined}
  */
-function textDeltaEvents(ctx, delta) {
-  return segmentDeltaEvents(ctx, 'text', delta);
+function childToolMetadata(ctx, callId) {
+  const child = ctx.subagentByToolUseId?.get(callId);
+  if (!child) return undefined;
+  return { sessionId: child.sessionId, title: child.title };
 }
 
 /**
@@ -607,98 +577,58 @@ function mapContentBlock(ctx, block) {
   if (block.type === 'text' && typeof block.text === 'string') {
     return segmentCompletionEvents(ctx, 'text', block.text);
   }
-
-  // Extended thinking is requested via the `effort` option; surface it as an
-  // OpenCode reasoning part instead of dropping it. Redacted thinking carries
-  // no readable text, so it is skipped.
   if (block.type === 'thinking' && typeof block.thinking === 'string') {
     return segmentCompletionEvents(ctx, 'reasoning', block.thinking);
   }
+  if (block.type !== 'tool_use') return [];
 
-  if (block.type === 'tool_use') {
-    const callId = typeof block.id === 'string' ? block.id : createOpenCodeId('call');
-    const toolName = typeof block.name === 'string' && block.name.trim() ? block.name.trim() : 'tool';
+  const callId = typeof block.id === 'string' ? block.id : createOpenCodeId('call');
+  const toolName = trimmedText(block.name) || 'tool';
 
-    // The AskUserQuestion tool is bridged to OpenCode question cards via the
-    // canUseTool callback; do not render a generic tool part for it.
-    if (toolName === 'AskUserQuestion') {
-      ctx.askUserQuestionCallIds.add(callId);
-      ctx.needsNewTextSegment = true;
-      ctx.needsNewReasoningSegment = true;
-      return [];
-    }
+  // Any tool boundary closes the current text/reasoning segments.
+  ctx.needsNewTextSegment = true;
+  ctx.needsNewReasoningSegment = true;
 
-    let entry = ctx.toolParts.get(callId);
-    if (!entry) {
-      entry = {
-        partId: createOpenCodeId('prt'),
-        toolName,
-        input: {},
-      };
-      ctx.toolParts.set(callId, entry);
-    } else if (toolName !== 'tool') {
-      entry.toolName = toolName;
-    }
-
-    const input = block.input && typeof block.input === 'object' ? block.input : {};
-    // Retained so the completed/error state can echo the same arguments — the UI
-    // reducer replaces `part.state` wholesale, so omitting them blanks the args.
-    if (Object.keys(input).length > 0 || !entry.input) entry.input = input;
-    // Preserve wall-clock start across running → completed so long tools keep a
-    // real duration instead of collapsing to 0s when the result event arrives.
-    if (typeof entry.startedAt !== 'number') entry.startedAt = Date.now();
-    // Next assistant output belongs after this tool in transcript order.
-    ctx.needsNewTextSegment = true;
-    ctx.needsNewReasoningSegment = true;
-
-    const events = [
-      {
-        type: 'message.updated',
-        properties: { info: assistantInfo(ctx, false) },
-      },
-      {
-        type: 'message.part.updated',
-        properties: {
-          sessionID: ctx.sessionId,
-          part: {
-            id: entry.partId,
-            sessionID: ctx.sessionId,
-            messageID: ctx.assistantMessageId,
-            type: 'tool',
-            callID: callId,
-            tool: entry.toolName,
-            state: {
-              status: 'running',
-              input,
-              time: { start: entry.startedAt },
-            },
-          },
-        },
-      },
-    ];
-
-    // Claude Agent tool → nested OpenChamber child session (subagent UI).
-    const isAgentTool = entry.toolName === 'Agent' || entry.toolName === 'Task';
-    if (isAgentTool && callId) {
-      const description = typeof input.description === 'string' && input.description.trim()
-        ? input.description.trim()
-        : typeof input.prompt === 'string' && input.prompt.trim()
-          ? input.prompt.trim().slice(0, 80)
-          : typeof input.subagent_type === 'string' && input.subagent_type.trim()
-            ? input.subagent_type.trim()
-            : 'Subagent';
-      const child = ensureSubagentContext(ctx, callId, description);
-      events.unshift(...buildSubagentCreatedEvents(ctx, child));
-      events[events.length - 1].properties.part.state.metadata = {
-        sessionId: child.sessionId,
-        title: child.title,
-      };
-    }
-
-    return events;
+  if (toolName === 'AskUserQuestion') {
+    ctx.askUserQuestionCallIds.add(callId);
+    return [];
   }
 
-  return [];
+  let entry = ctx.toolParts.get(callId);
+  if (!entry) {
+    entry = { partId: createOpenCodeId('prt'), toolName, input: {} };
+    ctx.toolParts.set(callId, entry);
+  } else if (toolName !== 'tool') {
+    entry.toolName = toolName;
+  }
+
+  const input = block.input && typeof block.input === 'object' ? block.input : {};
+  if (Object.keys(input).length > 0 || !entry.input) entry.input = input;
+  if (typeof entry.startedAt !== 'number') entry.startedAt = Date.now();
+
+  const events = [
+    assistantUpdatedEvent(ctx, false),
+    toolPartEvent(ctx, callId, entry, {
+      status: 'running',
+      input,
+      time: { start: entry.startedAt },
+    }),
+  ];
+
+  const isAgentTool = entry.toolName === 'Agent' || entry.toolName === 'Task';
+  if (!isAgentTool || !callId) return events;
+
+  const description = trimmedText(input.description)
+    || trimmedText(input.prompt).slice(0, 80)
+    || trimmedText(input.subagent_type)
+    || 'Subagent';
+  const child = ensureSubagentContext(ctx, callId, description);
+  events.unshift(...buildSubagentCreatedEvents(ctx, child));
+  events[events.length - 1].properties.part.state.metadata = {
+    sessionId: child.sessionId,
+    title: child.title,
+  };
+  return events;
 }
 
 /**
@@ -709,107 +639,45 @@ function mapContentBlock(ctx, block) {
 function mapToolResultBlock(ctx, block) {
   if (!block || block.type !== 'tool_result') return [];
   const callId = typeof block.tool_use_id === 'string' ? block.tool_use_id : '';
-  if (!callId) return [];
-  if (ctx.askUserQuestionCallIds?.has(callId)) {
-    return [];
-  }
+  if (!callId || ctx.askUserQuestionCallIds?.has(callId)) return [];
+
   let entry = ctx.toolParts.get(callId);
   if (!entry) {
     entry = { partId: createOpenCodeId('prt'), toolName: 'tool', input: {} };
     ctx.toolParts.set(callId, entry);
   }
-  const input = entry.input && typeof entry.input === 'object' ? entry.input : {};
   entry.settled = true;
-  const output = typeof block.content === 'string'
-    ? block.content
-    : Array.isArray(block.content)
-      ? block.content.map((c) => (typeof c?.text === 'string' ? c.text : '')).join('\n')
-      : '';
-  const isError = block.is_error === true;
+
+  let output = '';
+  if (typeof block.content === 'string') {
+    output = block.content;
+  } else if (Array.isArray(block.content)) {
+    output = block.content.map((item) => (typeof item?.text === 'string' ? item.text : '')).join('\n');
+  }
+
+  const input = entry.input && typeof entry.input === 'object' ? entry.input : {};
   const endedAt = Date.now();
-  const startedAt = typeof entry.startedAt === 'number' ? entry.startedAt : endedAt;
-  return [
-    {
-      type: 'message.part.updated',
-      properties: {
-        sessionID: ctx.sessionId,
-        part: {
-          id: entry.partId,
-          sessionID: ctx.sessionId,
-          messageID: ctx.assistantMessageId,
-          type: 'tool',
-          callID: callId,
-          tool: entry.toolName,
-          state: isError
-            ? {
-              status: 'error',
-              input,
-              error: output || 'Tool error',
-              time: { start: startedAt, end: endedAt },
-            }
-            : {
-              status: 'completed',
-              input,
-              output: output || '',
-              title: entry.toolName,
-              metadata: {},
-              time: { start: startedAt, end: endedAt },
-            },
-        },
-      },
-    },
-  ];
+  const time = { start: typeof entry.startedAt === 'number' ? entry.startedAt : endedAt, end: endedAt };
+  const childMeta = childToolMetadata(ctx, callId);
+  const state = block.is_error === true
+    ? {
+      status: 'error',
+      input,
+      error: output || 'Tool error',
+      ...(childMeta ? { metadata: childMeta } : {}),
+      time,
+    }
+    : {
+      status: 'completed',
+      input,
+      output,
+      title: claudeToolPartTitle(entry.toolName),
+      metadata: childMeta ?? {},
+      time,
+    };
+  return [toolPartEvent(ctx, callId, entry, state)];
 }
 
-/**
- * Finalize one open segment (if any) by writing its complete text.
- *
- * @param {ClaudeMapperContext} ctx
- * @param {'text' | 'reasoning'} kind
- * @returns {object[]}
- */
-function finalizeSegment(ctx, kind) {
-  const field = SEGMENT_FIELDS[kind];
-  if (!ctx[field.started]) return [];
-  return [{
-    type: 'message.part.updated',
-    properties: {
-      sessionID: ctx.sessionId,
-      part: {
-        id: ctx[field.partId],
-        sessionID: ctx.sessionId,
-        messageID: ctx.assistantMessageId,
-        type: kind,
-        text: ctx[field.accumulated] || '',
-        time: { start: ctx.assistantCreatedAt, end: Date.now() },
-      },
-    },
-  }];
-}
-
-/**
- * Finalize every open assistant segment. Reasoning closes before text so the
- * transcript keeps thinking above the answer it produced.
- *
- * @param {ClaudeMapperContext} ctx
- * @returns {object[]}
- */
-function finalizeOpenSegments(ctx) {
-  return [...finalizeSegment(ctx, 'reasoning'), ...finalizeSegment(ctx, 'text')];
-}
-
-/**
- * Terminal events for one mapper context — the parent turn, or a subagent
- * projected onto it by `withSubagentContext`.
- *
- * Without these, every tool part left `running` and the open text/reasoning
- * segment keep their spinner in the transcript forever — the closing marker
- * lands on a fresh message and never closes the parts already on screen.
- *
- * @param {ClaudeMapperContext} ctx
- * @param {string} reason
- * @returns {object[]}
- */
 function buildContextClosureEvents(ctx, reason) {
   const events = finalizeOpenSegments(ctx);
   const now = Date.now();
@@ -817,79 +685,156 @@ function buildContextClosureEvents(ctx, reason) {
   for (const [callId, entry] of ctx.toolParts?.entries() ?? []) {
     if (!entry || entry.settled) continue;
     entry.settled = true;
-    events.push({
-      type: 'message.part.updated',
-      properties: {
-        sessionID: ctx.sessionId,
-        part: {
-          id: entry.partId,
-          sessionID: ctx.sessionId,
-          messageID: ctx.assistantMessageId,
-          type: 'tool',
-          callID: callId,
-          tool: entry.toolName,
-          state: {
-            status: 'error',
-            input: entry.input && typeof entry.input === 'object' ? entry.input : {},
-            error: reason,
-            time: {
-              start: typeof entry.startedAt === 'number' ? entry.startedAt : ctx.assistantCreatedAt,
-              end: now,
-            },
-          },
-        },
+    const childMeta = childToolMetadata(ctx, callId);
+    events.push(toolPartEvent(ctx, callId, entry, {
+      status: 'error',
+      input: entry.input && typeof entry.input === 'object' ? entry.input : {},
+      error: reason,
+      ...(childMeta ? { metadata: childMeta } : {}),
+      time: {
+        start: typeof entry.startedAt === 'number' ? entry.startedAt : ctx.assistantCreatedAt,
+        end: now,
       },
-    });
+    }));
   }
 
   return events;
 }
 
-/**
- * Close every live subagent context.
- *
- * Subagent tool calls and text segments live in `ctx.subagentByToolUseId`, not
- * in `ctx.toolParts`, so walking the parent alone leaves a nested transcript
- * spinning forever once the turn stops.
- *
- * @param {ClaudeMapperContext} ctx
- * @param {string} reason
- * @returns {object[]}
- */
-function buildSubagentClosureEvents(ctx, reason) {
+/** Subagents close before the parent turn. */
+function buildTurnClosureEvents(ctx, reason) {
   const events = [];
   for (const child of ctx.subagentByToolUseId?.values() ?? []) {
     events.push(...withSubagentContext(ctx, child, () => [
       ...buildContextClosureEvents(ctx, reason),
-      { type: 'message.updated', properties: { info: assistantInfo(ctx, true) } },
+      assistantUpdatedEvent(ctx, true),
     ]));
   }
+  events.push(...buildContextClosureEvents(ctx, reason));
   return events;
 }
 
-/**
- * Terminal events for a turn cut short by abort, subagents first.
- *
- * @param {ClaudeMapperContext} ctx
- * @param {string} [reason]
- * @returns {object[]}
- */
 export function buildTurnAbortEvents(ctx, reason = 'Aborted by user') {
   if (!ctx || typeof ctx !== 'object') return [];
-  return [
-    ...buildSubagentClosureEvents(ctx, reason),
-    ...buildContextClosureEvents(ctx, reason),
-  ];
+  return buildTurnClosureEvents(ctx, reason);
+}
+
+/** The SDK retry banner clears on the first parent content of the new attempt. */
+function clearSdkRetryEvents(ctx, isParent, hasContent) {
+  if (!ctx.sdkRetryActive || !isParent || !hasContent) return [];
+  ctx.sdkRetryActive = false;
+  return [sessionStatusEvent(ctx.sessionId, { type: 'busy' })];
 }
 
 /**
- * Map one SDK message into zero or more canonical events.
- * Mutates ctx for streaming state (accumulated text, foreign id, tool ids).
- *
  * @param {ClaudeMapperContext} ctx
  * @param {object} message
- * @returns {{ events: object[], foreignSessionId?: string, capabilities?: object }}
+ * @param {string | undefined} foreignSessionId
+ * @returns {{ events: object[], capabilities?: object }}
  */
+function mapSystemMessage(ctx, message, foreignSessionId) {
+  if (message.subtype === 'init') {
+    const capabilities = {
+      slash_commands: asArray(message.slash_commands),
+      skills: asArray(message.skills),
+      agents: asArray(message.agents),
+      tools: asArray(message.tools),
+      mcp_servers: asArray(message.mcp_servers),
+      session_id: foreignSessionId,
+    };
+    ctx.lastInitCapabilities = capabilities;
+    return { events: [], capabilities };
+  }
+
+  if (message.subtype === 'compact_boundary') {
+    const pre = message.compact_metadata?.pre_tokens;
+    const trigger = message.compact_metadata?.trigger;
+    const notice = [
+      'Conversation compacted',
+      typeof pre === 'number' ? `(pre-compaction tokens: ${pre})` : '',
+      trigger ? `trigger: ${trigger}` : '',
+    ].filter(Boolean).join(' · ');
+    return { events: [
+      ...segmentDeltaEvents(ctx, 'text', notice),
+      ...finalizeOpenSegments(ctx),
+      assistantUpdatedEvent(ctx, true),
+      sessionStatusEvent(ctx.sessionId, { type: 'idle' }),
+    ] };
+  }
+
+  if (message.subtype === 'api_retry') {
+    ctx.sdkRetryActive = true;
+    const retryDelayMs = Number.isFinite(message.retry_delay_ms) ? message.retry_delay_ms : 0;
+    return { events: [sessionStatusEvent(ctx.sessionId, {
+      type: 'retry',
+      attempt: Number.isFinite(message.attempt) ? message.attempt : 1,
+      message: 'api-retry',
+      next: Date.now() + retryDelayMs,
+    })] };
+  }
+
+  return { events: [] };
+}
+
+/**
+ * @param {ClaudeMapperContext} ctx
+ * @param {object} event
+ * @returns {object[]}
+ */
+function mapStreamEvent(ctx, event) {
+  if (event.type === 'content_block_delta') {
+    const delta = event.delta;
+    if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+      return segmentDeltaEvents(ctx, 'text', delta.text);
+    }
+    if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+      return segmentDeltaEvents(ctx, 'reasoning', delta.thinking);
+    }
+    return [];
+  }
+
+  if (event.type !== 'content_block_start') return [];
+
+  const block = event.content_block;
+  if (block?.type === 'tool_use') return mapContentBlock(ctx, block);
+  if (block?.type === 'text') return openSegmentEvents(ctx, 'text');
+  if (block?.type === 'thinking') return openSegmentEvents(ctx, 'reasoning');
+  return [];
+}
+
+/**
+ * @param {ClaudeMapperContext} ctx
+ * @param {object} message
+ * @param {boolean} isParent
+ * @returns {object[]}
+ */
+function mapAssistantError(ctx, message, isParent) {
+  const events = [];
+  if (isParent && message.error === 'rate_limit') {
+    ctx.parentRateLimitError = { uuid: typeof message.uuid === 'string' ? message.uuid : '' };
+  } else if (isParent) {
+    events.push(sessionStatusEvent(ctx.sessionId, { type: 'idle' }));
+  }
+
+  events.push({
+    type: 'message.updated',
+    properties: {
+      info: {
+        ...assistantInfo(ctx, true),
+        error: {
+          name: 'APIError',
+          data: {
+            message: String(message.error),
+            isRetryable: message.error === 'rate_limit' || message.error === 'overloaded',
+          },
+        },
+      },
+    },
+  });
+  return events;
+}
+
+/** Map one SDK message and mutate the context's stream state. */
 export function mapClaudeMessageToEvents(ctx, message) {
   if (!message || typeof message !== 'object') {
     return { events: [] };
@@ -899,21 +844,20 @@ export function mapClaudeMessageToEvents(ctx, message) {
   let foreignSessionId;
   /** @type {object | undefined} */
   let capabilities;
+  /** @type {{ type: 'rate-limit', rateLimitType: string, resetAt: number, assistantUuid: string } | undefined} */
+  let terminal;
 
   if (typeof message.session_id === 'string' && message.session_id) {
     foreignSessionId = message.session_id;
     ctx.foreignSessionId = foreignSessionId;
   }
 
-  const parentToolUseId = typeof message.parent_tool_use_id === 'string'
-    ? message.parent_tool_use_id.trim()
-    : '';
+  const parentToolUseId = trimmedText(message.parent_tool_use_id);
+  const isParent = !parentToolUseId;
 
-  /**
-   * @param {() => object[]} mapFn
-   */
+  /** Run a mapper against the owning context — the parent, or the addressed subagent. */
   const mapMaybeNested = (mapFn) => {
-    if (!parentToolUseId) {
+    if (isParent) {
       events.push(...mapFn());
       return;
     }
@@ -924,116 +868,38 @@ export function mapClaudeMessageToEvents(ctx, message) {
 
   switch (message.type) {
     case 'system': {
-      if (message.subtype === 'init') {
-        if (typeof message.session_id === 'string') {
-          foreignSessionId = message.session_id;
-          ctx.foreignSessionId = foreignSessionId;
-        }
-        capabilities = {
-          slash_commands: Array.isArray(message.slash_commands) ? message.slash_commands : [],
-          skills: Array.isArray(message.skills) ? message.skills : [],
-          agents: Array.isArray(message.agents) ? message.agents : [],
-          tools: Array.isArray(message.tools) ? message.tools : [],
-          mcp_servers: Array.isArray(message.mcp_servers) ? message.mcp_servers : [],
-          session_id: foreignSessionId,
-        };
-        ctx.lastInitCapabilities = capabilities;
-      } else if (message.subtype === 'compact_boundary') {
-        const pre = message.compact_metadata?.pre_tokens;
-        const trigger = message.compact_metadata?.trigger;
-        const notice = [
-          'Conversation compacted',
-          typeof pre === 'number' ? `(pre-compaction tokens: ${pre})` : '',
-          trigger ? `trigger: ${trigger}` : '',
-        ].filter(Boolean).join(' · ');
-        events.push(...segmentDeltaEvents(ctx, 'text', notice));
-        events.push(...finalizeOpenSegments(ctx));
-        events.push({
-          type: 'message.updated',
-          properties: { info: assistantInfo(ctx, true) },
-        });
-        events.push({
-          type: 'session.status',
-          properties: {
-            sessionID: ctx.sessionId,
-            status: { type: 'idle' },
-          },
-        });
-      }
+      const mapped = mapSystemMessage(ctx, message, foreignSessionId);
+      events.push(...mapped.events);
+      capabilities = mapped.capabilities;
       break;
     }
 
     case 'stream_event': {
       const event = message.event;
       if (!event || typeof event !== 'object') break;
-      mapMaybeNested(() => {
-        const nested = [];
-        if (event.type === 'content_block_delta') {
-          const delta = event.delta;
-          if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
-            nested.push(...segmentDeltaEvents(ctx, 'text', delta.text));
-          } else if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
-            nested.push(...segmentDeltaEvents(ctx, 'reasoning', delta.thinking));
-          }
-        } else if (event.type === 'content_block_start') {
-          const block = event.content_block;
-          if (block?.type === 'tool_use') {
-            nested.push(...mapContentBlock(ctx, block));
-          } else {
-            const kind = block?.type === 'text'
-              ? 'text'
-              : block?.type === 'thinking' ? 'reasoning' : null;
-            if (kind) {
-              const field = SEGMENT_FIELDS[kind];
-              if (ctx[field.needsNew] || !ctx[field.started]) {
-                if (ctx[field.needsNew]) beginNewSegment(ctx, kind);
-                nested.push(...startSegmentEvents(ctx, kind));
-              }
-            }
-          }
-        }
-        return nested;
-      });
+      events.push(...clearSdkRetryEvents(
+        ctx,
+        isParent,
+        event.type === 'content_block_delta' || event.type === 'content_block_start',
+      ));
+      mapMaybeNested(() => mapStreamEvent(ctx, event));
+      break;
+    }
+
+    case 'rate_limit_event': {
+      ctx.latestRateLimitInfo = sanitizeRateLimitInfo(message.rate_limit_info);
       break;
     }
 
     case 'assistant': {
+      const content = message.message?.content;
+      events.push(...clearSdkRetryEvents(ctx, isParent, asArray(content).length > 0));
       mapMaybeNested(() => {
         const nested = [];
-        const content = message.message?.content;
-        if (Array.isArray(content)) {
-          for (const block of content) {
-            nested.push(...mapContentBlock(ctx, block));
-          }
+        for (const block of asArray(content)) {
+          nested.push(...mapContentBlock(ctx, block));
         }
-        if (message.error) {
-          // Only the parent turn owns session busy/idle. A subagent error still
-          // has to land on its own message instead of vanishing silently.
-          if (!parentToolUseId) {
-            nested.push({
-              type: 'session.status',
-              properties: {
-                sessionID: ctx.sessionId,
-                status: { type: 'idle' },
-              },
-            });
-          }
-          nested.push({
-            type: 'message.updated',
-            properties: {
-              info: {
-                ...assistantInfo(ctx, true),
-                error: {
-                  name: 'APIError',
-                  data: {
-                    message: String(message.error),
-                    isRetryable: message.error === 'rate_limit' || message.error === 'overloaded',
-                  },
-                },
-              },
-            },
-          });
-        }
+        if (message.error) nested.push(...mapAssistantError(ctx, message, isParent));
         return nested;
       });
       break;
@@ -1042,11 +908,8 @@ export function mapClaudeMessageToEvents(ctx, message) {
     case 'user': {
       mapMaybeNested(() => {
         const nested = [];
-        const content = message.message?.content;
-        if (Array.isArray(content)) {
-          for (const block of content) {
-            nested.push(...mapToolResultBlock(ctx, block));
-          }
+        for (const block of asArray(message.message?.content)) {
+          nested.push(...mapToolResultBlock(ctx, block));
         }
         return nested;
       });
@@ -1058,48 +921,39 @@ export function mapClaudeMessageToEvents(ctx, message) {
       const hasContent = ctx.textPartStarted || ctx.reasoningPartStarted
         || ctx.toolParts.size > 0 || Boolean(resultText);
 
-      // Prefer turn-total usage on the result message so goal budgets see the
-      // same counters OpenCode sessions expose on assistant.info.tokens.
       applyUsageToContext(ctx, message.usage, message.total_cost_usd);
 
-      // Non-streaming turns carry their whole answer on the result message.
       if (!ctx.textPartStarted && resultText) {
         events.push(...segmentDeltaEvents(ctx, 'text', resultText));
       }
-      // `result` is terminal: anything still open can never settle afterwards.
-      // Close nested subagent transcripts before the parent's own parts.
-      events.push(...buildSubagentClosureEvents(ctx, 'Turn ended'));
-      events.push(...buildContextClosureEvents(ctx, 'Turn ended'));
-      if (hasContent) {
-        events.push({
-          type: 'message.updated',
-          properties: { info: assistantInfo(ctx, true) },
-        });
+      events.push(...buildTurnClosureEvents(ctx, 'Turn ended'));
+      if (hasContent) events.push(assistantUpdatedEvent(ctx, true));
+
+      ctx.sdkRetryActive = false;
+
+      const rejected = selectRejectedRateLimit(ctx.latestRateLimitInfo);
+      if (ctx.parentRateLimitError && rejected) {
+        terminal = {
+          type: 'rate-limit',
+          rateLimitType: rejected.rateLimitType,
+          resetAt: rejected.resetAt,
+          assistantUuid: ctx.parentRateLimitError.uuid,
+        };
+        break;
       }
 
-      const isError = message.is_error === true || (typeof message.subtype === 'string' && message.subtype.startsWith('error_'));
-      events.push({
-        type: 'session.status',
-        properties: {
-          sessionID: ctx.sessionId,
-          status: { type: 'idle' },
-        },
-      });
+      events.push(sessionStatusEvent(ctx.sessionId, { type: 'idle' }));
+      const isError = message.is_error === true
+        || (typeof message.subtype === 'string' && message.subtype.startsWith('error_'));
       if (isError) {
-        events.push({
-          type: 'session.error',
-          properties: {
-            sessionID: ctx.sessionId,
-          },
-        });
+        events.push({ type: 'session.error', properties: { sessionID: ctx.sessionId } });
       }
       break;
     }
 
     default:
-      // Ignore unknown types safely.
       break;
   }
 
-  return { events, foreignSessionId, capabilities };
+  return { events, foreignSessionId, capabilities, terminal, rateLimitInfo: ctx.latestRateLimitInfo ?? null };
 }

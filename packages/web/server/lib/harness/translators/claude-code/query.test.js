@@ -1,41 +1,51 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startClaudeQuery } from './query.js';
+import { buildRecoveryUserMessage, RECOVERY_MARKER } from './recovery-transcript.js';
 
-describe('startClaudeQuery effort option', () => {
-  /** @type {string | undefined} */
-  let tempDir;
+let tempDir;
 
-  afterEach(() => {
-    if (tempDir) {
-      rmSync(tempDir, { recursive: true, force: true });
-      tempDir = undefined;
-    }
+beforeEach(() => {
+  tempDir = mkdtempSync(join(tmpdir(), 'oc-claude-query-'));
+});
+
+afterEach(() => {
+  rmSync(tempDir, { recursive: true, force: true });
+});
+
+const captureQueryImpl = (capture) => ({ options, prompt }) => {
+  capture.options = options;
+  capture.prompt = prompt;
+  return {
+    async *[Symbol.asyncIterator]() {},
+    interrupt: async () => {},
+  };
+};
+
+async function runQuery(params = {}) {
+  const capture = {};
+  const handle = await startClaudeQuery({
+    prompt: 'hi',
+    cwd: tempDir,
+    includePartialMessages: false,
+    queryImpl: captureQueryImpl(capture),
+    ...params,
   });
+  handle.close();
+  return capture;
+}
 
-  it('forwards effort to the Claude Agent SDK query options', async () => {
-    tempDir = mkdtempSync(join(tmpdir(), 'oc-claude-effort-'));
-    /** @type {unknown} */
-    let seenOptions;
-    const handle = await startClaudeQuery({
-      prompt: 'hi',
-      cwd: tempDir,
+describe('startClaudeQuery options', () => {
+  it('forwards standard options and defaults', async () => {
+    const { options } = await runQuery({
       model: 'sonnet',
       effort: 'high',
       permissionMode: 'default',
-      includePartialMessages: false,
-      queryImpl: ({ options }) => {
-        seenOptions = options;
-        return {
-          async *[Symbol.asyncIterator]() {},
-          interrupt: async () => {},
-        };
-      },
     });
 
-    expect(seenOptions).toMatchObject({
+    expect(options).toMatchObject({
       model: 'sonnet',
       effort: 'high',
       permissionMode: 'default',
@@ -45,155 +55,77 @@ describe('startClaudeQuery effort option', () => {
       agentProgressSummaries: true,
       settingSources: ['user', 'project', 'local'],
     });
-    await handle.close?.();
   });
 
-  it('forwards mcpServers and allowedTools', async () => {
-    tempDir = mkdtempSync(join(tmpdir(), 'oc-claude-mcp-'));
-    /** @type {unknown} */
-    let seenOptions;
-    const handle = await startClaudeQuery({
-      prompt: 'hi',
-      cwd: tempDir,
-      includePartialMessages: false,
-      mcpServers: {
-        fs: { type: 'stdio', command: 'node', args: ['server.js'] },
-      },
-      allowedTools: ['Agent', 'mcp__fs__*'],
-      queryImpl: ({ options }) => {
-        seenOptions = options;
-        return {
-          async *[Symbol.asyncIterator]() {},
-          interrupt: async () => {},
-        };
-      },
-    });
-    expect(seenOptions).toMatchObject({
-      mcpServers: {
-        fs: { type: 'stdio', command: 'node', args: ['server.js'] },
-      },
-      allowedTools: ['Agent', 'mcp__fs__*'],
-    });
-    await handle.close?.();
+  it('forwards MCP servers and allowed tools', async () => {
+    const mcpServers = { fs: { type: 'stdio', command: 'node', args: ['server.js'] } };
+    const allowedTools = ['Agent', 'mcp__fs__*'];
+    const { options } = await runQuery({ mcpServers, allowedTools });
+    expect(options).toMatchObject({ mcpServers, allowedTools });
   });
-  it('forwards Claude Code preset systemPrompt with OpenCode agent append', async () => {
-    tempDir = mkdtempSync(join(tmpdir(), 'oc-claude-sysprompt-'));
-    /** @type {unknown} */
-    let seenOptions;
-    const handle = await startClaudeQuery({
-      prompt: 'hi',
-      cwd: tempDir,
-      systemPrompt: {
-        type: 'preset',
-        preset: 'claude_code',
-        append: 'Use OpenChamber build agent conventions.',
-      },
-      includePartialMessages: false,
-      queryImpl: ({ options }) => {
-        seenOptions = options;
-        return {
-          async *[Symbol.asyncIterator]() {},
-          interrupt: async () => {},
-        };
-      },
-    });
 
-    expect(seenOptions).toMatchObject({
-      systemPrompt: {
-        type: 'preset',
-        preset: 'claude_code',
-        append: 'Use OpenChamber build agent conventions.',
-      },
-    });
-    await handle.close?.();
+  it('forwards the Claude Code preset with an OpenCode agent append', async () => {
+    const systemPrompt = {
+      type: 'preset',
+      preset: 'claude_code',
+      append: 'Use OpenChamber build agent conventions.',
+    };
+    expect((await runQuery({ systemPrompt })).options.systemPrompt).toEqual(systemPrompt);
   });
-});
 
-describe('startClaudeQuery permissionMode allowlist', () => {
-  /** @type {string | undefined} */
-  let tempDir;
-
-  afterEach(() => {
-    if (tempDir) {
-      rmSync(tempDir, { recursive: true, force: true });
-      tempDir = undefined;
+  it('only forwards allowlisted permission modes', async () => {
+    for (const permissionMode of ['default', 'acceptEdits', 'plan']) {
+      expect((await runQuery({ permissionMode })).options.permissionMode).toBe(permissionMode);
+    }
+    for (const permissionMode of ['bypassPermissions', 'totallyMadeUp']) {
+      expect((await runQuery({ permissionMode })).options).not.toHaveProperty('permissionMode');
     }
   });
 
-  const runWith = async (permissionMode) => {
-    tempDir = mkdtempSync(join(tmpdir(), 'oc-claude-perm-'));
-    let seenOptions;
-    const handle = await startClaudeQuery({
-      prompt: 'hi',
-      cwd: tempDir,
-      permissionMode,
-      includePartialMessages: false,
-      queryImpl: ({ options }) => {
-        seenOptions = options;
-        return { async *[Symbol.asyncIterator]() {}, interrupt: async () => {} };
-      },
-    });
-    await handle.close?.();
-    return seenOptions;
-  };
-
-  for (const mode of ['default', 'acceptEdits', 'plan']) {
-    it(`forwards the inherited mode "${mode}"`, async () => {
-      expect((await runWith(mode)).permissionMode).toBe(mode);
-    });
-  }
-
-  it('drops bypassPermissions so canUseTool cannot be defeated', async () => {
-    expect(await runWith('bypassPermissions')).not.toHaveProperty('permissionMode');
-  });
-
-  it('drops unknown modes', async () => {
-    expect(await runWith('totallyMadeUp')).not.toHaveProperty('permissionMode');
+  it('only forwards recognized effort levels', async () => {
+    for (const effort of ['low', 'medium', 'high', 'xhigh', 'max']) {
+      expect((await runQuery({ effort })).options.effort).toBe(effort);
+    }
+    for (const effort of [undefined, '  ', 'ultra']) {
+      expect((await runQuery({ effort })).options).not.toHaveProperty('effort');
+    }
   });
 });
 
-describe('startClaudeQuery effort forwarding', () => {
-  /** @type {string | undefined} */
-  let tempDir;
-
-  afterEach(() => {
-    if (tempDir) {
-      rmSync(tempDir, { recursive: true, force: true });
-      tempDir = undefined;
-    }
+describe('startClaudeQuery internal hooks', () => {
+  it('forwards a non-empty hooks object unchanged', async () => {
+    const hooks = { PreToolUse: [{ hooks: [async () => ({ continue: true })] }] };
+    expect((await runQuery({ hooks })).options.hooks).toBe(hooks);
   });
 
-  const runWith = async (effort) => {
-    tempDir = mkdtempSync(join(tmpdir(), 'oc-claude-effort-'));
-    let seenOptions;
-    const handle = await startClaudeQuery({
-      prompt: 'hi',
-      cwd: tempDir,
-      effort,
-      includePartialMessages: false,
-      queryImpl: ({ options }) => {
-        seenOptions = options;
-        return { async *[Symbol.asyncIterator]() {}, interrupt: async () => {} };
-      },
-    });
-    await handle.close?.();
-    return seenOptions;
-  };
-
-  // The SDK turns this into the CLI's `--effort <level>` flag, so the composer
-  // control only has an effect if the level actually lands in options.
-  for (const level of ['low', 'medium', 'high', 'xhigh', 'max']) {
-    it(`forwards the selected level "${level}"`, async () => {
-      expect((await runWith(level)).effort).toBe(level);
-    });
-  }
-
-  it('omits effort for the SDK default', async () => {
-    expect(await runWith(undefined)).not.toHaveProperty('effort');
-    expect(await runWith('  ')).not.toHaveProperty('effort');
+  it('omits absent and empty hooks', async () => {
+    expect((await runQuery()).options).not.toHaveProperty('hooks');
+    expect((await runQuery({ hooks: {} })).options).not.toHaveProperty('hooks');
   });
 
-  it('drops an unknown level instead of failing the turn on an invalid flag', async () => {
-    expect(await runWith('ultra')).not.toHaveProperty('effort');
+  it('does not read hooks from a client-body-shaped nested field', async () => {
+    const body = { hooks: { PreToolUse: [{ hooks: [async () => ({ continue: true })] }] } };
+    expect((await runQuery({ body })).options).not.toHaveProperty('hooks');
+  });
+});
+
+describe('startClaudeQuery synthetic recovery prompt', () => {
+  it('passes the async iterable through with its recovery metadata intact', async () => {
+    const recovery = buildRecoveryUserMessage('launch-uuid-123');
+    const prompt = (async function* recoveryPrompt() { yield recovery; })();
+    const capture = await runQuery({ prompt });
+
+    expect(capture.prompt).toBe(prompt);
+    const collected = [];
+    for await (const message of capture.prompt) collected.push(message);
+    expect(collected).toHaveLength(1);
+    expect(collected[0]).toMatchObject({
+      type: 'user',
+      isSynthetic: true,
+      priority: 'now',
+      uuid: 'launch-uuid-123',
+      parent_tool_use_id: null,
+    });
+    expect(collected[0].message.content[0].text.startsWith(RECOVERY_MARKER)).toBe(true);
   });
 });

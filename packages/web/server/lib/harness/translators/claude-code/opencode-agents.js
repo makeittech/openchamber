@@ -1,44 +1,19 @@
 /**
- * OpenCode agent inheritance for the Claude Code harness (`agentsMode: 'opencode'`).
- *
- * Claude Code has no concept of an OpenCode agent. Before this module the
- * "Agents to use → OpenCode" setting only mapped the selected agent's `edit`
- * rule onto a Claude `permissionMode`, so an agent that allows `bash` still
- * produced a PermissionCard for every command, and the agent's own prompt was
- * the only other thing inherited.
- *
- * This module resolves the agent **from OpenCode itself** per turn and turns it
- * into three Claude SDK inputs:
- *
- * | OpenCode agent field | Claude SDK input |
- * | --- | --- |
- * | `prompt` (selected primary agent) | `systemPrompt.append` on the `claude_code` preset |
- * | `permission` (selected primary agent) | tool policy consulted by `canUseTool` |
- * | non-built-in subagents | `agents` (`Record<string, AgentDefinition>`) |
- *
- * The ruleset is **never taken from the client**, for the same reason the
- * command template is not (`opencode-command.js`): a prompt body carrying
- * `{"*": "allow"}` would otherwise disable the permission bridge outright,
- * which is exactly what the `bypassPermissions` allowlist in `query.js` exists
- * to prevent. Only the agent *name* travels; the server re-reads `GET /agent`.
+ * Resolve OpenCode agent prompts, permissions, and subagents for Claude turns.
+ * Only the agent name comes from the client; rules are re-read from OpenCode.
  */
 
 /** Agent lookup budget — a slow OpenCode must not hang the turn. */
 const AGENT_LOOKUP_TIMEOUT_MS = 10_000;
-
 /** Bound on registered subagents so a huge catalog cannot bloat every turn. */
 const MAX_SUBAGENT_DEFINITIONS = 50;
-
 /** Bound on inherited prompt text (per agent). */
 const MAX_PROMPT_CHARS = 100_000;
 
 /**
- * Claude tool name → OpenCode permission key.
- *
- * OpenCode names permissions after its own tools, so the bridge has to map.
- * Anything absent falls back to the lowercased Claude tool name, which lets a
- * user write a rule for a Claude-only tool (`websearch`, `todowrite`, …)
- * without this table needing to know about it.
+ * Claude tool name → OpenCode permission key. Anything absent falls back to the
+ * lowercased Claude tool name, so a rule for a Claude-only tool (`websearch`,
+ * `todowrite`, …) works without this table knowing about it.
  */
 const TOOL_PERMISSION_KEYS = Object.freeze({
   bash: 'bash',
@@ -63,7 +38,7 @@ const TOOL_PERMISSION_KEYS = Object.freeze({
 });
 
 /**
- * Tool input fields that carry the value an OpenCode `pattern` matches against,
+ * Tool input fields carrying the value an OpenCode `pattern` matches against,
  * in priority order per permission key.
  */
 const TOOL_PATTERN_FIELDS = Object.freeze({
@@ -78,20 +53,12 @@ const TOOL_PATTERN_FIELDS = Object.freeze({
   skill: ['skill', 'name'],
 });
 
-/**
- * @param {unknown} value
- * @returns {string}
- */
+/** @param {unknown} value @returns {string} */
 function asTrimmedString(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-/**
- * @param {string} message
- * @param {string} code
- * @param {number} statusCode
- * @returns {Error & { code: string, statusCode: number }}
- */
+/** @returns {Error & { code: string, statusCode: number }} */
 function agentError(message, code, statusCode) {
   const error = new Error(message);
   error.code = code;
@@ -100,19 +67,8 @@ function agentError(message, code, statusCode) {
 }
 
 /**
- * Escape regex metacharacters except the glob wildcards handled by the caller.
- * @param {string} value
- * @returns {string}
- */
-function escapeForGlob(value) {
-  return value.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-}
-
-/**
- * Match an OpenCode permission `pattern` against a tool argument.
- *
- * OpenCode patterns are globs over the command/path string (`*` any run,
- * `?` one character). `*` alone matches everything, including tools whose
+ * Match an OpenCode permission `pattern` (a glob: `*` any run, `?` one char)
+ * against a tool argument. `*` alone matches everything, including tools whose
  * arguments this bridge cannot represent.
  *
  * @param {string} pattern
@@ -126,14 +82,9 @@ export function matchesPermissionPattern(pattern, candidate) {
   // A concrete pattern cannot be proven against an argument the tool did not
   // supply — fail closed so an unmatched rule never widens access.
   if (!subject) return false;
-  const source = `^${escapeForGlob(normalized).replace(/\*/g, '.*').replace(/\?/g, '.')}$`;
-  let expression;
-  try {
-    expression = new RegExp(source, 's');
-  } catch {
-    return false;
-  }
-  return expression.test(subject);
+  const escaped = normalized.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  const source = `^${escaped.replace(/\*/g, '.*').replace(/\?/g, '.')}$`;
+  return new RegExp(source, 's').test(subject);
 }
 
 /**
@@ -144,21 +95,15 @@ export function matchesPermissionPattern(pattern, candidate) {
  * @returns {{ key: string, candidate: string }}
  */
 export function resolveToolPermissionTarget(toolName, input) {
-  const raw = asTrimmedString(toolName);
-  const lower = raw.toLowerCase();
+  const lower = asTrimmedString(toolName).toLowerCase();
   // MCP tools arrive as `mcp__<server>__<tool>`; OpenCode names the whole call
   // the same way, so the full name is the permission key.
-  const key = lower.startsWith('mcp__')
-    ? lower
-    : (TOOL_PERMISSION_KEYS[lower] || lower);
+  const key = lower.startsWith('mcp__') ? lower : (TOOL_PERMISSION_KEYS[lower] || lower);
 
   const fields = TOOL_PATTERN_FIELDS[key];
-  if (!fields || !input || typeof input !== 'object') {
-    return { key, candidate: '' };
-  }
+  if (!fields || !input || typeof input !== 'object') return { key, candidate: '' };
   for (const field of fields) {
-    const value = /** @type {Record<string, unknown>} */ (input)[field];
-    const text = asTrimmedString(value);
+    const text = asTrimmedString(input[field]);
     if (text) return { key, candidate: text };
   }
   return { key, candidate: '' };
@@ -175,28 +120,22 @@ export function normalizePermissionRuleset(value) {
   const rules = [];
   for (const entry of value) {
     if (!entry || typeof entry !== 'object') continue;
-    const permission = asTrimmedString(/** @type {{ permission?: unknown }} */ (entry).permission).toLowerCase();
-    const action = asTrimmedString(/** @type {{ action?: unknown }} */ (entry).action).toLowerCase();
+    const permission = asTrimmedString(entry.permission).toLowerCase();
+    const action = asTrimmedString(entry.action).toLowerCase();
     if (!permission) continue;
     if (action !== 'allow' && action !== 'deny' && action !== 'ask') continue;
-    const rawPattern = /** @type {{ pattern?: unknown }} */ (entry).pattern;
     rules.push({
       permission,
-      pattern: typeof rawPattern === 'string' && rawPattern.trim() ? rawPattern.trim() : '*',
-      action: /** @type {'allow' | 'deny' | 'ask'} */ (action),
+      pattern: asTrimmedString(entry.pattern) || '*',
+      action,
     });
   }
   return rules;
 }
 
-/** A pattern that matches everything carries no specificity. */
-function isWildcardPattern(pattern) {
-  return pattern === '*' || pattern === '**';
-}
-
 /**
- * Last matching rule for one permission key, preferring a concrete pattern
- * over a catch-all one.
+ * Last matching rule for one permission key, preferring a concrete pattern over
+ * a catch-all one.
  *
  * Specificity has to beat position because OpenCode's resolved ruleset appends
  * broad config rules *after* narrow built-in ones: a real `build` agent ends
@@ -204,19 +143,15 @@ function isWildcardPattern(pattern) {
  * array. Pure last-wins would silently auto-approve reading `.env` files that
  * OpenCode itself still prompts for.
  *
- * @param {Array<{ permission: string, pattern: string, action: 'allow' | 'deny' | 'ask' }>} rules
- * @param {string} permission
- * @param {string} candidate
  * @returns {'allow' | 'deny' | 'ask' | null}
  */
 function resolveRuleAction(rules, permission, candidate) {
-  /** @type {'allow' | 'deny' | 'ask' | null} */
   let wildcardAction = null;
   for (let index = rules.length - 1; index >= 0; index -= 1) {
     const rule = rules[index];
     if (rule.permission !== permission) continue;
     if (!matchesPermissionPattern(rule.pattern, candidate)) continue;
-    if (!isWildcardPattern(rule.pattern)) return rule.action;
+    if (rule.pattern !== '*' && rule.pattern !== '**') return rule.action;
     if (wildcardAction === null) wildcardAction = rule.action;
   }
   return wildcardAction;
@@ -234,9 +169,7 @@ function resolveRuleAction(rules, permission, candidate) {
  */
 export function createOpenCodeToolPolicy(ruleset) {
   const rules = normalizePermissionRuleset(ruleset);
-  if (rules.length === 0) {
-    return () => 'ask';
-  }
+  if (rules.length === 0) return () => 'ask';
 
   return (toolName, input = {}) => {
     const { key, candidate } = resolveToolPermissionTarget(toolName, input);
@@ -262,14 +195,52 @@ export function claudePermissionModeFromEditAction(action) {
   return 'default';
 }
 
-/**
- * @param {unknown} agent
- * @returns {string}
- */
+/** @param {unknown} agent @returns {string} */
 function readAgentPrompt(agent) {
-  const prompt = asTrimmedString(/** @type {{ prompt?: unknown }} */ (agent)?.prompt);
-  if (!prompt) return '';
-  return prompt.length > MAX_PROMPT_CHARS ? prompt.slice(0, MAX_PROMPT_CHARS) : prompt;
+  return asTrimmedString(agent?.prompt).slice(0, MAX_PROMPT_CHARS);
+}
+
+/**
+ * OpenCode permission key → Claude tool names for `AgentDefinition` allow/
+ * disallow lists. A blanket OpenCode deny (`permission` + wildcard `*`) is
+ * pushed into the SDK's `disallowedTools` so the SDK refuses before
+ * `canUseTool` is even asked, matching OpenCode's silent deny.
+ */
+const PERMISSION_KEY_CLAUDE_TOOLS = Object.freeze({
+  bash: ['Bash', 'BashOutput', 'KillShell', 'KillBash'],
+  edit: ['Edit', 'MultiEdit', 'Write', 'NotebookEdit'],
+  read: ['Read', 'NotebookRead'],
+  glob: ['Glob'],
+  grep: ['Grep'],
+  webfetch: ['WebFetch'],
+  websearch: ['WebSearch'],
+  todowrite: ['TodoWrite', 'TodoRead'],
+  skill: ['Skill'],
+  task: ['Task', 'Agent'],
+});
+
+/**
+ * Claude tool names the SDK should refuse outright for a subagent: every
+ * blanket `deny` rule (wildcard pattern) on a known permission key maps to
+ * its Claude tools. Concrete-pattern denies cannot be expressed here and
+ * stay enforced by the `canUseTool` policy path.
+ *
+ * @param {unknown} ruleset
+ * @returns {string[]}
+ */
+export function claudeDisallowedToolNames(ruleset) {
+  const rules = normalizePermissionRuleset(ruleset);
+  const denied = [];
+  for (const rule of rules) {
+    if (rule.action !== 'deny') continue;
+    if (rule.pattern !== '*' && rule.pattern !== '**') continue;
+    const tools = PERMISSION_KEY_CLAUDE_TOOLS[rule.permission];
+    if (!tools) continue;
+    for (const tool of tools) {
+      if (!denied.includes(tool)) denied.push(tool);
+    }
+  }
+  return denied;
 }
 
 /**
@@ -283,30 +254,13 @@ function readAgentPrompt(agent) {
  */
 function buildToolAllowlist(tools) {
   if (!tools || typeof tools !== 'object' || Array.isArray(tools)) return null;
-  const entries = Object.entries(/** @type {Record<string, unknown>} */ (tools));
-  if (entries.length === 0) return null;
-  const disabled = entries.filter(([, enabled]) => enabled === false);
-  if (disabled.length === 0) return null;
+  const entries = Object.entries(tools);
+  if (!entries.some(([, enabled]) => enabled === false)) return null;
   const allowed = entries
     .filter(([, enabled]) => enabled !== false)
     .map(([name]) => name.trim())
     .filter(Boolean);
   return allowed.length > 0 ? allowed : null;
-}
-
-/**
- * Is this one of OpenCode's own shipped agents?
- *
- * The live `/agent` payload marks them `native: true` and has no `builtIn`
- * field at all, while the SDK type documents `builtIn`. Both are checked so a
- * schema change on either side cannot quietly turn every OpenCode built-in into
- * a registered Claude subagent.
- *
- * @param {Record<string, unknown>} entry
- * @returns {boolean}
- */
-function isOpenCodeShippedAgent(entry) {
-  return entry.native === true || entry.builtIn === true;
 }
 
 /**
@@ -316,9 +270,11 @@ function isOpenCodeShippedAgent(entry) {
  * `plan`, `general`, `explore`, …) report a `prompt` that is just the config
  * addendum from `opencode.json` — a one-liner, not a system prompt — and a
  * Claude `AgentDefinition.prompt` *replaces* that agent's whole system prompt.
- * Registering them would gut Claude's general-purpose/Explore agents instead of
- * substituting anything meaningful. Hidden agents (`title`, `summary`,
- * `compaction`) are internal machinery and never user-selectable.
+ * Registering them would gut Claude's general-purpose/Explore agents. The live
+ * `/agent` payload marks them `native`, while the SDK type documents `builtIn`;
+ * both are checked so a schema change on either side cannot quietly register
+ * every OpenCode built-in. Hidden agents (`title`, `summary`, `compaction`) are
+ * internal machinery and never user-selectable.
  *
  * @param {unknown[]} agents
  * @returns {Record<string, object>}
@@ -328,38 +284,36 @@ export function buildClaudeAgentDefinitions(agents) {
   /** @type {Record<string, object>} */
   const definitions = {};
 
-  for (const agent of agents) {
-    if (!agent || typeof agent !== 'object') continue;
+  for (const entry of agents) {
+    if (!entry || typeof entry !== 'object') continue;
     if (Object.keys(definitions).length >= MAX_SUBAGENT_DEFINITIONS) break;
 
-    const entry = /** @type {Record<string, unknown>} */ (agent);
     const name = asTrimmedString(entry.name);
     if (!name) continue;
-    if (isOpenCodeShippedAgent(entry)) continue;
-    if (entry.hidden === true) continue;
+    if (entry.native === true || entry.builtIn === true || entry.hidden === true) continue;
 
     const mode = asTrimmedString(entry.mode).toLowerCase();
     if (mode !== 'subagent' && mode !== 'all') continue;
 
-    const prompt = readAgentPrompt(entry);
     // Without a prompt there is nothing to substitute; Claude's own agent set
     // stays intact rather than gaining an empty-brained duplicate.
+    const prompt = readAgentPrompt(entry);
     if (!prompt) continue;
 
-    const description = asTrimmedString(entry.description)
-      || `OpenCode agent "${name}"`;
     const tools = buildToolAllowlist(entry.tools);
+    const disallowedTools = claudeDisallowedToolNames(entry.permission);
     const model = entry.model && typeof entry.model === 'object'
-      ? asTrimmedString(/** @type {{ modelID?: unknown }} */ (entry.model).modelID)
+      ? asTrimmedString(entry.model.modelID)
       : '';
 
     definitions[name] = {
-      description,
+      description: asTrimmedString(entry.description) || `OpenCode agent "${name}"`,
       prompt,
       ...(tools ? { tools } : {}),
+      ...(disallowedTools.length > 0 ? { disallowedTools } : {}),
       // OpenCode model ids are provider-scoped; only a bare Claude alias/id is
       // meaningful to the Agent SDK, so anything else inherits the main model.
-      ...(model && /^(fable|opus|sonnet|haiku|claude-)/i.test(model) ? { model } : {}),
+      ...(/^(fable|opus|sonnet|haiku|claude-)/i.test(model) ? { model } : {}),
     };
   }
 
@@ -381,13 +335,7 @@ export function buildClaudeAgentDefinitions(agents) {
  * @returns {Promise<unknown[]>}
  */
 export async function fetchOpenCodeAgents(params) {
-  const directory = asTrimmedString(params.directory);
-  const buildOpenCodeUrl = params.buildOpenCodeUrl;
-  const getAuthHeaders = typeof params.getOpenCodeAuthHeaders === 'function'
-    ? params.getOpenCodeAuthHeaders
-    : () => ({});
-  const fetchImpl = typeof params.fetchImpl === 'function' ? params.fetchImpl : fetch;
-
+  const { buildOpenCodeUrl } = params;
   if (typeof buildOpenCodeUrl !== 'function') {
     throw agentError(
       'OpenCode is unavailable, so agent definitions cannot be inherited',
@@ -395,6 +343,11 @@ export async function fetchOpenCodeAgents(params) {
       503,
     );
   }
+  const directory = asTrimmedString(params.directory);
+  const getAuthHeaders = typeof params.getOpenCodeAuthHeaders === 'function'
+    ? params.getOpenCodeAuthHeaders
+    : () => ({});
+  const fetchImpl = typeof params.fetchImpl === 'function' ? params.fetchImpl : fetch;
 
   let response;
   try {
@@ -434,7 +387,35 @@ export async function fetchOpenCodeAgents(params) {
  * @property {string} systemPromptAppend Selected agent's prompt (may be empty).
  * @property {(toolName: string, input?: Record<string, unknown>) => 'allow' | 'deny' | 'ask'} resolveToolPolicy
  * @property {Record<string, object>} agentDefinitions Claude subagent registrations.
+ * @property {Record<string, (toolName: string, input?: Record<string, unknown>) => 'allow' | 'deny' | 'ask'>} subagentPolicies
+ *   Lowercased OpenCode subagent name → its own tool policy, so permission asks
+ *   made *inside* a running subagent resolve against that subagent's ruleset
+ *   instead of the parent agent's.
  */
+
+/**
+ * Build a lowercased-name → tool policy map for every registered OpenCode
+ * subagent. Subagents without a ruleset ask for everything, matching the
+ * parent fallback — never a permissive default.
+ *
+ * @param {unknown[]} agents
+ * @returns {Record<string, (toolName: string, input?: Record<string, unknown>) => 'allow' | 'deny' | 'ask'>}
+ */
+function buildSubagentPolicies(agents) {
+  if (!Array.isArray(agents)) return {};
+  /** @type {Record<string, (toolName: string, input?: Record<string, unknown>) => 'allow' | 'deny' | 'ask'>} */
+  const policies = {};
+  for (const entry of agents) {
+    if (!entry || typeof entry !== 'object') continue;
+    const name = asTrimmedString(entry.name);
+    if (!name) continue;
+    if (entry.native === true || entry.builtIn === true || entry.hidden === true) continue;
+    const mode = asTrimmedString(entry.mode).toLowerCase();
+    if (mode !== 'subagent' && mode !== 'all') continue;
+    policies[name.toLowerCase()] = createOpenCodeToolPolicy(entry.permission);
+  }
+  return policies;
+}
 
 /**
  * Turn an OpenCode agent list into the Claude turn inputs.
@@ -448,20 +429,18 @@ export function buildOpenCodeAgentInheritance(agents, agentName) {
   const wanted = asTrimmedString(agentName).toLowerCase();
   const selected = wanted
     ? list.find((entry) => (
-      entry && typeof entry === 'object'
-      && asTrimmedString(/** @type {{ name?: unknown }} */ (entry).name).toLowerCase() === wanted
+      entry && typeof entry === 'object' && asTrimmedString(entry.name).toLowerCase() === wanted
     ))
     : undefined;
 
   return {
-    agentName: selected ? asTrimmedString(/** @type {{ name?: unknown }} */ (selected).name) : '',
+    agentName: selected ? asTrimmedString(selected.name) : '',
     systemPromptAppend: selected ? readAgentPrompt(selected) : '',
     // An unmatched agent inherits nothing and therefore asks for everything —
     // it must never fall through to a permissive default.
-    resolveToolPolicy: createOpenCodeToolPolicy(
-      selected ? /** @type {{ permission?: unknown }} */ (selected).permission : null,
-    ),
+    resolveToolPolicy: createOpenCodeToolPolicy(selected ? selected.permission : null),
     agentDefinitions: buildClaudeAgentDefinitions(list),
+    subagentPolicies: buildSubagentPolicies(list),
   };
 }
 
@@ -478,15 +457,15 @@ export function buildOpenCodeAgentInheritance(agents, agentName) {
  * @returns {((params: { directory: string, agentName?: string }) => Promise<OpenCodeAgentInheritance>) | null}
  */
 export function createOpenCodeAgentResolver(deps = {}) {
-  const buildOpenCodeUrl = deps.buildOpenCodeUrl;
+  const { buildOpenCodeUrl } = deps;
   if (typeof buildOpenCodeUrl !== 'function') return null;
-  return async (params) => {
-    const agents = await fetchOpenCodeAgents({
+  return async (params) => buildOpenCodeAgentInheritance(
+    await fetchOpenCodeAgents({
       directory: params.directory,
       buildOpenCodeUrl,
       getOpenCodeAuthHeaders: deps.getOpenCodeAuthHeaders,
       fetchImpl: deps.fetchImpl,
-    });
-    return buildOpenCodeAgentInheritance(agents, params.agentName);
-  };
+    }),
+    params.agentName,
+  );
 }

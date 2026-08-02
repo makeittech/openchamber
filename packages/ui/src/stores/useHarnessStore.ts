@@ -7,17 +7,15 @@ import { useProjectsStore } from '@/stores/useProjectsStore';
 import type { HarnessCatalog, HarnessId } from '@/types/harness';
 import { isHarnessId } from '@/types/harness';
 
-export type HarnessLoadState = 'idle' | 'loading' | 'ready' | 'error';
+type HarnessLoadState = 'idle' | 'loading' | 'ready' | 'error';
 
-export type HarnessStore = {
+type HarnessStore = {
   catalogs: HarnessCatalog[];
   catalogsById: Partial<Record<HarnessId, HarnessCatalog>>;
-  /** Distinct from ready+empty: authoritative fetch outcome. */
   loadState: HarnessLoadState;
   error: string | null;
   selectedHarnessId: HarnessId;
   isDetecting: Partial<Record<HarnessId, boolean>>;
-  /** Runtime/directory scope used for the last successful or in-flight load. */
   scopeKey: string | null;
 
   setSelectedHarnessId: (id: HarnessId) => void;
@@ -29,6 +27,7 @@ export type HarnessStore = {
 };
 
 const DEFAULT_SCOPE = '__default__';
+const JSON_HEADERS = { Accept: 'application/json' };
 
 let loadGeneration = 0;
 let refreshInFlight: { scopeKey: string; promise: Promise<boolean> } | null = null;
@@ -36,20 +35,20 @@ let refreshInFlight: { scopeKey: string; promise: Promise<boolean> } | null = nu
 const resolveDirectory = (): string | null => {
   try {
     const activeProject = useProjectsStore.getState().getActiveProject?.();
-    if (activeProject?.path?.trim()) {
-      return activeProject.path.trim();
-    }
+    const path = activeProject?.path?.trim();
+    if (path) return path;
   } catch {
-    // fall through
+    // Try the client directory.
   }
+
   try {
     const clientDir = opencodeClient.getDirectory();
-    if (typeof clientDir === 'string' && clientDir.trim().length > 0) {
-      return clientDir.trim();
-    }
+    const directory = typeof clientDir === 'string' ? clientDir.trim() : '';
+    if (directory) return directory;
   } catch {
-    // ignore
+    // No directory is available.
   }
+
   return null;
 };
 
@@ -72,14 +71,53 @@ const readErrorMessage = async (response: Response): Promise<string> => {
       return payload.message.trim();
     }
   } catch {
-    // ignore
+    // Use the status fallback below.
   }
   return `Request failed (${response.status})`;
 };
 
-const upsertCatalog = (catalogs: HarnessCatalog[], next: HarnessCatalog): HarnessCatalog[] => {
-  const without = catalogs.filter((entry) => entry.descriptor.id !== next.descriptor.id);
-  return [...without, next];
+const withCatalog = (catalogs: HarnessCatalog[], catalog: HarnessCatalog) => {
+  const next = [...catalogs.filter((entry) => entry.descriptor.id !== catalog.descriptor.id), catalog];
+  return { catalogs: next, catalogsById: indexCatalogsById(next) };
+};
+
+type CatalogRequest = {
+  path: string;
+  method: 'GET' | 'POST';
+  directory: string | null;
+  generation: number;
+  invalidMessage: string;
+  failureMessage: string;
+};
+
+const requestCatalog = async ({
+  path,
+  method,
+  directory,
+  generation,
+  invalidMessage,
+  failureMessage,
+}: CatalogRequest): Promise<{ catalog?: HarnessCatalog; error?: string } | null> => {
+  try {
+    const response = await runtimeFetch(buildHarnessUrl(path, directory), { method, headers: JSON_HEADERS });
+    if (generation !== loadGeneration) {
+      return null;
+    }
+    if (!response.ok) {
+      return { error: await readErrorMessage(response) };
+    }
+    const payload = await response.json().catch(() => null);
+    if (generation !== loadGeneration) {
+      return null;
+    }
+    const catalog = parseHarnessCatalog(payload);
+    return catalog ? { catalog } : { error: invalidMessage };
+  } catch (error) {
+    if (generation !== loadGeneration) {
+      return null;
+    }
+    return { error: error instanceof Error ? error.message : failureMessage };
+  }
 };
 
 export const useHarnessStore = create<HarnessStore>()(
@@ -123,14 +161,13 @@ export const useHarnessStore = create<HarnessStore>()(
           try {
             const response = await runtimeFetch(buildHarnessUrl('/api/harness', directory), {
               method: 'GET',
-              headers: { Accept: 'application/json' },
+              headers: JSON_HEADERS,
             });
             if (generation !== loadGeneration) {
               return false;
             }
             if (!response.ok) {
               const message = await readErrorMessage(response);
-              // Failure must not clear prior authoritative catalogs to a fake ready empty.
               set({
                 loadState: previous.catalogs.length > 0 ? 'ready' : 'error',
                 error: message,
@@ -183,45 +220,22 @@ export const useHarnessStore = create<HarnessStore>()(
           return false;
         }
         const directory = resolveDirectory();
-        const generation = loadGeneration;
-        try {
-          const response = await runtimeFetch(buildHarnessUrl(`/api/harness/${encodeURIComponent(id)}`, directory), {
-            method: 'GET',
-            headers: { Accept: 'application/json' },
-          });
-          if (generation !== loadGeneration) {
-            return false;
+        const result = await requestCatalog({
+          path: `/api/harness/${encodeURIComponent(id)}`,
+          method: 'GET',
+          directory,
+          generation: loadGeneration,
+          invalidMessage: 'Invalid harness detail response',
+          failureMessage: 'Failed to load harness detail',
+        });
+        if (!result || !result.catalog) {
+          if (result?.error) {
+            set({ error: result.error });
           }
-          if (!response.ok) {
-            const message = await readErrorMessage(response);
-            set({ error: message });
-            return false;
-          }
-          const payload = await response.json().catch(() => null);
-          if (generation !== loadGeneration) {
-            return false;
-          }
-          const catalog = parseHarnessCatalog(payload);
-          if (!catalog) {
-            set({ error: 'Invalid harness detail response' });
-            return false;
-          }
-          const catalogs = upsertCatalog(get().catalogs, catalog);
-          set({
-            catalogs,
-            catalogsById: indexCatalogsById(catalogs),
-            error: null,
-            loadState: 'ready',
-          });
-          return true;
-        } catch (error) {
-          if (generation !== loadGeneration) {
-            return false;
-          }
-          const message = error instanceof Error ? error.message : 'Failed to load harness detail';
-          set({ error: message });
           return false;
         }
+        set({ ...withCatalog(get().catalogs, result.catalog), error: null, loadState: 'ready' });
+        return true;
       },
 
       detect: async (id) => {
@@ -232,43 +246,23 @@ export const useHarnessStore = create<HarnessStore>()(
         const generation = loadGeneration;
         set({ isDetecting: { ...get().isDetecting, [id]: true } });
         try {
-          const response = await runtimeFetch(buildHarnessUrl(`/api/harness/${encodeURIComponent(id)}/detect`, directory), {
+          const result = await requestCatalog({
+            path: `/api/harness/${encodeURIComponent(id)}/detect`,
             method: 'POST',
-            headers: { Accept: 'application/json' },
+            directory,
+            generation,
+            invalidMessage: 'Invalid harness detect response',
+            failureMessage: 'Failed to detect harness',
           });
-          if (generation !== loadGeneration) {
+          if (!result || !result.catalog) {
+            if (result?.error) {
+              set({ error: result.error });
+            }
             return false;
           }
-          if (!response.ok) {
-            set({ error: await readErrorMessage(response) });
-            return false;
-          }
-          const payload = await response.json().catch(() => null);
-          if (generation !== loadGeneration) {
-            return false;
-          }
-          const catalog = parseHarnessCatalog(payload);
-          if (!catalog) {
-            set({ error: 'Invalid harness detect response' });
-            return false;
-          }
-          const catalogs = upsertCatalog(get().catalogs, catalog);
-          set({
-            catalogs,
-            catalogsById: indexCatalogsById(catalogs),
-            error: null,
-            loadState: 'ready',
-          });
+          set({ ...withCatalog(get().catalogs, result.catalog), error: null, loadState: 'ready' });
           return true;
-        } catch (error) {
-          if (generation !== loadGeneration) {
-            return false;
-          }
-          set({ error: error instanceof Error ? error.message : 'Failed to detect harness' });
-          return false;
         } finally {
-          // Must clear on every exit, including the stale-generation returns —
-          // otherwise a refresh racing a detect strands the spinner forever.
           set({ isDetecting: { ...get().isDetecting, [id]: false } });
         }
       },

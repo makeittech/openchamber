@@ -1,7 +1,3 @@
-/**
- * Claude Code model metadata + effort helpers for picker/tooltips.
- */
-
 import type { ModelMetadata } from '@/types';
 import type {
   ClaudeEffort,
@@ -17,16 +13,11 @@ import { CLAUDE_FAVORITE_PROVIDER_ID } from '@/lib/harness/favorite-targets';
 export { CLAUDE_EFFORT_LEVELS, isClaudeEffort };
 export type { ClaudeEffort };
 
-/** Claude's default model when a target carries no usable ref. */
 const DEFAULT_CLAUDE_MODEL_REF = 'sonnet';
 
 /**
- * Map OpenCode agent edit permission → Claude Agent SDK permissionMode.
- *
- * Claude modes are coarser than per-tool OpenCode rules; edit is the closest
- * shared control surface (composer agent chip / agent settings). This is the
- * only producer of `ClaudePermissionMode` — see the type for why there is no
- * standalone control and no bypass mode.
+ * Claude modes are coarser than OpenCode rules; edit is their closest shared
+ * control. This remains the only permissionMode producer.
  */
 export function claudePermissionModeFromEditPermission(
   editPermission: EditPermissionMode | undefined,
@@ -36,7 +27,6 @@ export function claudePermissionModeFromEditPermission(
   return 'default';
 }
 
-/** Fallback limits when catalog entry omits them (unknown / older Claude refs). */
 const DEFAULT_CLAUDE_LIMIT = {
   context: 200_000,
   output: 64_000,
@@ -66,7 +56,6 @@ export function buildClaudeModelMetadata(
       input: inputModalities,
       output: outputModalities,
     },
-    // Subscription path — omit API unit costs (do not show OpenCode provider pricing).
     limit: {
       context: model.limit?.context ?? DEFAULT_CLAUDE_LIMIT.context,
       output: model.limit?.output ?? DEFAULT_CLAUDE_LIMIT.output,
@@ -105,10 +94,6 @@ export function resolveClaudeCatalogModel(
   };
 }
 
-/**
- * Model ref + metadata for a Claude execution target, flattening the catalog.
- * Shared by every composer surface that must describe the active Claude model.
- */
 export function resolveActiveClaudeModel(
   target: Extract<ExecutionTarget, { harnessId: 'claude-code' }>,
   catalog: HarnessCatalog | null | undefined,

@@ -13,6 +13,7 @@ export const createGracefulShutdownRuntime = (dependencies) => {
     sessionGoalRuntime,
     contextObligatoryRuntime,
     scheduledTasksRuntime,
+    harnessRuntime,
     getHealthCheckInterval,
     clearHealthCheckInterval,
     getTerminalRuntime,
@@ -50,6 +51,10 @@ export const createGracefulShutdownRuntime = (dependencies) => {
     sessionGoalRuntime?.stop?.();
     contextObligatoryRuntime?.stop?.();
     scheduledTasksRuntime?.stop?.();
+
+    // Retry obligations must be returned to durable waiting state before the
+    // transports and managed OpenCode process they depend on are torn down.
+    await harnessRuntime?.stop?.();
 
     const healthCheckInterval = getHealthCheckInterval();
     if (healthCheckInterval) {

@@ -13,7 +13,6 @@ import { emitHarnessEvents } from '../../events/emit.js';
 /**
  * @typedef {object} PendingQuestion
  * @property {(result: object) => void} resolve
- * @property {(error: Error) => void} reject
  * @property {string} sessionId
  * @property {string} directory
  * @property {object} input
@@ -22,6 +21,16 @@ import { emitHarnessEvents } from '../../events/emit.js';
 
 /** @type {Map<string, PendingQuestion>} */
 const pending = new Map();
+
+/** Trimmed string, or `''` for anything that is not a string. */
+const trimmedString = (value) => (typeof value === 'string' ? value.trim() : '');
+
+function questionError(message, code, statusCode) {
+  const error = new Error(message);
+  error.code = code;
+  error.statusCode = statusCode;
+  return error;
+}
 
 /**
  * @param {unknown} value
@@ -39,15 +48,10 @@ function isQuestionOption(value) {
  */
 function sanitizeOptions(value) {
   if (!Array.isArray(value)) return [];
-  const out = [];
-  for (const entry of value) {
-    if (!isQuestionOption(entry)) continue;
-    out.push({
-      label: entry.label,
-      description: typeof entry.description === 'string' ? entry.description : '',
-    });
-  }
-  return out;
+  return value.filter(isQuestionOption).map((entry) => ({
+    label: entry.label,
+    description: typeof entry.description === 'string' ? entry.description : '',
+  }));
 }
 
 /**
@@ -84,7 +88,7 @@ function sanitizeQuestions(value) {
 function settlePending(requestId, entry, decision, extra = {}) {
   pending.delete(requestId);
 
-  const broadcast = typeof entry.getBroadcast === 'function' ? entry.getBroadcast() : null;
+  const broadcast = entry.getBroadcast();
   emitHarnessEvents(broadcast, entry.directory, [{
     type: decision === 'allow' ? 'question.replied' : 'question.rejected',
     properties: {
@@ -93,11 +97,13 @@ function settlePending(requestId, entry, decision, extra = {}) {
     },
   }]);
 
+  let result;
   if (decision === 'allow') {
-    entry.resolve({ behavior: 'allow', ...extra });
+    result = { behavior: 'allow', ...extra };
   } else {
-    entry.resolve({ behavior: 'deny', message: extra.message || 'User declined' });
+    result = { behavior: 'deny', message: extra.message || 'User declined' };
   }
+  entry.resolve(result);
 }
 
 /**
@@ -179,11 +185,10 @@ export function createAskUserQuestionHandler(params) {
       properties: questionRequest,
     }]);
 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       /** @type {PendingQuestion} */
       const entry = {
         resolve,
-        reject,
         sessionId,
         directory,
         input: safeInput,
@@ -217,24 +222,15 @@ export function replyQuestion(body) {
   const requestId = typeof body?.requestId === 'string' ? body.requestId : '';
 
   if (!sessionId || !requestId) {
-    const error = new Error('sessionId and requestId are required');
-    error.code = 'QUESTION_REPLY_INVALID';
-    error.statusCode = 400;
-    throw error;
+    throw questionError('sessionId and requestId are required', 'QUESTION_REPLY_INVALID', 400);
   }
 
   const entry = pending.get(requestId);
   if (!entry) {
-    const error = new Error('Question request not found');
-    error.code = 'QUESTION_NOT_FOUND';
-    error.statusCode = 404;
-    throw error;
+    throw questionError('Question request not found', 'QUESTION_NOT_FOUND', 404);
   }
   if (entry.sessionId !== sessionId) {
-    const error = new Error('Question request does not belong to this session');
-    error.code = 'QUESTION_SESSION_MISMATCH';
-    error.statusCode = 409;
-    throw error;
+    throw questionError('Question request does not belong to this session', 'QUESTION_SESSION_MISMATCH', 409);
   }
 
   if (body?.reject === true) {
@@ -270,23 +266,6 @@ export function rejectPendingForSession(sessionId) {
     count += 1;
   }
   return count;
-}
-
-/** @returns {number} */
-export function getPendingQuestionCount() {
-  return pending.size;
-}
-
-/**
- * Pending bridged question requests for debug / reconcile.
- * @returns {Array<{ id: string, sessionID: string, directory: string }>}
- */
-export function listPendingQuestions() {
-  return Array.from(pending.entries()).map(([id, entry]) => ({
-    id,
-    sessionID: entry.sessionId,
-    directory: entry.directory,
-  }));
 }
 
 /** Test helper — clears pending map. */

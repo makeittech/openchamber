@@ -89,15 +89,16 @@ import { createPushRuntime } from './lib/notifications/push-runtime.js';
 import { createApnsRuntime } from './lib/notifications/apns-runtime.js';
 import { createNotificationTemplateRuntime } from './lib/notifications/template-runtime.js';
 import { createPermissionAutoAcceptRuntime } from './lib/permission-auto-accept/runtime.js';
+import { createHarnessRouter } from './lib/harness/router.js';
+import { getSessionBinding } from './lib/harness/session-bindings.js';
+import { listPendingPermissions as listHarnessPendingPermissions } from './lib/harness/translators/claude-code/permissions.js';
+import { addHarnessEventObserver } from './lib/harness/events/emit.js';
+import { getHarnessRecentMessages, isHarnessSessionWorking } from './lib/harness/turn-snapshot.js';
+import { translateOpenCodeCommandForClaude } from './lib/harness/translators/claude-code/opencode-command.js';
 import {
-  createHarnessRouter,
-  getSessionBinding,
-  listPendingPermissions as listHarnessPendingPermissions,
-  addHarnessEventObserver,
-  getHarnessRecentMessages,
-  isHarnessSessionWorking,
-  translateOpenCodeCommandForClaude,
-} from './lib/harness/index.js';
+  buildOpenCodeAgentInheritance,
+  fetchOpenCodeAgents,
+} from './lib/harness/translators/claude-code/opencode-agents.js';
 import { createGracefulShutdownRuntime } from './lib/opencode/shutdown-runtime.js';
 import { createProjectConfigRuntime } from './lib/projects/project-config.js';
 import { createRemoteClientAuthRuntime } from './lib/client-auth/remote-clients.js';
@@ -475,6 +476,10 @@ const harnessRouter = createHarnessRouter({
     buildOpenCodeUrl,
     getOpenCodeAuthHeaders,
   }),
+  resolveOpenCodeAgents: async ({ directory, agentName }) => buildOpenCodeAgentInheritance(
+    await fetchOpenCodeAgents({ directory, buildOpenCodeUrl, getOpenCodeAuthHeaders }),
+    agentName,
+  ),
 });
 const broadcastUiNotification = (...args) => notificationEmitterRuntime.broadcastUiNotification(...args);
 
@@ -867,6 +872,16 @@ globalMessageStreamHub.subscribeEvent((event) => {
   const raw = event?.payload;
   const payload = raw?.payload && typeof raw.payload === 'object' ? raw.payload : raw;
   if (!payload || typeof payload !== 'object') return;
+  if (payload.type === 'session.deleted') {
+    const sessionId = typeof payload.properties?.info?.id === 'string'
+      ? payload.properties.info.id
+      : '';
+    if (sessionId) {
+      void harnessRouter.deleteSession(sessionId).catch((error) => {
+        console.warn('[harness] failed to clean deleted session:', error?.message || error);
+      });
+    }
+  }
   const directory = typeof event?.directory === 'string' && event.directory && event.directory !== 'global'
     ? event.directory
     : '';
@@ -1216,6 +1231,7 @@ const scheduledTaskService = createScheduledTaskService({
   sanitizeProjects,
   projectConfigRuntime,
   scheduledTasksRuntime,
+  harnessRuntime: harnessRouter,
 });
 const openChamberSessionService = createOpenChamberSessionService({
   readSettingsFromDiskMigrated,
@@ -1681,6 +1697,10 @@ async function main(options = {}) {
   });
   relayServiceInstance = relayService;
   relayService.registerRoutes(app);
+
+  // Rehydrate durable retry overlays before status routes can answer. A failed
+  // start is not converted to an empty journal: startup fails closed.
+  await harnessRouter.start();
 
   await featureRoutesRuntime.registerRoutes(app, {
     crypto,

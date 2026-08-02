@@ -21,6 +21,15 @@ import {
  */
 const ALLOWED_PERMISSION_MODES = new Set(['default', 'acceptEdits', 'plan']);
 
+/** Trimmed string, or `''` for anything that is not a string. */
+const trimmedString = (value) => (typeof value === 'string' ? value.trim() : '');
+
+/** A plain object with at least one own key, otherwise `null`. */
+function nonEmptyRecord(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return Object.keys(value).length > 0 ? value : null;
+}
+
 let sdkModulePromise = null;
 /** @type {Error | null} */
 let sdkLoadError = null;
@@ -60,17 +69,6 @@ export function resetClaudeAgentSdkCache() {
 }
 
 /**
- * @returns {{ available: boolean, error?: string }}
- */
-export function getClaudeAgentSdkAvailability() {
-  if (sdkModule) return { available: true };
-  if (sdkLoadError) {
-    return { available: false, error: sdkLoadError.message || 'Claude Agent SDK unavailable' };
-  }
-  return { available: false, error: 'Claude Agent SDK not loaded' };
-}
-
-/**
  * Best-effort probe whether the SDK package can be imported.
  * @returns {Promise<{ available: boolean, error?: string }>}
  */
@@ -107,28 +105,19 @@ export function killProcessTree(pid, options = {}) {
     return;
   }
 
-  try {
-    process.kill(-pid, signal);
-  } catch {
-    // process group may not exist
-  }
-  try {
-    process.kill(pid, signal);
-  } catch {
-    // already gone
-  }
+  // Every kill is best-effort: the group may not exist and the child may
+  // already be gone.
+  const kill = (target, killSignal) => {
+    try {
+      process.kill(target, killSignal);
+    } catch {}
+  };
 
+  kill(-pid, signal);
+  kill(pid, signal);
   if (options.force) {
-    try {
-      process.kill(-pid, 'SIGKILL');
-    } catch {
-      // ignore
-    }
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch {
-      // ignore
-    }
+    kill(-pid, 'SIGKILL');
+    kill(pid, 'SIGKILL');
   }
 }
 
@@ -162,14 +151,17 @@ export function killProcessTree(pid, options = {}) {
  * @param {Array<'user' | 'project' | 'local'>} [params.settingSources]
  * @param {boolean} [params.forwardSubagentText]
  * @param {boolean} [params.agentProgressSummaries]
+ * @param {Partial<Record<import('@anthropic-ai/claude-agent-sdk').HookEvent, import('@anthropic-ai/claude-agent-sdk').HookCallbackMatcher[]>>} [params.hooks]
+ *   Server-internal SDK hook callbacks (e.g. the recovery `PreToolUse`
+ *   fingerprint guard). NOT sourced from any client body — only the translator
+ *   may supply it, so the public prompt route cannot inject hooks. Only
+ *   forwarded when non-empty.
  * @param {(mod: typeof import('@anthropic-ai/claude-agent-sdk')) => unknown} [params.queryImpl]
  * @returns {Promise<ClaudeQueryHandle>}
  */
 export async function startClaudeQuery(params) {
   const sdk = await loadClaudeAgentSdk();
-  const queryFn = typeof params.queryImpl === 'function'
-    ? params.queryImpl
-    : sdk.query;
+  const queryFn = typeof params.queryImpl === 'function' ? params.queryImpl : sdk.query;
 
   if (typeof queryFn !== 'function') {
     const error = new Error('Claude Agent SDK query() is unavailable');
@@ -180,10 +172,8 @@ export async function startClaudeQuery(params) {
 
   const env = buildClaudeCodeChildEnv(params.env || process.env);
   const cwd = assertClaudeWorkingDirectory(params.cwd);
-  const pathToClaudeCodeExecutable = typeof params.pathToClaudeCodeExecutable === 'string'
-    && params.pathToClaudeCodeExecutable.trim()
-    ? params.pathToClaudeCodeExecutable.trim()
-    : resolveClaudeCodeExecutable({ env });
+  const pathToClaudeCodeExecutable = trimmedString(params.pathToClaudeCodeExecutable)
+    || resolveClaudeCodeExecutable({ env });
 
   const options = {
     cwd,
@@ -203,17 +193,13 @@ export async function startClaudeQuery(params) {
     // Avoid Electron asar ENOTDIR when the SDK resolves a path inside app.asar.
     options.pathToClaudeCodeExecutable = pathToClaudeCodeExecutable;
   }
-  if (typeof params.model === 'string' && params.model.trim()) {
-    options.model = params.model.trim();
-  }
-  if (typeof params.resume === 'string' && params.resume.trim()) {
-    options.resume = params.resume.trim();
-  }
+  const model = trimmedString(params.model);
+  if (model) options.model = model;
+  const resume = trimmedString(params.resume);
+  if (resume) options.resume = resume;
   // Fail closed: only modes the UI can legitimately produce are forwarded. A
   // client-supplied `bypassPermissions` must never bypass the canUseTool bridge.
-  const permissionMode = typeof params.permissionMode === 'string'
-    ? params.permissionMode.trim()
-    : '';
+  const permissionMode = trimmedString(params.permissionMode);
   if (ALLOWED_PERMISSION_MODES.has(permissionMode)) {
     options.permissionMode = permissionMode;
   }
@@ -221,48 +207,32 @@ export async function startClaudeQuery(params) {
   // unrecognized level fails the whole turn instead of the control silently
   // doing nothing. Drop anything outside the registry list and let the SDK
   // default apply.
-  const effort = typeof params.effort === 'string' ? params.effort.trim() : '';
-  if (isClaudeEffort(effort)) {
-    options.effort = effort;
-  }
-  if (typeof params.canUseTool === 'function') {
-    options.canUseTool = params.canUseTool;
-  }
+  const effort = trimmedString(params.effort);
+  if (isClaudeEffort(effort)) options.effort = effort;
+  if (typeof params.canUseTool === 'function') options.canUseTool = params.canUseTool;
   // System prompt: string custom, or Claude Code preset (+ optional OpenCode agent append).
-  if (typeof params.systemPrompt === 'string' && params.systemPrompt.trim()) {
-    options.systemPrompt = params.systemPrompt.trim();
-  } else if (params.systemPrompt && typeof params.systemPrompt === 'object' && !Array.isArray(params.systemPrompt)) {
-    const preset = params.systemPrompt;
-    if (preset.type === 'preset' && preset.preset === 'claude_code') {
-      /** @type {{ type: 'preset', preset: 'claude_code', append?: string }} */
-      const systemPrompt = { type: 'preset', preset: 'claude_code' };
-      if (typeof preset.append === 'string' && preset.append.trim()) {
-        systemPrompt.append = preset.append.trim();
-      }
-      options.systemPrompt = systemPrompt;
-    }
+  const customSystemPrompt = trimmedString(params.systemPrompt);
+  const presetSystemPrompt = typeof params.systemPrompt === 'string'
+    ? null
+    : nonEmptyRecord(params.systemPrompt);
+  if (customSystemPrompt) {
+    options.systemPrompt = customSystemPrompt;
+  } else if (presetSystemPrompt?.type === 'preset' && presetSystemPrompt.preset === 'claude_code') {
+    /** @type {{ type: 'preset', preset: 'claude_code', append?: string }} */
+    const systemPrompt = { type: 'preset', preset: 'claude_code' };
+    const append = trimmedString(presetSystemPrompt.append);
+    if (append) systemPrompt.append = append;
+    options.systemPrompt = systemPrompt;
   }
-  if (params.mcpServers && typeof params.mcpServers === 'object' && !Array.isArray(params.mcpServers)) {
-    const names = Object.keys(params.mcpServers);
-    if (names.length > 0) {
-      options.mcpServers = params.mcpServers;
-    }
-  }
+  if (nonEmptyRecord(params.mcpServers)) options.mcpServers = params.mcpServers;
   // Programmatic subagents (OpenCode agents inherited for this turn). The SDK
   // merges these with on-disk `.claude/agents`, so registering none leaves the
   // native Claude set untouched.
-  if (params.agents && typeof params.agents === 'object' && !Array.isArray(params.agents)) {
-    const names = Object.keys(params.agents);
-    if (names.length > 0) {
-      options.agents = params.agents;
-    }
-  }
+  if (nonEmptyRecord(params.agents)) options.agents = params.agents;
   // Main-thread agent by name. Only forwarded when the agent is registered
   // above or expected in settings — an unknown name would fail the turn.
-  const mainAgent = typeof params.agent === 'string' ? params.agent.trim() : '';
-  if (mainAgent) {
-    options.agent = mainAgent;
-  }
+  const mainAgent = trimmedString(params.agent);
+  if (mainAgent) options.agent = mainAgent;
   if (Array.isArray(params.allowedTools) && params.allowedTools.length > 0) {
     options.allowedTools = params.allowedTools.filter((tool) => typeof tool === 'string' && tool.trim());
   }
@@ -272,18 +242,20 @@ export async function startClaudeQuery(params) {
     // Enable every discovered skill so /skill and Skill tool work on Claude sessions.
     options.skills = 'all';
   }
+  // Internal SDK hook callbacks (e.g. the recovery PreToolUse fingerprint
+  // guard). This parameter is server-internal only: the public prompt route
+  // never supplies it, and `startClaudeQuery` reads it solely from the
+  // top-level `params.hooks` — never from a nested client body — so a client
+  // cannot inject hooks through the prompt route. Only forward when non-empty
+  // to avoid an accidental empty object overriding SDK defaults.
+  if (nonEmptyRecord(params.hooks)) options.hooks = params.hooks;
 
   let result;
   try {
-    result = queryFn({
-      prompt: params.prompt,
-      options,
-    });
+    result = queryFn({ prompt: params.prompt, options });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const code = error && typeof error === 'object' && 'code' in error
-      ? error.code
-      : undefined;
+    const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
     if (code === 'ENOTDIR' || /spawn.*ENOTDIR/i.test(message)) {
       const wrapped = new Error(
         'Claude Code executable path is not spawnable (ENOTDIR). '
@@ -298,12 +270,7 @@ export async function startClaudeQuery(params) {
   }
 
   let closed = false;
-  const getPid = () => {
-    if (result && typeof result === 'object' && 'pid' in result) {
-      return result.pid;
-    }
-    return null;
-  };
+  const getPid = () => (result && typeof result === 'object' && 'pid' in result ? result.pid : null);
 
   const interrupt = async () => {
     if (result && typeof result.interrupt === 'function') {
@@ -331,10 +298,5 @@ export async function startClaudeQuery(params) {
     }
   };
 
-  return {
-    stream: result,
-    interrupt,
-    close,
-    getPid,
-  };
+  return { stream: result, interrupt, close, getPid };
 }

@@ -3,59 +3,20 @@ import { BusyDots } from './BusyDots';
 import { useI18n } from '@/lib/i18n';
 import { useProviderLogo } from '@/hooks/useProviderLogo';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
+import { buildRetryStatusLabel, getRetryCountdownSeconds, type RetryStatusInfo } from './retryStatus';
 
 interface WorkingPlaceholderProps {
   isWorking: boolean;
   statusText: string | null;
   isGenericStatus?: boolean;
   isWaitingForPermission?: boolean;
-  retryInfo?: { attempt?: number; next?: number } | null;
+  retryInfo?: RetryStatusInfo | null;
   agentName?: string;
   modelName?: string | null;
   providerId?: string | null;
 }
 
 const STATUS_DISPLAY_TIME_MS = 1200;
-
-const EPOCH_SECONDS_THRESHOLD = 1_000_000_000;
-const EPOCH_MILLISECONDS_THRESHOLD = 1_000_000_000_000;
-
-const toRetryTargetTimestamp = (next: number): number => {
-  if (next >= EPOCH_MILLISECONDS_THRESHOLD) {
-    return next;
-  }
-  if (next >= EPOCH_SECONDS_THRESHOLD) {
-    return next * 1000;
-  }
-  return Date.now() + next;
-};
-
-const formatRetryCountdown = (seconds: number): string => {
-  if (seconds < 60) {
-    return `${seconds}s`;
-  }
-
-  if (seconds < 3600) {
-    const minutes = Math.floor(seconds / 60);
-    const remainderSeconds = seconds % 60;
-    return remainderSeconds > 0 ? `${minutes}m ${remainderSeconds}s` : `${minutes}m`;
-  }
-
-  if (seconds < 86400) {
-    const hours = Math.floor(seconds / 3600);
-    const remainderMinutes = Math.floor((seconds % 3600) / 60);
-    return remainderMinutes > 0 ? `${hours}h ${remainderMinutes}m` : `${hours}h`;
-  }
-
-  const days = Math.floor(seconds / 86400);
-  const remainderHours = Math.floor((seconds % 86400) / 3600);
-  if (remainderHours > 0) {
-    return `${days}d ${remainderHours}h`;
-  }
-
-  return `${days}d`;
-
-};
 
 export function WorkingPlaceholder({
   isWorking,
@@ -82,26 +43,16 @@ export function WorkingPlaceholder({
   const processQueueTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Countdown state for retry mode
-  const [retryCountdown, setRetryCountdown] = React.useState<number | null>(null);
+  const [retryNow, setRetryNow] = React.useState(Date.now);
 
   React.useEffect(() => {
-    const rawNext = retryInfo?.next;
-    if (!rawNext || rawNext <= 0) {
-      setRetryCountdown(null);
-      return;
-    }
-
-    const retryTargetAt = toRetryTargetTimestamp(rawNext);
-
-    const update = () => {
-      const remaining = Math.max(0, retryTargetAt - Date.now());
-      setRetryCountdown(Math.ceil(remaining / 1000));
-    };
-
+    if (retryInfo?.message === 'claude-recovery-blocked'
+      || getRetryCountdownSeconds(retryInfo?.next) === null) return;
+    const update = () => setRetryNow(Date.now());
     update();
     const id = setInterval(update, 500);
     return () => clearInterval(id);
-  }, [retryInfo?.next, retryInfo?.attempt]);
+  }, [retryInfo?.message, retryInfo?.next]);
 
   const clearTimers = React.useCallback(() => {
     if (processQueueTimerRef.current) {
@@ -197,11 +148,7 @@ export function WorkingPlaceholder({
 
   // Retry state: show countdown and attempt info
   if (retryInfo) {
-    const attemptLabel = retryInfo.attempt && retryInfo.attempt > 1 ? ` (attempt ${retryInfo.attempt})` : '';
-    const countdownLabel = retryCountdown !== null && retryCountdown > 0
-      ? ` in ${formatRetryCountdown(retryCountdown)}`
-      : '';
-    const retryText = `Retrying${countdownLabel}${attemptLabel}`;
+    const retryText = buildRetryStatusLabel(retryInfo, t, retryNow);
 
     return (
       <div

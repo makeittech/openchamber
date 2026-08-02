@@ -6,6 +6,7 @@ const performHarnessHandoffMock = mock(() => Promise.resolve());
 
 mock.module('@/sync/sync-refs', () => ({
   getSyncMessages: (...args) => getSyncMessagesMock(...args),
+  getSyncParts: () => [],
 }));
 
 mock.module('@/lib/persistence', () => ({
@@ -22,6 +23,15 @@ const { setCachedWarnOnHarnessSwitch } = await import('@/lib/harness/settings');
 
 const OPENCODE_TARGET = { harnessId: 'opencode', providerId: 'openai', modelId: 'gpt-5' };
 const CLAUDE_TARGET = { harnessId: 'claude-code', modelRef: 'sonnet' };
+const SESSION_ID = 'ses_1';
+
+const setUsedOpenCodeSession = () => {
+  getSyncMessagesMock.mockImplementation(() => [{ id: 'm1', role: 'user' }]);
+  useSelectionStore.getState().saveSessionTarget(SESSION_ID, OPENCODE_TARGET);
+};
+
+const requestClaudeSwitch = () =>
+  useHarnessSwitchStore.getState().requestHarnessSwitch(SESSION_ID, CLAUDE_TARGET, { directory: '/repo' });
 
 beforeEach(() => {
   getSyncMessagesMock.mockReset();
@@ -46,53 +56,44 @@ describe('requestHarnessSwitch', () => {
   });
 
   test('empty session persists in place without a dialog', () => {
-    getSyncMessagesMock.mockImplementation(() => []);
-    const outcome = useHarnessSwitchStore.getState().requestHarnessSwitch('ses_1', CLAUDE_TARGET);
+    const outcome = useHarnessSwitchStore.getState().requestHarnessSwitch(SESSION_ID, CLAUDE_TARGET);
     expect(outcome).toBe('persisted');
-    expect(useSelectionStore.getState().getSessionTarget('ses_1')).toEqual(CLAUDE_TARGET);
+    expect(useSelectionStore.getState().getSessionTarget(SESSION_ID)).toEqual(CLAUDE_TARGET);
     expect(useHarnessSwitchStore.getState().pending).toBeNull();
   });
 
   test('same harness on a used session persists in place', () => {
-    getSyncMessagesMock.mockImplementation(() => [{ id: 'm1', role: 'user' }]);
-    useSelectionStore.getState().saveSessionTarget('ses_1', OPENCODE_TARGET);
+    setUsedOpenCodeSession();
     const next = { harnessId: 'opencode', providerId: 'anthropic', modelId: 'claude-4' };
-    const outcome = useHarnessSwitchStore.getState().requestHarnessSwitch('ses_1', next);
-    expect(outcome).toBe('persisted');
+    expect(useHarnessSwitchStore.getState().requestHarnessSwitch(SESSION_ID, next)).toBe('persisted');
     expect(useHarnessSwitchStore.getState().pending).toBeNull();
   });
 
   test('used session + different harness + warn on opens the dialog', () => {
-    getSyncMessagesMock.mockImplementation(() => [{ id: 'm1', role: 'user' }]);
-    useSelectionStore.getState().saveSessionTarget('ses_1', OPENCODE_TARGET);
-    const outcome = useHarnessSwitchStore.getState().requestHarnessSwitch('ses_1', CLAUDE_TARGET, { directory: '/repo' });
-    expect(outcome).toBe('dialog');
-    const pending = useHarnessSwitchStore.getState().pending;
-    expect(pending).not.toBeNull();
-    expect(pending.sessionId).toBe('ses_1');
-    expect(pending.sourceHarnessId).toBe('opencode');
-    expect(pending.target).toEqual(CLAUDE_TARGET);
-    expect(pending.directory).toBe('/repo');
-    // Picker target must not leak into the pending-handoff send path.
-    expect(useSelectionStore.getState().getPendingHandoffTarget('ses_1')).toBeNull();
+    setUsedOpenCodeSession();
+    expect(requestClaudeSwitch()).toBe('dialog');
+    expect(useHarnessSwitchStore.getState().pending).toEqual({
+      sessionId: SESSION_ID,
+      directory: '/repo',
+      sourceHarnessId: 'opencode',
+      target: CLAUDE_TARGET,
+    });
+    expect(useSelectionStore.getState().getPendingHandoffTarget(SESSION_ID)).toBeNull();
   });
 
   test('used session + different harness + warn off stays a silent pending handoff', () => {
-    getSyncMessagesMock.mockImplementation(() => [{ id: 'm1', role: 'user' }]);
-    useSelectionStore.getState().saveSessionTarget('ses_1', OPENCODE_TARGET);
+    setUsedOpenCodeSession();
     setCachedWarnOnHarnessSwitch(false);
-    const outcome = useHarnessSwitchStore.getState().requestHarnessSwitch('ses_1', CLAUDE_TARGET);
-    expect(outcome).toBe('pending-handoff');
-    expect(useSelectionStore.getState().getPendingHandoffTarget('ses_1')).toEqual(CLAUDE_TARGET);
+    expect(requestClaudeSwitch()).toBe('pending-handoff');
+    expect(useSelectionStore.getState().getPendingHandoffTarget(SESSION_ID)).toEqual(CLAUDE_TARGET);
     expect(useHarnessSwitchStore.getState().pending).toBeNull();
   });
 });
 
 describe('confirmHarnessSwitch', () => {
   const openDialog = () => {
-    getSyncMessagesMock.mockImplementation(() => [{ id: 'm1', role: 'user' }]);
-    useSelectionStore.getState().saveSessionTarget('ses_1', OPENCODE_TARGET);
-    useHarnessSwitchStore.getState().requestHarnessSwitch('ses_1', CLAUDE_TARGET, { directory: '/repo' });
+    setUsedOpenCodeSession();
+    requestClaudeSwitch();
   };
 
   test('performs the handoff and closes the dialog', async () => {
@@ -100,7 +101,7 @@ describe('confirmHarnessSwitch', () => {
     await useHarnessSwitchStore.getState().confirmHarnessSwitch('duplicate', false);
     expect(performHarnessHandoffMock).toHaveBeenCalledTimes(1);
     expect(performHarnessHandoffMock).toHaveBeenCalledWith({
-      sourceSessionId: 'ses_1',
+      sourceSessionId: SESSION_ID,
       directory: '/repo',
       sourceHarnessId: 'opencode',
       target: CLAUDE_TARGET,

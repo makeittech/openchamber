@@ -15,6 +15,7 @@ import {
   readClaudeTranscriptTitle,
   resetClaudeTranscriptCaches,
 } from './transcript-messages.js';
+import { RECOVERY_MARKER } from './recovery-transcript.js';
 
 const FOREIGN_ID = '123e4567-e89b-42d3-a456-426614174000';
 
@@ -154,6 +155,162 @@ describe('parseClaudeTranscript', () => {
     expect(tool.state.status).toBe('error');
   });
 
+  it('replays Agent/Task tools as the task tool id with Agent Task title and child metadata', () => {
+    const filePath = writeTranscript([
+      JSON.stringify(baseRecord({
+        type: 'user',
+        uuid: 'u1',
+        timestamp: '2026-07-28T10:00:00.000Z',
+        message: { role: 'user', content: 'review the PR' },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a1',
+        timestamp: '2026-07-28T10:00:01.000Z',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_agent',
+              name: 'Agent',
+              input: { description: 'Review PR', prompt: 'review the diff', subagent_type: 'pr-review' },
+            },
+          ],
+        },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'user',
+        uuid: 'u2',
+        timestamp: '2026-07-28T10:00:02.000Z',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_agent', content: 'done' }] },
+      })),
+    ]);
+
+    const { messages } = parseClaudeTranscript({
+      sessionId: 'ses_shell',
+      directory: '/tmp/project',
+      modelRef: 'opus',
+      transcriptPath: filePath,
+    });
+    const tool = messages[1].parts.find((part) => part.type === 'tool');
+
+    expect(tool.tool).toBe('task');
+    expect(tool.state.status).toBe('completed');
+    expect(tool.state.title).toBe('Agent Task');
+    expect(tool.state.metadata.sessionId).toMatch(/^ses_claude_sub_/);
+    expect(tool.state.metadata.title).toBe('Review PR');
+  });
+
+  it('keeps child metadata on a replayed Agent tool that ended mid-turn', () => {
+    const filePath = writeTranscript([
+      JSON.stringify(baseRecord({
+        type: 'user',
+        uuid: 'u1',
+        timestamp: '2026-07-28T10:00:00.000Z',
+        message: { role: 'user', content: 'run it' },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a1',
+        timestamp: '2026-07-28T10:00:01.000Z',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'toolu_agent2', name: 'Task', input: { description: 'Do work' } }],
+        },
+      })),
+    ]);
+
+    const { messages } = parseClaudeTranscript({
+      sessionId: 'ses_shell',
+      modelRef: 'opus',
+      transcriptPath: filePath,
+    });
+    const tool = messages[1].parts.find((part) => part.type === 'tool');
+    expect(tool.state.status).toBe('error');
+    expect(tool.state.metadata.sessionId).toMatch(/^ses_claude_sub_/);
+    expect(tool.state.metadata.title).toBe('Do work');
+  });
+
+  it('keeps the session modelRef when the transcript model is a synthetic placeholder', () => {
+    const filePath = writeTranscript([
+      JSON.stringify(baseRecord({
+        type: 'user',
+        uuid: 'u1',
+        timestamp: '2026-07-28T10:00:00.000Z',
+        message: { role: 'user', content: 'debug test prompt' },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a1',
+        timestamp: '2026-07-28T10:00:01.000Z',
+        message: {
+          role: 'assistant',
+          model: '<synthetic>',
+          content: [{ type: 'text', text: 'You have hit your session limit' }],
+        },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a2',
+        timestamp: '2026-07-28T10:00:02.000Z',
+        message: {
+          role: 'assistant',
+          model: 'synthetic',
+          content: [{ type: 'text', text: 'No response requested.' }],
+        },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a3',
+        timestamp: '2026-07-28T10:00:03.000Z',
+        message: {
+          role: 'assistant',
+          model: '<unknown>',
+          content: [{ type: 'text', text: 'Placeholder again.' }],
+        },
+      })),
+    ]);
+
+    const { messages } = parseClaudeTranscript({
+      sessionId: 'ses_shell',
+      modelRef: 'haiku',
+      transcriptPath: filePath,
+    });
+    for (const message of messages) {
+      if (message.info.role !== 'assistant') continue;
+      expect(message.info.modelID).toBe('haiku');
+    }
+  });
+
+  it('still applies a real transcript model id', () => {
+    const filePath = writeTranscript([
+      JSON.stringify(baseRecord({
+        type: 'user',
+        uuid: 'u1',
+        timestamp: '2026-07-28T10:00:00.000Z',
+        message: { role: 'user', content: 'hi' },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a1',
+        timestamp: '2026-07-28T10:00:01.000Z',
+        message: {
+          role: 'assistant',
+          model: 'claude-sonnet-4-5',
+          content: [{ type: 'text', text: 'hello' }],
+        },
+      })),
+    ]);
+
+    const { messages } = parseClaudeTranscript({
+      sessionId: 'ses_shell',
+      modelRef: 'haiku',
+      transcriptPath: filePath,
+    });
+    expect(messages[1].info.modelID).toBe('claude-sonnet-4-5');
+  });
+
   it('skips sidechains, meta, and non-message records; reads ai-title', () => {
     const filePath = writeTranscript([
       JSON.stringify({ type: 'summary', summary: 'Old summary' }),
@@ -224,6 +381,140 @@ describe('parseClaudeTranscript', () => {
       .filter((message) => message.info.role === 'user')
       .flatMap((message) => message.parts.map((part) => part.text));
     expect(userTexts).toEqual(['first prompt', 'follow-up prompt']);
+  });
+});
+
+describe('parseClaudeTranscript recovery continuation hiding', () => {
+  it('hides synthetic recovery continuation records without closing the turn', () => {
+    const filePath = writeTranscript([
+      JSON.stringify(baseRecord({
+        type: 'user',
+        uuid: 'u_real',
+        timestamp: '2026-07-28T10:00:00.000Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'first prompt' }] },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a1',
+        timestamp: '2026-07-28T10:00:01.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Hi there' }] },
+      })),
+      // Synthetic recovery continuation: invisible — must NOT become a user
+      // bubble and must NOT close the open turn.
+      JSON.stringify(baseRecord({
+        type: 'user',
+        uuid: 'u_recovery',
+        isSynthetic: true,
+        timestamp: '2026-07-28T10:00:02.000Z',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: `${RECOVERY_MARKER}\nContinue the interrupted response.` }],
+        },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a2',
+        timestamp: '2026-07-28T10:00:03.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Continued answer' }] },
+      })),
+    ]);
+
+    const { messages } = parseClaudeTranscript({ sessionId: 'ses_shell', transcriptPath: filePath });
+
+    // 1 user + 1 assistant: the synthetic continuation is invisible.
+    expect(messages).toHaveLength(2);
+    const [user, assistant] = messages;
+    expect(user.info.role).toBe('user');
+    expect(user.parts.map((part) => part.text)).toEqual(['first prompt']);
+    // No user bubble was created for the continuation; its text never reaches
+    // any rendered user message in the transcript.
+    const userTexts = messages
+      .filter((m) => m.info.role === 'user')
+      .flatMap((m) => m.parts.map((part) => part.text));
+    expect(userTexts).toEqual(['first prompt']);
+    expect(userTexts.some((text) => text.startsWith(RECOVERY_MARKER))).toBe(false);
+
+    expect(assistant.info.role).toBe('assistant');
+    // Hiding does NOT close the turn: the post-recovery assistant stays
+    // grouped under the original real user turn.
+    expect(assistant.info.parentID).toBe(user.info.id);
+    // The pre-limit and post-recovery assistant texts merge into one bucket,
+    // proving the turn stayed open through the continuation.
+    expect(assistant.parts.filter((part) => part.type === 'text').map((part) => part.text))
+      .toEqual(['Hi there', 'Continued answer']);
+  });
+
+  it('keeps an ordinary user message that merely starts with similar text (non-synthetic) visible and closing its own turn', () => {
+    const filePath = writeTranscript([
+      JSON.stringify(baseRecord({
+        type: 'user',
+        uuid: 'u_real',
+        timestamp: '2026-07-28T10:00:00.000Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'first prompt' }] },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a1',
+        timestamp: '2026-07-28T10:00:01.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'answer 1' }] },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'user',
+        uuid: 'u_recovery',
+        isSynthetic: true,
+        timestamp: '2026-07-28T10:00:02.000Z',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: `${RECOVERY_MARKER}\ncont` }],
+        },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a2',
+        timestamp: '2026-07-28T10:00:03.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'resumed' }] },
+      })),
+      // An ordinary user record (NO isSynthetic) whose text merely *starts*
+      // with the marker — must remain visible and close the previous turn.
+      JSON.stringify(baseRecord({
+        type: 'user',
+        uuid: 'u_user_echo',
+        timestamp: '2026-07-28T10:00:04.000Z',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: `${RECOVERY_MARKER} echoed by the user` }],
+        },
+      })),
+      JSON.stringify(baseRecord({
+        type: 'assistant',
+        uuid: 'a3',
+        timestamp: '2026-07-28T10:00:05.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'echo answer' }] },
+      })),
+    ]);
+
+    const { messages } = parseClaudeTranscript({ sessionId: 'ses_shell', transcriptPath: filePath });
+
+    // 2 user + 2 assistant — the synthetic continuation is hidden but
+    // u_user_echo's bubble is preserved.
+    expect(messages).toHaveLength(4);
+    const userMessages = messages.filter((m) => m.info.role === 'user');
+    expect(userMessages).toHaveLength(2);
+    expect(userMessages[0].parts[0].text).toBe('first prompt');
+    expect(userMessages[1].parts[0].text).toBe(`${RECOVERY_MARKER} echoed by the user`);
+
+    const assistantMessages = messages.filter((m) => m.info.role === 'assistant');
+    expect(assistantMessages).toHaveLength(2);
+    // Recovery continuation stayed invisible and did not close the original
+    // turn — pre/post-recovery assistant texts merge into one bucket under
+    // the original real user.
+    expect(assistantMessages[0].info.parentID).toBe(userMessages[0].info.id);
+    expect(assistantMessages[0].parts.filter((part) => part.type === 'text').map((part) => part.text))
+      .toEqual(['answer 1', 'resumed']);
+    // The follow-up user bubble then closed the turn normally; its assistant
+    // is grouped under u_user_echo.
+    expect(assistantMessages[1].info.parentID).toBe(userMessages[1].info.id);
+    expect(assistantMessages[1].parts[0].text).toBe('echo answer');
   });
 });
 

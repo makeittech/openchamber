@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { resolveComposerAttachmentModel } from './composer-attachment-model';
 import type { HarnessCatalog } from '@/types/harness';
+import { STATIC_HARNESS_CAPABILITIES } from './capabilities';
 
 const claudeCatalog: HarnessCatalog = {
   descriptor: {
@@ -8,23 +9,7 @@ const claudeCatalog: HarnessCatalog = {
     displayName: 'Claude Code',
     shortName: 'Claude',
     auth: { mode: 'subscription-cli' },
-    capabilities: {
-      prompt: 'full',
-      abort: 'full',
-      resume: 'full',
-      'streaming-text': 'full',
-      'streaming-tools': 'full',
-      permissions: 'full',
-      images: 'full',
-      'file-attachments': 'full',
-      shell: 'full',
-      'slash-commands': 'partial',
-      mcp: 'partial',
-      subagents: 'partial',
-      multirun: 'full',
-      goal: 'full',
-      'openchamber-tool': 'full',
-    },
+    capabilities: STATIC_HARNESS_CAPABILITIES['claude-code'],
     install: { binaryNames: ['claude'], docsUrl: 'https://example.com' },
   },
   status: 'ready',
@@ -41,20 +26,27 @@ const claudeCatalog: HarnessCatalog = {
   }],
 };
 
+const openCodeMetadata = {
+  id: 'big-pickle',
+  providerId: 'opencode',
+  name: 'Big Pickle',
+  modalities: { input: ['text'], output: ['text'] },
+};
+
+const resolve = (target: Parameters<typeof resolveComposerAttachmentModel>[0]) =>
+  resolveComposerAttachmentModel({
+    openCodeProviderId: 'opencode',
+    openCodeModelId: 'big-pickle',
+    openCodeMetadata,
+    claudeCatalog,
+    ...target,
+  });
+
 describe('resolveComposerAttachmentModel', () => {
   test('uses Claude catalog modalities when session target is Claude', () => {
-    const resolved = resolveComposerAttachmentModel({
+    const resolved = resolve({
       sessionId: 'ses_claude',
       sessionTarget: { harnessId: 'claude-code', modelRef: 'sonnet' },
-      openCodeProviderId: 'opencode',
-      openCodeModelId: 'big-pickle',
-      openCodeMetadata: {
-        id: 'big-pickle',
-        providerId: 'opencode',
-        name: 'Big Pickle',
-        modalities: { input: ['text'], output: ['text'] },
-      },
-      claudeCatalog,
     });
 
     expect(resolved.modelKey).toBe('claude-code/sonnet');
@@ -63,22 +55,13 @@ describe('resolveComposerAttachmentModel', () => {
   });
 
   test('falls back to OpenCode metadata when engine is OpenCode', () => {
-    const resolved = resolveComposerAttachmentModel({
+    const resolved = resolve({
       sessionId: 'ses_oc',
       sessionTarget: {
         harnessId: 'opencode',
         providerId: 'opencode',
         modelId: 'big-pickle',
       },
-      openCodeProviderId: 'opencode',
-      openCodeModelId: 'big-pickle',
-      openCodeMetadata: {
-        id: 'big-pickle',
-        providerId: 'opencode',
-        name: 'Big Pickle',
-        modalities: { input: ['text'], output: ['text'] },
-      },
-      claudeCatalog,
     });
 
     expect(resolved.modelKey).toBe('opencode/big-pickle');
@@ -87,17 +70,9 @@ describe('resolveComposerAttachmentModel', () => {
   });
 
   test('uses last-used Claude target for drafts without a session', () => {
-    const resolved = resolveComposerAttachmentModel({
+    const resolved = resolve({
       sessionId: null,
       lastUsedTarget: { harnessId: 'claude-code', modelRef: 'opus' },
-      openCodeProviderId: 'opencode',
-      openCodeModelId: 'big-pickle',
-      openCodeMetadata: {
-        id: 'big-pickle',
-        providerId: 'opencode',
-        name: 'Big Pickle',
-        modalities: { input: ['text'], output: ['text'] },
-      },
       claudeCatalog: null,
     });
 

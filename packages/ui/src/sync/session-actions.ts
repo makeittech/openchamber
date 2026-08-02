@@ -1188,6 +1188,71 @@ export async function abortCurrentOperation(sessionId: string): Promise<void> {
 // Permissions
 // ---------------------------------------------------------------------------
 
+/**
+ * Synthetic Claude harness subagent session ids (`ses_claude_sub_*`). They are
+ * transcript-only broadcast shells, not selectable sessions, so permission
+ * asks stamped on them must resolve back to the real parent session before
+ * the reply can reach the harness endpoint.
+ */
+const CLAUDE_SUBAGENT_SESSION_PREFIX = "ses_claude_sub_"
+
+function isClaudeSubagentSessionId(sessionId: string): boolean {
+  return typeof sessionId === "string" && sessionId.startsWith(CLAUDE_SUBAGENT_SESSION_PREFIX)
+}
+
+/**
+ * Walk loaded child stores to find the real parent of a synthetic Claude
+ * subagent session id: either the session record itself (`parentID`) or the
+ * pending permission/ask carrying `metadata.parentSessionID`.
+ */
+function findClaudeSubagentParentSessionId(sessionId: string, requestId: string): string | null {
+  if (!isClaudeSubagentSessionId(sessionId)) return null
+  const stores = _childStores
+  if (!stores) return null
+
+  for (const [, store] of stores.children) {
+    const state = store.getState()
+    const session = state.session.find((entry) => entry.id === sessionId)
+    const parentId = session?.parentID
+    if (typeof parentId === "string" && parentId.length > 0) return parentId
+  }
+
+  if (requestId) {
+    for (const [, store] of stores.children) {
+      const state = store.getState()
+      const requests = state.permission?.[sessionId]
+      if (!requests) continue
+      const request = requests.find((entry) => entry.id === requestId)
+      const parentSessionID = request?.metadata?.parentSessionID
+      if (typeof parentSessionID === "string" && parentSessionID.length > 0) return parentSessionID
+    }
+  }
+
+  return null
+}
+
+/**
+ * Resolve the harness target a permission reply must be sent through. For a
+ * synthetic Claude subagent session id the direct lookup fails (the id is not
+ * a selectable session), so walk up to the real parent and use its target —
+ * otherwise Allow/Deny would silently hit the OpenCode runtime instead of the
+ * Claude harness reply endpoint.
+ */
+function resolveClaudeHarnessReplyTarget(
+  sessionId: string,
+  requestId: string,
+): { sessionId: string } | null {
+  const direct = useSelectionStore.getState().getSessionTarget(sessionId)
+  if (direct?.harnessId === "claude-code") return { sessionId }
+  if (!isClaudeSubagentSessionId(sessionId)) return null
+
+  const parentSessionId = findClaudeSubagentParentSessionId(sessionId, requestId)
+  if (!parentSessionId) return null
+  const parentTarget = useSelectionStore.getState().getSessionTarget(parentSessionId)
+  if (parentTarget?.harnessId !== "claude-code") return null
+  return { sessionId: parentSessionId }
+}
+
 export async function respondToPermission(
   sessionId: string,
   requestId: string,
@@ -1195,14 +1260,15 @@ export async function respondToPermission(
   directoryOverride?: string,
 ): Promise<void> {
   await waitForConnectionOrThrow()
+  const harnessTarget = resolveClaudeHarnessReplyTarget(sessionId, requestId)
   const directory = directoryOverride
     || resolveDirectoryForBlockingRequest("permission", sessionId, requestId)
     || getSessionDirectory(sessionId)
+    || (harnessTarget ? getSessionDirectory(harnessTarget.sessionId) : "")
     || dir()
-  const target = useSelectionStore.getState().getSessionTarget(sessionId)
-  if (target?.harnessId === "claude-code") {
+  if (harnessTarget) {
     const result = await harnessPermissionReply({
-      sessionId,
+      sessionId: harnessTarget.sessionId,
       requestId,
       reply: response,
       ...(directory ? { directory } : {}),
@@ -1230,13 +1296,14 @@ export async function dismissPermission(
   requestId: string,
 ): Promise<void> {
   await waitForConnectionOrThrow()
+  const harnessTarget = resolveClaudeHarnessReplyTarget(sessionId, requestId)
   const directory = resolveDirectoryForBlockingRequest("permission", sessionId, requestId)
     || getSessionDirectory(sessionId)
+    || (harnessTarget ? getSessionDirectory(harnessTarget.sessionId) : "")
     || dir()
-  const target = useSelectionStore.getState().getSessionTarget(sessionId)
-  if (target?.harnessId === "claude-code") {
+  if (harnessTarget) {
     const result = await harnessPermissionReply({
-      sessionId,
+      sessionId: harnessTarget.sessionId,
       requestId,
       reply: "reject",
       ...(directory ? { directory } : {}),

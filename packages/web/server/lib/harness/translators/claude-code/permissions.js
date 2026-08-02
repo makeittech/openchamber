@@ -3,7 +3,7 @@
  * Fail-closed: unanswered prompts deny after timeout.
  */
 
-import { createOpenCodeId } from '../../events/from-claude.js';
+import { claudeSubagentSessionId, createOpenCodeId } from '../../events/from-claude.js';
 import { emitHarnessEvents } from '../../events/emit.js';
 import { createAskUserQuestionHandler } from './questions.js';
 
@@ -12,8 +12,10 @@ import { createAskUserQuestionHandler } from './questions.js';
 /**
  * @typedef {object} PendingPermission
  * @property {(result: object) => void} resolve
- * @property {(error: Error) => void} reject
  * @property {string} sessionId
+ * @property {string} [parentSessionId] Real parent session for asks stamped on
+ *   a synthetic subagent child session id (`ses_claude_sub_*`). Abort/turn-end
+ *   cleanup of the parent must settle these too.
  * @property {string} directory
  * @property {Record<string, unknown>} input
  * @property {unknown[] | undefined} suggestions
@@ -21,10 +23,111 @@ import { createAskUserQuestionHandler } from './questions.js';
  * @property {() => ((payload: object, options?: object) => void) | null | undefined} getBroadcast
  */
 
+/**
+ * Per-turn correlation state between the Claude Agent SDK's subagent ids and
+ * the Agent/Task tool_use that spawned them.
+ *
+ * The SDK reports a subagent by its internal `agentID` (canUseTool options,
+ * `agent_id` in hook inputs) but the child session id the UI knows is derived
+ * from the parent Agent/Task tool_use id. `SubagentStart` can fire before the
+ * parent tool's own permission check, so tool_use ids are noted as they appear
+ * and subagent starts bind to the earliest unbound call of the same agent type.
+ */
+export function createSubagentPermissionRuntime() {
+  /** @type {Map<string, string>} toolUseId → lowercased agent type */
+  const pendingByToolUseId = new Map();
+  /** @type {Map<string, string>} agentId → toolUseId */
+  const toolUseIdByAgentId = new Map();
+  /** @type {Map<string, string>} agentId → agent type */
+  const agentTypeByAgentId = new Map();
+
+  const findUnboundToolUseId = (agentType) => {
+    if (pendingByToolUseId.size === 0) return null;
+    if (agentType) {
+      for (const [toolUseId, type] of pendingByToolUseId) {
+        if (type === agentType) return toolUseId;
+      }
+      return null;
+    }
+    // Unknown type: bind the only outstanding call, if there is exactly one.
+    if (pendingByToolUseId.size === 1) return pendingByToolUseId.keys().next().value;
+    return null;
+  };
+
+  return {
+    /**
+     * Note the parent Agent/Task tool call (canUseTool without an agentID).
+     * May run after `SubagentStart` (the SDK can fire the hook before the
+     * parent tool's own permission check), so an earlier unbound start of the
+     * same type binds to this call immediately.
+     * @param {string} [toolUseId]
+     * @param {string} [agentType]
+     */
+    noteAgentToolCall(toolUseId, agentType = '') {
+      if (!toolUseId) return;
+      const type = trimmedString(agentType).toLowerCase();
+      if (type) {
+        for (const [agentId, existingType] of agentTypeByAgentId) {
+          if (!toolUseIdByAgentId.has(agentId) && existingType === type) {
+            toolUseIdByAgentId.set(agentId, toolUseId);
+            return; // consumed by the earlier subagent start
+          }
+        }
+      }
+      pendingByToolUseId.set(toolUseId, type);
+    },
+    /**
+     * Bind a subagent start (SDK `SubagentStart` hook) to its tool_use.
+     * @param {object} input Hook input: `{ agent_id, agent_type }`.
+     */
+    onSubagentStart(input) {
+      const agentId = trimmedString(input?.agent_id);
+      const agentType = trimmedString(input?.agent_type).toLowerCase();
+      if (!agentId) return;
+      agentTypeByAgentId.set(agentId, agentType);
+      const toolUseId = findUnboundToolUseId(agentType);
+      if (toolUseId) {
+        toolUseIdByAgentId.set(agentId, toolUseId);
+        pendingByToolUseId.delete(toolUseId);
+      }
+    },
+    /**
+     * Resolve the parent Agent/Task tool_use id for a nested call.
+     * @param {string} [agentId]
+     * @returns {string | null}
+     */
+    resolveToolUseId(agentId) {
+      if (!agentId) return null;
+      return toolUseIdByAgentId.get(agentId) ?? null;
+    },
+    /**
+     * Agent type (lowercased) for a nested call, or ''.
+     * @param {string} [agentId]
+     * @returns {string}
+     */
+    agentType(agentId) {
+      return agentId ? agentTypeByAgentId.get(agentId) ?? '' : '';
+    },
+  };
+}
+
 /** @type {Map<string, PendingPermission>} */
 const pending = new Map();
 
-export const DEFAULT_PERMISSION_TIMEOUT_MS = 120_000;
+const DEFAULT_PERMISSION_TIMEOUT_MS = 120_000;
+
+/** Tool input fields that can carry a concrete Always-Allow pattern. */
+const PATTERN_INPUT_KEYS = ['command', 'cmd', 'path', 'file_path', 'filePath', 'filename', 'url'];
+
+/** Trimmed string, or `''` for anything that is not a string. */
+const trimmedString = (value) => (typeof value === 'string' ? value.trim() : '');
+
+function permissionError(message, code, statusCode) {
+  const error = new Error(message);
+  error.code = code;
+  error.statusCode = statusCode;
+  return error;
+}
 
 /**
  * Tools injected by OpenChamber itself (Claude SDK MCP openchamber server).
@@ -36,12 +139,11 @@ export const DEFAULT_PERMISSION_TIMEOUT_MS = 120_000;
  * @returns {boolean}
  */
 export function isOpenChamberInjectedTool(toolName) {
-  const name = typeof toolName === 'string' ? toolName.trim() : '';
+  const name = trimmedString(toolName);
   if (!name) return false;
   if (name === 'openchamber') return true;
   // Claude Agent SDK MCP tools are exposed as mcp__<server>__<tool>
-  return name === 'mcp__openchamber__openchamber'
-    || /^mcp__openchamber__/i.test(name);
+  return /^mcp__openchamber__/i.test(name);
 }
 
 /**
@@ -52,20 +154,13 @@ export function isOpenChamberInjectedTool(toolName) {
 export function extractPermissionPatterns(input, options = {}) {
   const patterns = [];
   const push = (value) => {
-    if (typeof value !== 'string') return;
-    const trimmed = value.trim();
+    const trimmed = trimmedString(value);
     if (!trimmed || patterns.includes(trimmed)) return;
     patterns.push(trimmed);
   };
 
   if (input && typeof input === 'object') {
-    push(input.command);
-    push(input.cmd);
-    push(input.path);
-    push(input.file_path);
-    push(input.filePath);
-    push(input.filename);
-    push(input.url);
+    for (const key of PATTERN_INPUT_KEYS) push(input[key]);
   }
   push(options.blockedPath);
   push(options.title);
@@ -100,10 +195,7 @@ function sanitizeToolInput(input) {
  */
 function mapReplyToPermissionResult(reply, entry) {
   if (reply === 'reject') {
-    return {
-      behavior: 'deny',
-      message: 'Permission denied by user',
-    };
+    return { behavior: 'deny', message: 'Permission denied by user' };
   }
 
   const allow = {
@@ -129,19 +221,11 @@ function settlePending(requestId, entry, reply) {
   pending.delete(requestId);
 
   const result = mapReplyToPermissionResult(reply, entry);
-  try {
-    entry.resolve(result);
-  } catch {
-    // ignore double-settle
-  }
+  entry.resolve(result);
 
-  const broadcast = typeof entry.getBroadcast === 'function' ? entry.getBroadcast() : null;
-  emitHarnessEvents(broadcast, entry.directory, [{
+  emitHarnessEvents(entry.getBroadcast(), entry.directory, [{
     type: 'permission.replied',
-    properties: {
-      sessionID: entry.sessionId,
-      requestID: requestId,
-    },
+    properties: { sessionID: entry.sessionId, requestID: requestId },
   }]);
 }
 
@@ -155,11 +239,8 @@ function settlePending(requestId, entry, reply) {
  * @returns {string[]}
  */
 export function buildAlwaysPatterns(patterns, toolName) {
-  if (Array.isArray(patterns) && patterns.length > 0) {
-    return [...patterns];
-  }
-  const tool = typeof toolName === 'string' && toolName.trim() ? toolName.trim() : 'tool';
-  return [tool];
+  if (Array.isArray(patterns) && patterns.length > 0) return [...patterns];
+  return [trimmedString(toolName) || 'tool'];
 }
 
 /**
@@ -176,6 +257,11 @@ export function buildAlwaysPatterns(patterns, toolName) {
  *   Inherited OpenCode agent permission rules (`agentsMode: 'opencode'`).
  *   Omitted → every tool asks, which is the native Claude behavior.
  * @param {string} [params.policySourceLabel] Agent name used in deny messages.
+ * @param {ReturnType<typeof createSubagentPermissionRuntime>} [params.subagentRuntime]
+ *   Per-turn Agent/Task tool_use ↔ SDK agentID correlation state.
+ * @param {Record<string, (toolName: string, input: Record<string, unknown>) => 'allow' | 'deny' | 'ask'>} [params.subagentPolicies]
+ *   Lowercased OpenCode subagent name → its own tool policy, applied when the
+ *   SDK reports the call runs inside that subagent (canUseTool `agentID`).
  * @returns {(toolName: string, input: Record<string, unknown>, options: object) => Promise<object>}
  */
 export function createCanUseTool(params) {
@@ -185,40 +271,33 @@ export function createCanUseTool(params) {
   const timeoutMs = Number.isFinite(params?.timeoutMs) && params.timeoutMs > 0
     ? params.timeoutMs
     : DEFAULT_PERMISSION_TIMEOUT_MS;
-  const createId = typeof params?.createId === 'function'
-    ? params.createId
-    : () => createOpenCodeId('perm');
-  const assistantMessageId = typeof params?.assistantMessageId === 'string'
-    ? params.assistantMessageId
-    : '';
-  const resolveToolPolicy = typeof params?.resolveToolPolicy === 'function'
-    ? params.resolveToolPolicy
+  const suppliedCreateId = typeof params?.createId === 'function' ? params.createId : null;
+  const createId = suppliedCreateId || (() => createOpenCodeId('perm'));
+  const assistantMessageId = typeof params?.assistantMessageId === 'string' ? params.assistantMessageId : '';
+  const resolveToolPolicy = typeof params?.resolveToolPolicy === 'function' ? params.resolveToolPolicy : null;
+  const policySourceLabel = trimmedString(params?.policySourceLabel);
+  const subagentRuntime = params?.subagentRuntime && typeof params.subagentRuntime === 'object'
+    ? params.subagentRuntime
     : null;
-  const policySourceLabel = typeof params?.policySourceLabel === 'string'
-    ? params.policySourceLabel.trim()
-    : '';
+  const subagentPolicies = params?.subagentPolicies && typeof params.subagentPolicies === 'object'
+    ? params.subagentPolicies
+    : null;
 
   const askUserQuestion = createAskUserQuestionHandler({
     sessionId,
     directory,
     getBroadcast,
-    createId: typeof params?.createId === 'function' ? params.createId : () => createOpenCodeId('qst'),
+    createId: suppliedCreateId || (() => createOpenCodeId('qst')),
     assistantMessageId,
   });
 
   return async (toolName, input, options = {}) => {
     if (!sessionId || !directory) {
-      return {
-        behavior: 'deny',
-        message: 'Permission bridge misconfigured',
-      };
+      return { behavior: 'deny', message: 'Permission bridge misconfigured' };
     }
 
     if (options?.signal?.aborted) {
-      return {
-        behavior: 'deny',
-        message: 'Permission request aborted',
-      };
+      return { behavior: 'deny', message: 'Permission request aborted' };
     }
 
     const safeInput = input && typeof input === 'object' ? input : {};
@@ -230,25 +309,40 @@ export function createCanUseTool(params) {
     }
 
     if (isOpenChamberInjectedTool(toolName)) {
-      return {
-        behavior: 'allow',
-        updatedInput: safeInput,
-      };
+      return { behavior: 'allow', updatedInput: safeInput };
+    }
+
+    // A nested tool call reports the subagent it runs inside. Correlate it
+    // back to the Agent/Task tool_use that spawned it and apply THAT
+    // subagent's permission ruleset instead of the parent's.
+    const agentId = typeof options?.agentID === 'string' ? options.agentID : '';
+    const nestedAgentType = subagentRuntime && agentId
+      ? subagentRuntime.agentType(agentId)
+      : '';
+    const subagentPolicy = nestedAgentType && subagentPolicies
+      ? subagentPolicies[nestedAgentType]
+      : null;
+
+    let policy = null;
+    let policyLabel = policySourceLabel;
+    if (subagentPolicy) {
+      policy = subagentPolicy;
+      policyLabel = nestedAgentType;
+    } else if (resolveToolPolicy) {
+      policy = resolveToolPolicy;
     }
 
     // Inherited OpenCode agent rules decide before the user is involved, the
     // same way they do on an OpenCode session: `allow` runs, `deny` refuses,
     // and only `ask` (or no rule at all) reaches the PermissionCard.
-    if (resolveToolPolicy) {
+    if (policy) {
       let decision = 'ask';
       try {
-        decision = resolveToolPolicy(toolName, safeInput);
+        decision = policy(toolName, safeInput);
       } catch (error) {
         // A broken policy must not widen access — fall back to asking.
-        console.warn(
-          '[harness/claude-code] agent permission policy failed:',
-          error instanceof Error ? error.message : error,
-        );
+        const detail = error instanceof Error ? error.message : error;
+        console.warn('[harness/claude-code] agent permission policy failed:', detail);
         decision = 'ask';
       }
       if (decision === 'allow') {
@@ -257,15 +351,37 @@ export function createCanUseTool(params) {
       if (decision === 'deny') {
         return {
           behavior: 'deny',
-          message: policySourceLabel
-            ? `Denied by OpenCode agent "${policySourceLabel}" permission rules`
+          message: policyLabel
+            ? `Denied by OpenCode agent "${policyLabel}" permission rules`
             : 'Denied by OpenCode agent permission rules',
         };
       }
     }
 
+    // The parent Agent/Task call itself is noted so its subagent starts can
+    // bind back to this tool_use id (SubagentStart may fire before or after
+    // this check).
+    if (!agentId && (toolName === 'Agent' || toolName === 'Task')) {
+      subagentRuntime?.noteAgentToolCall(
+        typeof options?.toolUseID === 'string' ? options.toolUseID : '',
+        trimmedString(safeInput.subagent_type) || trimmedString(safeInput.agent),
+      );
+    }
+
+    // Permission asks raised *inside* a subagent are stamped on the synthetic
+    // child session id (same scheme as the Agent/Task child sessions) and
+    // carry the real parent in metadata, so the PermissionCard shows the
+    // localized "From subagent" badge and replies route back to the parent.
+    const askSessionId = agentId
+      ? claudeSubagentSessionId(
+        sessionId,
+        subagentRuntime?.resolveToolUseId(agentId) || agentId,
+      )
+      : sessionId;
+    const parentSessionId = agentId ? sessionId : '';
+
     const requestId = createId();
-    const tool = typeof toolName === 'string' && toolName.trim() ? toolName.trim() : 'tool';
+    const tool = trimmedString(toolName) || 'tool';
     const patterns = extractPermissionPatterns(safeInput, {
       blockedPath: typeof options.blockedPath === 'string' ? options.blockedPath : undefined,
       title: typeof options.title === 'string' ? options.title : undefined,
@@ -281,36 +397,33 @@ export function createCanUseTool(params) {
       ...(typeof options.displayName === 'string' ? { displayName: options.displayName } : {}),
       ...(typeof options.toolUseID === 'string' ? { toolUseID: options.toolUseID } : {}),
       ...(typeof options.requestId === 'string' ? { sdkRequestId: options.requestId } : {}),
+      ...(agentId ? { fromSubagent: true, parentSessionID: sessionId } : {}),
       always,
     };
 
     const permissionRequest = {
       id: requestId,
-      sessionID: sessionId,
+      sessionID: askSessionId,
       permission: tool,
       patterns,
       metadata,
       always,
       ...(typeof options.toolUseID === 'string' ? {
-        tool: {
-          messageID: assistantMessageId,
-          callID: options.toolUseID,
-        },
+        tool: { messageID: assistantMessageId, callID: options.toolUseID },
       } : {}),
     };
 
-    const broadcast = getBroadcast();
-    emitHarnessEvents(broadcast, directory, [{
+    emitHarnessEvents(getBroadcast(), directory, [{
       type: 'permission.asked',
       properties: permissionRequest,
     }]);
 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       /** @type {PendingPermission} */
       const entry = {
         resolve,
-        reject,
-        sessionId,
+        sessionId: askSessionId,
+        ...(parentSessionId ? { parentSessionId } : {}),
         directory,
         input: safeInput,
         suggestions: Array.isArray(options.suggestions) ? options.suggestions : undefined,
@@ -318,18 +431,17 @@ export function createCanUseTool(params) {
         getBroadcast,
       };
 
-      entry.timer = setTimeout(() => {
+      // Fail closed on timeout and on abort.
+      const denyIfStillPending = () => {
         if (!pending.has(requestId)) return;
         settlePending(requestId, entry, 'reject');
-      }, timeoutMs);
+      };
 
+      entry.timer = setTimeout(denyIfStillPending, timeoutMs);
       pending.set(requestId, entry);
 
-      if (options?.signal && typeof options.signal.addEventListener === 'function') {
-        options.signal.addEventListener('abort', () => {
-          if (!pending.has(requestId)) return;
-          settlePending(requestId, entry, 'reject');
-        }, { once: true });
+      if (typeof options?.signal?.addEventListener === 'function') {
+        options.signal.addEventListener('abort', denyIfStillPending, { once: true });
       }
     });
   };
@@ -351,30 +463,18 @@ export function replyPermission(body) {
   const reply = body?.reply;
 
   if (!sessionId || !requestId) {
-    const error = new Error('sessionId and requestId are required');
-    error.code = 'PERMISSION_REPLY_INVALID';
-    error.statusCode = 400;
-    throw error;
+    throw permissionError('sessionId and requestId are required', 'PERMISSION_REPLY_INVALID', 400);
   }
   if (reply !== 'once' && reply !== 'always' && reply !== 'reject') {
-    const error = new Error('reply must be once, always, or reject');
-    error.code = 'PERMISSION_REPLY_INVALID';
-    error.statusCode = 400;
-    throw error;
+    throw permissionError('reply must be once, always, or reject', 'PERMISSION_REPLY_INVALID', 400);
   }
 
   const entry = pending.get(requestId);
   if (!entry) {
-    const error = new Error('Permission request not found');
-    error.code = 'PERMISSION_NOT_FOUND';
-    error.statusCode = 404;
-    throw error;
+    throw permissionError('Permission request not found', 'PERMISSION_NOT_FOUND', 404);
   }
   if (entry.sessionId !== sessionId) {
-    const error = new Error('Permission request does not belong to this session');
-    error.code = 'PERMISSION_SESSION_MISMATCH';
-    error.statusCode = 409;
-    throw error;
+    throw permissionError('Permission request does not belong to this session', 'PERMISSION_SESSION_MISMATCH', 409);
   }
 
   settlePending(requestId, entry, reply);
@@ -383,6 +483,10 @@ export function replyPermission(body) {
 
 /**
  * Fail-closed: deny all pending prompts for a session (abort / turn end).
+ * Also settles asks stamped on a synthetic subagent child session id whose
+ * parent is this session — otherwise aborting a parent turn leaves orphaned
+ * pending asks for its subagent.
+ *
  * @param {string} sessionId
  * @returns {number} settled count
  */
@@ -390,7 +494,7 @@ export function rejectPendingForSession(sessionId) {
   if (typeof sessionId !== 'string' || !sessionId) return 0;
   let count = 0;
   for (const [requestId, entry] of Array.from(pending.entries())) {
-    if (entry.sessionId !== sessionId) continue;
+    if (entry.sessionId !== sessionId && entry.parentSessionId !== sessionId) continue;
     settlePending(requestId, entry, 'reject');
     count += 1;
   }
@@ -407,7 +511,7 @@ export function getPendingPermissionCount() {
  * @returns {Array<{ id: string, sessionID: string, directory: string }>}
  */
 export function listPendingPermissions() {
-  return Array.from(pending.entries()).map(([id, entry]) => ({
+  return Array.from(pending, ([id, entry]) => ({
     id,
     sessionID: entry.sessionId,
     directory: entry.directory,

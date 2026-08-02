@@ -84,6 +84,20 @@ describe('session goal Claude harness continuation', () => {
       type: 'session.status',
       properties: { sessionID: SESSION_ID, status: { type: 'idle' }, directory: DIRECTORY },
     });
+    runtime.processPayload({
+      type: 'session.status',
+      properties: { sessionID: SESSION_ID, status: {
+        type: 'retry', attempt: 1, message: 'claude-session-limit', next: 1000,
+      }, directory: DIRECTORY },
+    });
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(promptHarness).not.toHaveBeenCalled();
+    expect(service.generateSmallModelText).not.toHaveBeenCalled();
+    runtime.processPayload({
+      type: 'session.status',
+      properties: { sessionID: SESSION_ID, status: { type: 'idle' }, directory: DIRECTORY },
+    });
     await vi.advanceTimersByTimeAsync(10);
 
     expect(promptHarness).toHaveBeenCalledOnce();

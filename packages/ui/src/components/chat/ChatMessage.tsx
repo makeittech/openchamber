@@ -23,7 +23,9 @@ import { normalizeUserDisplayParts } from './message/normalizeUserDisplayParts';
 import { isHiddenUserMessage } from './message/hiddenUserMessage';
 import { flattenAssistantTextParts } from '@/lib/messages/messageText';
 import { isLikelyProviderAuthFailure, PROVIDER_AUTH_FAILURE_MESSAGE } from '@/lib/messages/providerAuthError';
-import { getProviderModelDisplayName } from '@/lib/modelDisplay';
+import { getProviderModelDisplayName, humanizeModelId } from '@/lib/modelDisplay';
+import { useHarnessStore } from '@/stores/useHarnessStore';
+import { resolveClaudeCatalogModel } from '@/lib/harness/claude-models';
 import { lazyWithChunkRecovery } from '@/lib/chunkLoadRecovery';
 import type { TurnGroupingContext } from './lib/turns/types';
 import { copyMarkdownToClipboard, copyTextToClipboard } from '@/lib/clipboard';
@@ -172,6 +174,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     }
 
     const providers = useConfigStore((state) => state.providers);
+    const claudeCatalog = useHarnessStore((state) => state.catalogsById['claude-code']);
     const { showReasoningTraces, stickyUserHeader, chatRenderMode, showExpandedBashTools, showExpandedEditTools } = useUIStore(
         useShallow((state) => ({
             showReasoningTraces: state.showReasoningTraces,
@@ -360,11 +363,29 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     const modelName = React.useMemo(() => {
         if (isUser) return undefined;
 
+        // Claude Code harness transcripts can carry placeholder model ids
+        // (`<synthetic>`, `<unknown>`, ...) for records the session-limit
+        // auto-resume machinery injects. They are not real models — resolve
+        // the display name through the harness catalog (which knows the
+        // session's actual modelRef) instead of surfacing the placeholder.
+        if (providerID === 'claude-code') {
+            if (!modelID) return undefined;
+            if (typeof modelID === 'string' && /^<[^>]+>$/.test(modelID.trim())) {
+                return undefined;
+            }
+            const models = claudeCatalog?.sections.flatMap((section) => section.models) ?? [];
+            const resolved = resolveClaudeCatalogModel(models, modelID);
+            if (resolved.name && resolved.name !== modelID) {
+                return resolved.name;
+            }
+            return humanizeModelId(modelID) || undefined;
+        }
+
         const provider = providerID && providers.length > 0
             ? providers.find((p) => p.id === providerID)
             : undefined;
         return getProviderModelDisplayName(provider, modelID) || undefined;
-    }, [isUser, providerID, modelID, providers]);
+    }, [isUser, providerID, modelID, providers, claudeCatalog]);
 
     const modelHasVariants = React.useMemo(() => {
         if (isUser) return false;

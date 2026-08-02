@@ -16,6 +16,15 @@ import { listMcpConfigs } from '../../../opencode/mcp.js';
  */
 const RESERVED_MCP_SERVER_NAME = 'openchamber';
 
+function stringifyValues(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const result = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (key && entry !== undefined && entry !== null) result[key] = String(entry);
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
+
 /**
  * @param {unknown} entry
  * @returns {Record<string, unknown> | null}
@@ -38,15 +47,8 @@ export function convertOpenCodeMcpEntryToClaude(entry) {
       command,
       args,
     };
-    if (entry.environment && typeof entry.environment === 'object' && !Array.isArray(entry.environment)) {
-      /** @type {Record<string, string>} */
-      const env = {};
-      for (const [key, value] of Object.entries(entry.environment)) {
-        if (!key || value === undefined || value === null) continue;
-        env[String(key)] = String(value);
-      }
-      if (Object.keys(env).length > 0) config.env = env;
-    }
+    const env = stringifyValues(entry.environment);
+    if (env) config.env = env;
     return config;
   }
 
@@ -60,15 +62,8 @@ export function convertOpenCodeMcpEntryToClaude(entry) {
     type: 'http',
     url,
   };
-  if (entry.headers && typeof entry.headers === 'object' && !Array.isArray(entry.headers)) {
-    /** @type {Record<string, string>} */
-    const headers = {};
-    for (const [key, value] of Object.entries(entry.headers)) {
-      if (!key || value === undefined || value === null) continue;
-      headers[String(key)] = String(value);
-    }
-    if (Object.keys(headers).length > 0) config.headers = headers;
-  }
+  const headers = stringifyValues(entry.headers);
+  if (headers) config.headers = headers;
   return config;
 }
 

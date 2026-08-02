@@ -1,29 +1,7 @@
-/**
- * Merge Claude harness messages into OpenCode `/session/:id/message` responses.
- *
- * Three sources, in ascending precedence:
- * 1. Transcript replay — the durable Claude JSONL on disk (imported sessions
- *    and any history predating this server process).
- * 2. OpenCode's own list (shell session; normally empty for Claude bindings).
- * 3. Live turn snapshot — the in-flight/last turn, which the transcript flush
- *    may not have caught up with yet.
- *
- * Without this, an authoritative empty OpenCode refetch wipes optimistic /
- * event-applied chat and imported sessions render as blank pages.
- */
-
 import { getSessionBinding } from './session-bindings.js';
 import { getHarnessRecentMessages } from './turn-snapshot.js';
 import { getClaudeTranscriptMessages } from './translators/claude-code/transcript-messages.js';
 
-/**
- * Concatenated text of a message's text/reasoning parts — identity key for
- * transcript/live dedupe (the live turn is appended to the same JSONL the
- * transcript replay reads, so without this both copies render).
- *
- * @param {object} record
- * @returns {string}
- */
 function messageTextKey(record) {
   const role = record?.info?.role === 'user' ? 'user' : 'assistant';
   const parts = Array.isArray(record?.parts) ? record.parts : [];
@@ -35,23 +13,13 @@ function messageTextKey(record) {
   return `${role}:${text}`;
 }
 
-/**
- * @param {object} record
- * @returns {number}
- */
 function messageCreatedAt(record) {
   const created = record?.info?.time?.created;
   return Number.isFinite(created) ? created : 0;
 }
 
-/** Dedupe window: live snapshot and transcript flush of the same turn. */
 const LIVE_TRANSCRIPT_OVERLAP_MS = 15 * 60 * 1000;
 
-/**
- * @param {unknown} openCodeMessages
- * @param {string} sessionId
- * @returns {Array<{ info: object, parts?: object[] }>}
- */
 export function mergeHarnessMessagesIntoSessionMessages(openCodeMessages, sessionId) {
   const base = Array.isArray(openCodeMessages) ? [...openCodeMessages] : [];
   if (typeof sessionId !== 'string' || !sessionId) {
@@ -71,7 +39,6 @@ export function mergeHarnessMessagesIntoSessionMessages(openCodeMessages, sessio
   }
 
   const live = Array.isArray(harnessMessages) ? harnessMessages : [];
-  // Drop transcript copies of turns the live snapshot already represents.
   const liveKeys = new Map();
   for (const record of live) {
     const key = messageTextKey(record);

@@ -54,7 +54,8 @@ const createRuntimeHarness = ({
     const url = new URL(typeof input === 'string' ? input : input.url);
     requests.push({ url, method: init.method ?? 'GET', body: init.body });
     if (url.pathname === `/session/${SESSION_ID}` && init.method === 'PATCH') {
-      return jsonResponse({ ...session, title: JSON.parse(init.body).title });
+      session.title = JSON.parse(init.body).title;
+      return jsonResponse({ ...session });
     }
     if (url.pathname === `/session/${SESSION_ID}`) {
       return jsonResponse(session);
@@ -126,12 +127,11 @@ describe('session title runtime', () => {
     runtime.stop();
   });
 
-  it('patches title on idle after user message using harness recent messages', async () => {
+  it('patches title as soon as the first user message arrives, without waiting for idle', async () => {
     const { runtime, requests, service, getHarnessRecentMessages } = createRuntimeHarness();
 
     runtime.processHarnessPayload(userMessageEvent(), DIRECTORY);
     runtime.processHarnessPayload(busyEvent(), DIRECTORY);
-    runtime.processHarnessPayload(idleEvent(), DIRECTORY);
     await waitForRuntime();
 
     expect(getHarnessRecentMessages).toHaveBeenCalledWith(SESSION_ID);
@@ -142,6 +142,94 @@ describe('session title runtime', () => {
     expect(patch.url.searchParams.get('directory')).toBe(DIRECTORY);
     expect(JSON.parse(patch.body)).toEqual({ title: 'OAuth Callback Handling' });
     runtime.stop();
+  });
+
+  it('upgrades an early fallback title to Claude ai-title once the turn ends', async () => {
+    const foreignId = '123e4567-e89b-42d3-a456-426614174000';
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'session-title-test-'));
+    const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = tmpRoot;
+    resetClaudeTranscriptCaches();
+    try {
+      const projectDir = path.join(tmpRoot, 'projects', '-workspace');
+      fs.mkdirSync(projectDir, { recursive: true });
+      const transcriptPath = path.join(projectDir, `${foreignId}.jsonl`);
+
+      const { runtime, requests, service } = createRuntimeHarness({
+        binding: { harnessId: 'claude-code', foreignSessionId: foreignId },
+      });
+
+      // First user message arrives with no ai-title yet: the fallback title is
+      // applied immediately instead of waiting for Claude to finish.
+      runtime.processHarnessPayload(userMessageEvent(), DIRECTORY);
+      runtime.processHarnessPayload(busyEvent(), DIRECTORY);
+      await waitForRuntime();
+      expect(service.generateSmallModelText).toHaveBeenCalledTimes(1);
+      const fallbackPatch = requests.filter((request) => request.method === 'PATCH');
+      expect(fallbackPatch).toHaveLength(1);
+      expect(JSON.parse(fallbackPatch[0].body)).toEqual({ title: 'OAuth Callback Handling' });
+
+      // The CLI writes its native name at turn end; idle re-checks and the
+      // fallback is upgraded to the name the user sees in Claude.
+      fs.writeFileSync(transcriptPath, [
+        JSON.stringify({ type: 'ai-title', aiTitle: 'Claude native session name', sessionId: foreignId }),
+      ].join('\n'));
+      runtime.processHarnessPayload(idleEvent(), DIRECTORY);
+      await waitForRuntime();
+
+      const patches = requests.filter((request) => request.method === 'PATCH');
+      expect(patches).toHaveLength(2);
+      expect(JSON.parse(patches[1].body)).toEqual({ title: 'Claude native session name' });
+      runtime.stop();
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
+      resetClaudeTranscriptCaches();
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not overwrite a user-set title with a later ai-title', async () => {
+    const foreignId = '123e4567-e89b-42d3-a456-426614174000';
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'session-title-test-'));
+    const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = tmpRoot;
+    resetClaudeTranscriptCaches();
+    try {
+      const projectDir = path.join(tmpRoot, 'projects', '-workspace');
+      fs.mkdirSync(projectDir, { recursive: true });
+      const transcriptPath = path.join(projectDir, `${foreignId}.jsonl`);
+      const mutableSession = { id: SESSION_ID, title: 'Untitled Session' };
+
+      const { runtime, requests } = createRuntimeHarness({
+        binding: { harnessId: 'claude-code', foreignSessionId: foreignId },
+        session: mutableSession,
+      });
+
+      // Fallback is applied immediately from the first user message.
+      runtime.processHarnessPayload(userMessageEvent(), DIRECTORY);
+      await waitForRuntime();
+      expect(requests.filter((request) => request.method === 'PATCH')).toHaveLength(1);
+
+      // The user renames the session while Claude works; the later native
+      // ai-title must not override the user's choice.
+      mutableSession.title = 'My custom name';
+      fs.writeFileSync(transcriptPath, [
+        JSON.stringify({ type: 'ai-title', aiTitle: 'Claude native session name', sessionId: foreignId }),
+      ].join('\n'));
+      runtime.processHarnessPayload(idleEvent(), DIRECTORY);
+      await waitForRuntime();
+
+      const patches = requests.filter((request) => request.method === 'PATCH');
+      expect(patches).toHaveLength(1);
+      expect(JSON.parse(patches[0].body)).toEqual({ title: 'OAuth Callback Handling' });
+      runtime.stop();
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
+      resetClaudeTranscriptCaches();
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 
   it('prefers Claude ai-title from the transcript over small-model generation', async () => {

@@ -7,7 +7,6 @@ import type {
   HarnessCapability,
   HarnessDescriptor,
   HarnessId,
-  HarnessRuntimeStatus,
 } from '@/types/harness';
 import {
   HARNESS_CAPABILITIES,
@@ -19,69 +18,52 @@ import {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-const parseAuthMode = (value: unknown): HarnessAuthMode | null => {
-  if (value === 'subscription-cli' || value === 'opencode-providers') {
-    return value;
-  }
-  return null;
-};
+const nonEmptyString = (value: unknown): string | null =>
+  typeof value === 'string' && value.trim() ? value.trim() : null;
+
+const isPresent = <T>(entry: T | null): entry is T => entry !== null;
+
+const parseAuthMode = (value: unknown): HarnessAuthMode | null =>
+  (value === 'subscription-cli' || value === 'opencode-providers' ? value : null);
 
 const parseCapabilities = (value: unknown): Record<HarnessCapability, CapabilityLevel> | null => {
-  if (!isRecord(value)) {
-    return null;
-  }
+  if (!isRecord(value)) return null;
   const result = {} as Record<HarnessCapability, CapabilityLevel>;
   for (const capability of HARNESS_CAPABILITIES) {
     const level = value[capability];
-    if (!isCapabilityLevel(level)) {
-      return null;
-    }
+    if (!isCapabilityLevel(level)) return null;
     result[capability] = level;
   }
   return result;
 };
 
 const parseDescriptor = (value: unknown): HarnessDescriptor | null => {
-  if (!isRecord(value)) {
-    return null;
-  }
-  if (!isHarnessId(value.id)) {
-    return null;
-  }
-  if (typeof value.displayName !== 'string' || value.displayName.trim().length === 0) {
-    return null;
-  }
-  if (typeof value.shortName !== 'string' || value.shortName.trim().length === 0) {
-    return null;
-  }
+  if (!isRecord(value)) return null;
+  if (!isHarnessId(value.id)) return null;
+  const displayName = nonEmptyString(value.displayName);
+  const shortName = nonEmptyString(value.shortName);
+  if (!displayName || !shortName) return null;
   const auth = isRecord(value.auth) ? parseAuthMode(value.auth.mode) : null;
-  if (!auth) {
-    return null;
-  }
+  if (!auth) return null;
   const capabilities = parseCapabilities(value.capabilities);
-  if (!capabilities) {
-    return null;
-  }
-  if (!isRecord(value.install)) {
-    return null;
-  }
+  if (!capabilities) return null;
+  if (!isRecord(value.install)) return null;
   const binaryNames = Array.isArray(value.install.binaryNames)
     ? value.install.binaryNames.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
     : [];
-  if (typeof value.install.docsUrl !== 'string' || value.install.docsUrl.trim().length === 0) {
-    return null;
-  }
+  const docsUrl = nonEmptyString(value.install.docsUrl);
+  if (!docsUrl) return null;
   const minVersion = typeof value.install.minVersion === 'string' ? value.install.minVersion : undefined;
 
   return {
     id: value.id,
-    displayName: value.displayName.trim(),
-    shortName: value.shortName.trim(),
+    displayName,
+    shortName,
     auth: { mode: auth },
     capabilities,
     install: {
       binaryNames,
-      docsUrl: value.install.docsUrl.trim(),
+      docsUrl,
       ...(minVersion ? { minVersion } : {}),
     },
   };
@@ -98,15 +80,10 @@ const parseStringList = (value: unknown): string[] | undefined => {
 };
 
 const parseModel = (value: unknown): HarnessCatalogModel | null => {
-  if (!isRecord(value)) {
-    return null;
-  }
-  if (typeof value.id !== 'string' || value.id.trim().length === 0) {
-    return null;
-  }
-  if (typeof value.name !== 'string' || value.name.trim().length === 0) {
-    return null;
-  }
+  if (!isRecord(value)) return null;
+  const id = nonEmptyString(value.id);
+  const name = nonEmptyString(value.name);
+  if (!id || !name) return null;
 
   const limitRecord = isRecord(value.limit) ? value.limit : null;
   const context = limitRecord ? parsePositiveNumber(limitRecord.context) : undefined;
@@ -116,8 +93,8 @@ const parseModel = (value: unknown): HarnessCatalogModel | null => {
   const outputModalities = modalitiesRecord ? parseStringList(modalitiesRecord.output) : undefined;
 
   return {
-    id: value.id.trim(),
-    name: value.name.trim(),
+    id,
+    name,
     ...(typeof value.supportsImages === 'boolean' ? { supportsImages: value.supportsImages } : {}),
     ...(typeof value.supportsDocuments === 'boolean' ? { supportsDocuments: value.supportsDocuments } : {}),
     ...(typeof value.reasoning === 'boolean' ? { reasoning: value.reasoning } : {}),
@@ -137,94 +114,53 @@ const parseModel = (value: unknown): HarnessCatalogModel | null => {
 };
 
 const parseSection = (value: unknown): HarnessCatalogSection | null => {
-  if (!isRecord(value)) {
-    return null;
-  }
-  if (typeof value.id !== 'string' || value.id.trim().length === 0) {
-    return null;
-  }
-  if (typeof value.name !== 'string' || value.name.trim().length === 0) {
-    return null;
-  }
-  if (value.kind !== 'provider' && value.kind !== 'profile' && value.kind !== 'models') {
-    return null;
-  }
-  if (!Array.isArray(value.models)) {
-    return null;
-  }
-  const models = value.models
-    .map((entry) => parseModel(entry))
-    .filter((entry): entry is HarnessCatalogModel => Boolean(entry));
+  if (!isRecord(value)) return null;
+  const id = nonEmptyString(value.id);
+  const name = nonEmptyString(value.name);
+  if (!id || !name) return null;
+  if (value.kind !== 'provider' && value.kind !== 'profile' && value.kind !== 'models') return null;
+  if (!Array.isArray(value.models)) return null;
   return {
-    id: value.id.trim(),
-    name: value.name.trim(),
+    id,
+    name,
     kind: value.kind,
-    models,
+    models: value.models.map((entry) => parseModel(entry)).filter(isPresent),
   };
 };
 
-/** Parse one harness catalog object from server JSON. Returns null on malformed payload. */
 export function parseHarnessCatalog(value: unknown): HarnessCatalog | null {
-  if (!isRecord(value)) {
-    return null;
-  }
+  if (!isRecord(value)) return null;
   const descriptor = parseDescriptor(value.descriptor);
-  if (!descriptor) {
-    return null;
-  }
-  if (!isHarnessRuntimeStatus(value.status)) {
-    return null;
-  }
+  if (!descriptor) return null;
+  if (!isHarnessRuntimeStatus(value.status)) return null;
   const sections = Array.isArray(value.sections)
-    ? value.sections
-      .map((entry) => parseSection(entry))
-      .filter((entry): entry is HarnessCatalogSection => Boolean(entry))
+    ? value.sections.map((entry) => parseSection(entry)).filter(isPresent)
     : [];
+  const statusDetail = nonEmptyString(value.statusDetail);
+  const version = nonEmptyString(value.version);
 
   return {
     descriptor,
-    status: value.status as HarnessRuntimeStatus,
-    ...(typeof value.statusDetail === 'string' && value.statusDetail.trim().length > 0
-      ? { statusDetail: value.statusDetail.trim() }
-      : {}),
-    ...(typeof value.version === 'string' && value.version.trim().length > 0
-      ? { version: value.version.trim() }
-      : {}),
+    status: value.status,
+    ...(statusDetail ? { statusDetail } : {}),
+    ...(version ? { version } : {}),
     sections,
   };
 }
 
+/** An empty list is authoritative; a non-empty list that parses to nothing is a failure. */
 const parseCatalogArray = (list: unknown[]): HarnessCatalog[] | null => {
-  if (list.length === 0) {
-    return [];
-  }
-  const catalogs = list
-    .map((entry) => parseHarnessCatalog(entry))
-    .filter((entry): entry is HarnessCatalog => Boolean(entry));
-  // Every entry malformed ⇒ treat as parse failure, not authoritative empty.
-  if (catalogs.length === 0) {
-    return null;
-  }
-  return catalogs;
+  if (list.length === 0) return [];
+  const catalogs = list.map((entry) => parseHarnessCatalog(entry)).filter(isPresent);
+  return catalogs.length > 0 ? catalogs : null;
 };
 
-/** Parse GET /api/harness list payload. Returns null exclusively on fetch/parse failure shapes. */
 export function parseHarnessCatalogList(payload: unknown): HarnessCatalog[] | null {
-  if (Array.isArray(payload)) {
-    return parseCatalogArray(payload);
-  }
-  if (!isRecord(payload)) {
-    return null;
-  }
-  const list = Array.isArray(payload.catalogs)
-    ? payload.catalogs
-    : Array.isArray(payload.engines)
-      ? payload.engines
-      : null;
-  if (!list) {
-    return null;
-  }
-  return parseCatalogArray(list);
+  if (Array.isArray(payload)) return parseCatalogArray(payload);
+  if (!isRecord(payload)) return null;
+  if (Array.isArray(payload.catalogs)) return parseCatalogArray(payload.catalogs);
+  if (Array.isArray(payload.engines)) return parseCatalogArray(payload.engines);
+  return null;
 }
 
 export function indexCatalogsById(catalogs: HarnessCatalog[]): Record<HarnessId, HarnessCatalog | undefined> {

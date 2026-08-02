@@ -24,6 +24,15 @@ const localeDictionaries = {
   'zh-TW': zhTwDict,
 } as const;
 
+const task10Keys = [
+  'chat.statusRow.retrying',
+  'chat.statusRow.retryingIn',
+  'chat.statusRow.retryAttempt',
+  'chat.statusRow.recoveryBlocked',
+  'chat.chatInput.toast.queueFull',
+  'chat.chatInput.toast.queueTargetsFull',
+] as const;
+
 describe('i18n dictionaries', () => {
   test('all locales stay in key parity with english', () => {
     const englishKeys = Object.keys(enDict).sort();
@@ -37,6 +46,17 @@ describe('i18n dictionaries', () => {
     for (const [, dictionary] of Object.entries(localeDictionaries)) {
       expect(dictionary['common.language.french']).toBeTruthy();
       expect(dictionary['common.language.japanese']).toBeTruthy();
+    }
+  });
+
+  test('all locales provide localized retry and queue-capacity messages', () => {
+    for (const [locale, dictionary] of Object.entries(localeDictionaries)) {
+      for (const key of task10Keys) {
+        expect(dictionary[key]).toBeTruthy();
+        if (locale !== 'en') {
+          expect(dictionary[key]).not.toBe(enDict[key]);
+        }
+      }
     }
   });
 });

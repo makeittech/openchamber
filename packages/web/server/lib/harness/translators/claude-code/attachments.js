@@ -6,10 +6,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
-export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-export const MAX_TURN_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const MAX_TURN_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
 const IMAGE_MIME = new Set([
   'image/png',
@@ -19,7 +19,6 @@ const IMAGE_MIME = new Set([
   'image/webp',
 ]);
 
-const TEXT_LIKE_MIME_PREFIXES = ['text/'];
 const TEXT_LIKE_MIME = new Set([
   'application/json',
   'application/xml',
@@ -65,29 +64,18 @@ const EXTENSION_MIME = new Map([
  */
 
 /**
+ * Classify a mime type into the block kind it produces, or `null` when the
+ * payload is an opaque binary this bridge refuses to forward.
+ *
  * @param {string} mime
- * @returns {boolean}
+ * @returns {'image' | 'pdf' | 'text' | null}
  */
-export function isImageMime(mime) {
-  return IMAGE_MIME.has(String(mime || '').toLowerCase());
-}
-
-/**
- * @param {string} mime
- * @returns {boolean}
- */
-export function isTextLikeMime(mime) {
+function attachmentKind(mime) {
   const normalized = String(mime || '').toLowerCase();
-  if (TEXT_LIKE_MIME.has(normalized)) return true;
-  return TEXT_LIKE_MIME_PREFIXES.some((prefix) => normalized.startsWith(prefix));
-}
-
-/**
- * @param {string} mime
- * @returns {boolean}
- */
-export function isPdfMime(mime) {
-  return String(mime || '').toLowerCase() === 'application/pdf';
+  if (IMAGE_MIME.has(normalized)) return 'image';
+  if (normalized === 'application/pdf') return 'pdf';
+  if (TEXT_LIKE_MIME.has(normalized) || normalized.startsWith('text/')) return 'text';
+  return null;
 }
 
 /**
@@ -95,7 +83,7 @@ export function isPdfMime(mime) {
  * @returns {boolean}
  */
 export function isSupportedAttachmentMime(mime) {
-  return isImageMime(mime) || isTextLikeMime(mime) || isPdfMime(mime);
+  return attachmentKind(mime) !== null;
 }
 
 /**
@@ -103,8 +91,19 @@ export function isSupportedAttachmentMime(mime) {
  * @returns {string}
  */
 function mimeFromFilename(filename) {
-  const ext = path.extname(String(filename || '')).toLowerCase();
-  return EXTENSION_MIME.get(ext) || '';
+  return EXTENSION_MIME.get(path.extname(String(filename || '')).toLowerCase()) || '';
+}
+
+function attachmentError(message, code) {
+  const error = new Error(message);
+  error.code = code;
+  error.statusCode = 400;
+  return error;
+}
+
+/** @param {unknown} value @param {string} fallback @returns {string} */
+function trimmedOr(value, fallback) {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
 }
 
 /**
@@ -115,23 +114,24 @@ function parseDataUrl(dataUrl) {
   if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) return null;
   const comma = dataUrl.indexOf(',');
   if (comma < 0) return null;
-  const header = dataUrl.slice(5, comma);
+  const parts = dataUrl.slice(5, comma).split(';');
   const data = dataUrl.slice(comma + 1);
-  const parts = header.split(';');
   const mime = (parts[0] || '').toLowerCase() || 'application/octet-stream';
-  const isBase64 = parts.some((part) => part.trim() === 'base64');
-  if (!isBase64) {
-    // Percent-encoded payload — decode to utf-8 then re-encode as base64 for size.
-    try {
-      const decoded = decodeURIComponent(data);
-      const base64 = Buffer.from(decoded, 'utf8').toString('base64');
-      return { mime, base64, bytes: Buffer.byteLength(decoded, 'utf8') };
-    } catch {
-      return null;
-    }
+
+  if (parts.some((part) => part.trim() === 'base64')) {
+    return { mime, base64: data, bytes: Math.floor((data.length * 3) / 4) };
   }
-  const bytes = Math.floor((data.length * 3) / 4);
-  return { mime, base64: data, bytes };
+  // Percent-encoded payload — decode to utf-8 then re-encode as base64 for size.
+  try {
+    const decoded = decodeURIComponent(data);
+    return {
+      mime,
+      base64: Buffer.from(decoded, 'utf8').toString('base64'),
+      bytes: Buffer.byteLength(decoded, 'utf8'),
+    };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -139,7 +139,7 @@ function parseDataUrl(dataUrl) {
  * @param {string} url
  * @returns {string | null}
  */
-export function fileUrlToPath(url) {
+function fileUrlToPath(url) {
   if (typeof url !== 'string' || !url.startsWith('file:')) return null;
   try {
     return fileURLToPath(url);
@@ -148,15 +148,10 @@ export function fileUrlToPath(url) {
   }
 }
 
-/**
- * @param {string} target
- * @param {(value: string) => string} [realpathSync]
- * @returns {string}
- */
-function realpathOrSelf(target, realpathSync) {
-  const resolve = realpathSync || fs.realpathSync;
+/** @param {string} target @returns {string} */
+function realpathOrSelf(target) {
   try {
-    return resolve(target);
+    return fs.realpathSync(target);
   } catch {
     // Missing paths cannot escape the sandbox by symlink; readFileAttachment
     // reports the unreadable case with its own error.
@@ -172,12 +167,11 @@ function realpathOrSelf(target, realpathSync) {
  *
  * @param {string} absolutePath
  * @param {string} cwd
- * @param {{ realpathSync?: (value: string) => string }} [options]
  * @returns {string}
  */
-export function assertPathInsideCwd(absolutePath, cwd, options = {}) {
-  const resolvedPath = realpathOrSelf(path.resolve(absolutePath), options.realpathSync);
-  const resolvedCwd = realpathOrSelf(path.resolve(cwd), options.realpathSync);
+export function assertPathInsideCwd(absolutePath, cwd) {
+  const resolvedPath = realpathOrSelf(path.resolve(absolutePath));
+  const resolvedCwd = realpathOrSelf(path.resolve(cwd));
   const relative = path.relative(resolvedCwd, resolvedPath);
   if (relative.startsWith('..') || path.isAbsolute(relative)) {
     const error = new Error('Attachment path is outside the project directory');
@@ -189,72 +183,45 @@ export function assertPathInsideCwd(absolutePath, cwd, options = {}) {
 }
 
 /**
+ * Read a sandboxed on-disk attachment, failing closed on unreadable, non-file,
+ * or oversize input.
+ *
  * @param {string} absolutePath
  * @param {{ mime?: string, filename?: string, maxBytes?: number, cwd?: string, readFileSync?: typeof fs.readFileSync, statSync?: typeof fs.statSync }} [options]
  * @returns {{ mime: string, base64: string, bytes: number, filename: string, path: string }}
  */
-export function readFileAttachment(absolutePath, options = {}) {
+function readFileAttachment(absolutePath, options = {}) {
   const maxBytes = Number.isFinite(options.maxBytes) ? options.maxBytes : MAX_ATTACHMENT_BYTES;
-  const filename = typeof options.filename === 'string' && options.filename.trim()
-    ? options.filename.trim()
-    : path.basename(absolutePath);
-  const cwd = typeof options.cwd === 'string' && options.cwd.trim()
-    ? options.cwd.trim()
-    : '';
+  const filename = trimmedOr(options.filename, path.basename(absolutePath));
+  const cwd = trimmedOr(options.cwd, '');
   const readFileSync = options.readFileSync || ((filePath) => fs.readFileSync(filePath));
   const statSync = options.statSync || ((filePath) => fs.statSync(filePath));
+  const tooLarge = () => attachmentError(`Attachment "${filename}" exceeds max size of ${maxBytes} bytes`, 'ATTACHMENT_TOO_LARGE');
 
-  const resolved = cwd
-    ? assertPathInsideCwd(absolutePath, cwd, { realpathSync: options.realpathSync })
-    : path.resolve(absolutePath);
+  const resolved = cwd ? assertPathInsideCwd(absolutePath, cwd) : path.resolve(absolutePath);
 
   let stat;
   try {
     stat = statSync(resolved);
   } catch {
-    const error = new Error(`Attachment "${filename}" could not be read`);
-    error.code = 'ATTACHMENT_UNREADABLE';
-    error.statusCode = 400;
-    throw error;
+    throw attachmentError(`Attachment "${filename}" could not be read`, 'ATTACHMENT_UNREADABLE');
   }
   if (!stat || typeof stat.isFile !== 'function' || !stat.isFile()) {
-    const error = new Error(`Attachment "${filename}" is not a file`);
-    error.code = 'ATTACHMENT_INVALID';
-    error.statusCode = 400;
-    throw error;
+    throw attachmentError(`Attachment "${filename}" is not a file`, 'ATTACHMENT_INVALID');
   }
-  if (Number.isFinite(stat.size) && stat.size > maxBytes) {
-    const error = new Error(`Attachment "${filename}" exceeds max size of ${maxBytes} bytes`);
-    error.code = 'ATTACHMENT_TOO_LARGE';
-    error.statusCode = 400;
-    throw error;
-  }
+  if (Number.isFinite(stat.size) && stat.size > maxBytes) throw tooLarge();
 
   let buffer;
   try {
     buffer = readFileSync(resolved);
   } catch {
-    const error = new Error(`Attachment "${filename}" could not be read`);
-    error.code = 'ATTACHMENT_UNREADABLE';
-    error.statusCode = 400;
-    throw error;
+    throw attachmentError(`Attachment "${filename}" could not be read`, 'ATTACHMENT_UNREADABLE');
   }
-  if (!Buffer.isBuffer(buffer)) {
-    buffer = Buffer.from(buffer);
-  }
-  if (buffer.byteLength > maxBytes) {
-    const error = new Error(`Attachment "${filename}" exceeds max size of ${maxBytes} bytes`);
-    error.code = 'ATTACHMENT_TOO_LARGE';
-    error.statusCode = 400;
-    throw error;
-  }
-
-  const mime = (typeof options.mime === 'string' && options.mime.trim()
-    ? options.mime.trim().toLowerCase()
-    : '') || mimeFromFilename(filename) || 'application/octet-stream';
+  if (!Buffer.isBuffer(buffer)) buffer = Buffer.from(buffer);
+  if (buffer.byteLength > maxBytes) throw tooLarge();
 
   return {
-    mime,
+    mime: trimmedOr(options.mime, '').toLowerCase() || mimeFromFilename(filename) || 'application/octet-stream',
     base64: buffer.toString('base64'),
     bytes: buffer.byteLength,
     filename,
@@ -266,43 +233,20 @@ export function readFileAttachment(absolutePath, options = {}) {
  * @param {{ mime: string, base64: string, bytes: number, filename: string }} parsed
  * @returns {{ block: Record<string, unknown>, bytes: number, filename: string }}
  */
-function contentBlockFromParsed(parsed) {
-  const { mime, base64, bytes, filename } = parsed;
-
-  if (!isSupportedAttachmentMime(mime)) {
-    const error = new Error(`Attachment "${filename}" type "${mime}" is not supported`);
-    error.code = 'ATTACHMENT_UNSUPPORTED_TYPE';
-    error.statusCode = 400;
-    throw error;
+function contentBlockFromParsed({ mime, base64, bytes, filename }) {
+  const kind = attachmentKind(mime);
+  if (!kind) {
+    throw attachmentError(`Attachment "${filename}" type "${mime}" is not supported`, 'ATTACHMENT_UNSUPPORTED_TYPE');
   }
 
-  if (isImageMime(mime)) {
-    const mediaType = mime === 'image/jpg' ? 'image/jpeg' : mime;
+  if (kind !== 'text') {
+    const mediaType = kind === 'pdf' ? 'application/pdf' : (mime === 'image/jpg' ? 'image/jpeg' : mime);
     return {
       filename,
       bytes,
       block: {
-        type: 'image',
-        source: {
-          type: 'base64',
-          media_type: mediaType,
-          data: base64,
-        },
-      },
-    };
-  }
-
-  if (isPdfMime(mime)) {
-    return {
-      filename,
-      bytes,
-      block: {
-        type: 'document',
-        source: {
-          type: 'base64',
-          media_type: 'application/pdf',
-          data: base64,
-        },
+        type: kind === 'pdf' ? 'document' : 'image',
+        source: { type: 'base64', media_type: mediaType, data: base64 },
       },
     };
   }
@@ -312,19 +256,13 @@ function contentBlockFromParsed(parsed) {
   try {
     text = Buffer.from(base64, 'base64').toString('utf8');
   } catch {
-    const error = new Error(`Attachment "${filename}" could not be decoded as text`);
-    error.code = 'ATTACHMENT_INVALID';
-    error.statusCode = 400;
-    throw error;
+    throw attachmentError(`Attachment "${filename}" could not be decoded as text`, 'ATTACHMENT_INVALID');
   }
 
   return {
     filename,
     bytes,
-    block: {
-      type: 'text',
-      text: `Attached file: ${filename}\n\n${text}`,
-    },
+    block: { type: 'text', text: `Attached file: ${filename}\n\n${text}` },
   };
 }
 
@@ -335,93 +273,61 @@ function contentBlockFromParsed(parsed) {
  */
 export function mapAttachmentToContentBlock(file, options = {}) {
   const maxBytes = Number.isFinite(options.maxBytes) ? options.maxBytes : MAX_ATTACHMENT_BYTES;
-  const filename = typeof file?.filename === 'string' && file.filename.trim()
-    ? file.filename.trim()
-    : 'attachment';
+  const filename = trimmedOr(file?.filename, 'attachment');
   const declaredMime = typeof file?.mime === 'string' ? file.mime.toLowerCase() : '';
   const url = typeof file?.url === 'string' ? file.url : '';
 
   if (!url) {
-    const error = new Error(`Attachment "${filename}" has no url`);
-    error.code = 'ATTACHMENT_INVALID';
-    error.statusCode = 400;
-    throw error;
+    throw attachmentError(`Attachment "${filename}" has no url`, 'ATTACHMENT_INVALID');
   }
 
   if (url.startsWith('data:')) {
     const parsed = parseDataUrl(url);
     if (!parsed) {
-      const error = new Error(`Attachment "${filename}" could not be parsed`);
-      error.code = 'ATTACHMENT_INVALID';
-      error.statusCode = 400;
-      throw error;
+      throw attachmentError(`Attachment "${filename}" could not be parsed`, 'ATTACHMENT_INVALID');
     }
-
-    const mime = declaredMime || parsed.mime;
     if (parsed.bytes > maxBytes) {
-      const error = new Error(`Attachment "${filename}" exceeds max size of ${maxBytes} bytes`);
-      error.code = 'ATTACHMENT_TOO_LARGE';
-      error.statusCode = 400;
-      throw error;
+      throw attachmentError(`Attachment "${filename}" exceeds max size of ${maxBytes} bytes`, 'ATTACHMENT_TOO_LARGE');
     }
-
     return contentBlockFromParsed({
-      mime,
+      mime: declaredMime || parsed.mime,
       base64: parsed.base64,
       bytes: parsed.bytes,
       filename,
     });
   }
 
-  if (url.startsWith('file:')) {
-    const absolutePath = fileUrlToPath(url);
+  // file:// URLs, plus bare absolute/relative paths (VS Code and server file
+  // pickers sometimes omit the scheme). Both are sandboxed under cwd.
+  const isFileUrl = url.startsWith('file:');
+  if (isFileUrl || path.isAbsolute(url) || url.startsWith('.')) {
+    let absolutePath = null;
+    if (isFileUrl) {
+      absolutePath = fileUrlToPath(url);
+      if (!absolutePath) {
+        throw attachmentError(`Attachment "${filename}" file URL could not be parsed`, 'ATTACHMENT_INVALID');
+      }
+    }
+    if (!options.cwd) {
+      throw attachmentError(
+        `Attachment "${filename}" ${isFileUrl ? 'file URL' : 'path'} requires a project directory`,
+        'ATTACHMENT_PATH_REQUIRES_CWD',
+      );
+    }
     if (!absolutePath) {
-      const error = new Error(`Attachment "${filename}" file URL could not be parsed`);
-      error.code = 'ATTACHMENT_INVALID';
-      error.statusCode = 400;
-      throw error;
+      absolutePath = path.isAbsolute(url) ? url : path.resolve(options.cwd, url);
     }
-    if (!options.cwd) {
-      const error = new Error(`Attachment "${filename}" file URL requires a project directory`);
-      error.code = 'ATTACHMENT_PATH_REQUIRES_CWD';
-      error.statusCode = 400;
-      throw error;
-    }
-    const loaded = readFileAttachment(absolutePath, {
+    return contentBlockFromParsed(readFileAttachment(absolutePath, {
       mime: declaredMime,
       filename,
       maxBytes,
       cwd: options.cwd,
       readFileSync: options.readFileSync,
       statSync: options.statSync,
-    });
-    return contentBlockFromParsed(loaded);
+    }));
   }
 
-  // Absolute / relative filesystem paths (VS Code / server file pickers sometimes omit file://).
-  if (path.isAbsolute(url) || url.startsWith('.')) {
-    if (!options.cwd) {
-      const error = new Error(`Attachment "${filename}" path requires a project directory`);
-      error.code = 'ATTACHMENT_PATH_REQUIRES_CWD';
-      error.statusCode = 400;
-      throw error;
-    }
-    const absolutePath = path.isAbsolute(url) ? url : path.resolve(options.cwd, url);
-    const loaded = readFileAttachment(absolutePath, {
-      mime: declaredMime,
-      filename,
-      maxBytes,
-      cwd: options.cwd,
-      readFileSync: options.readFileSync,
-      statSync: options.statSync,
-    });
-    return contentBlockFromParsed(loaded);
-  }
-
-  const error = new Error(`Attachment "${filename}" must be a data URL or project file path`);
-  error.code = 'ATTACHMENT_UNSUPPORTED_URL';
-  error.statusCode = 400;
-  throw error;
+  throw attachmentError(`Attachment "${filename}" must be a data URL or project file path`, 'ATTACHMENT_UNSUPPORTED_URL');
 }
 
 /**
@@ -433,17 +339,11 @@ export function mapAttachmentToContentBlock(file, options = {}) {
  * @param {string} cwd
  * @returns {string | null} relative path for text reference, or null to embed
  */
-export function projectPathReference(file, cwd) {
-  if (!cwd || typeof cwd !== 'string') return null;
+function projectPathReference(file, cwd) {
   const url = typeof file?.url === 'string' ? file.url : '';
   let absolute = null;
-  if (url.startsWith('file:')) {
-    absolute = fileUrlToPath(url);
-  } else if (path.isAbsolute(url)) {
-    absolute = url;
-  } else {
-    return null;
-  }
+  if (url.startsWith('file:')) absolute = fileUrlToPath(url);
+  else if (path.isAbsolute(url)) absolute = url;
   if (!absolute) return null;
   try {
     const resolved = assertPathInsideCwd(absolute, cwd);
@@ -462,42 +362,31 @@ export function mapAttachmentsToContentBlocks(files, options = {}) {
   if (!Array.isArray(files) || files.length === 0) return [];
   const maxFileBytes = options.maxFileBytes ?? MAX_ATTACHMENT_BYTES;
   const maxTurnBytes = options.maxTurnBytes ?? MAX_TURN_ATTACHMENT_BYTES;
-  const preferPathReferences = options.preferPathReferences !== false;
+  const cwd = typeof options.cwd === 'string' ? options.cwd : '';
+  const usePathReferences = options.preferPathReferences !== false && Boolean(cwd);
   const blocks = [];
   let total = 0;
 
   for (const file of files) {
-    const cwd = typeof options.cwd === 'string' ? options.cwd : '';
-    if (preferPathReferences && cwd) {
-      const relative = projectPathReference(file, cwd);
-      if (relative) {
-        const filename = typeof file?.filename === 'string' && file.filename.trim()
-          ? file.filename.trim()
-          : path.basename(relative);
-        const declaredMime = typeof file?.mime === 'string' ? file.mime.toLowerCase() : '';
-        const mime = declaredMime || mimeFromFilename(filename) || mimeFromFilename(relative);
-        if (!isSupportedAttachmentMime(mime)) {
-          const error = new Error(`Attachment "${filename}" type "${mime || 'unknown'}" is not supported`);
-          error.code = 'ATTACHMENT_UNSUPPORTED_TYPE';
-          error.statusCode = 400;
-          throw error;
-        }
-        // Validate readability + size so we fail closed on missing/oversize files.
-        const absolute = path.resolve(cwd, relative);
-        readFileAttachment(absolute, {
-          mime,
-          filename,
-          maxBytes: maxFileBytes,
-          cwd,
-          readFileSync: options.readFileSync,
-          statSync: options.statSync,
-        });
-        blocks.push({
-          type: 'text',
-          text: `Attached project file: ${relative}`,
-        });
-        continue;
+    const relative = usePathReferences ? projectPathReference(file, cwd) : null;
+    if (relative) {
+      const filename = trimmedOr(file?.filename, path.basename(relative));
+      const declaredMime = typeof file?.mime === 'string' ? file.mime.toLowerCase() : '';
+      const mime = declaredMime || mimeFromFilename(filename) || mimeFromFilename(relative);
+      if (!isSupportedAttachmentMime(mime)) {
+        throw attachmentError(`Attachment "${filename}" type "${mime || 'unknown'}" is not supported`, 'ATTACHMENT_UNSUPPORTED_TYPE');
       }
+      // Validate readability + size so we fail closed on missing/oversize files.
+      readFileAttachment(path.resolve(cwd, relative), {
+        mime,
+        filename,
+        maxBytes: maxFileBytes,
+        cwd,
+        readFileSync: options.readFileSync,
+        statSync: options.statSync,
+      });
+      blocks.push({ type: 'text', text: `Attached project file: ${relative}` });
+      continue;
     }
 
     const mapped = mapAttachmentToContentBlock(file, {
@@ -508,21 +397,9 @@ export function mapAttachmentsToContentBlocks(files, options = {}) {
     });
     total += mapped.bytes;
     if (total > maxTurnBytes) {
-      const error = new Error(`Attachments exceed max turn size of ${maxTurnBytes} bytes`);
-      error.code = 'ATTACHMENTS_TOO_LARGE';
-      error.statusCode = 400;
-      throw error;
+      throw attachmentError(`Attachments exceed max turn size of ${maxTurnBytes} bytes`, 'ATTACHMENTS_TOO_LARGE');
     }
     blocks.push(mapped.block);
   }
   return blocks;
-}
-
-/**
- * Helper for tests / debugging — normalize a path to a file URL.
- * @param {string} absolutePath
- * @returns {string}
- */
-export function toFileUrl(absolutePath) {
-  return pathToFileURL(path.resolve(absolutePath)).href;
 }

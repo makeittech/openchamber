@@ -1,8 +1,10 @@
 // Session title: Claude harness turns bypass OpenCode session.promptAsync, so
 // upstream ensureTitle never runs. This event-driven helper names a Claude-bound
-// session once after the first user turn. Claude's own `ai-title` transcript
+// session as soon as the first user message is prepared — it never waits for
+// Claude to finish thinking and acting. Claude's own `ai-title` transcript
 // record is preferred (the name the user sees in Claude); the small-model
-// helper is the fallback for transcripts/CLI versions without one.
+// helper names the session immediately and the native title upgrades the
+// early fallback once the CLI writes it at turn end.
 
 import { readClaudeTranscriptTitle } from '../harness/translators/claude-code/transcript-messages.js';
 
@@ -106,7 +108,8 @@ export const createSessionTitleRuntime = ({
   const attempted = new Set();
   const aiTitleRetries = new Map();
   const sessionsWithUserMessage = new Set();
-  const workingSessions = new Set();
+  /** Fallback titles this runtime applied, keyed by session id. */
+  const fallbackTitles = new Map();
   let stopped = false;
 
   const clearTimer = (sessionId) => {
@@ -148,10 +151,14 @@ export const createSessionTitleRuntime = ({
   const fetchSession = (sessionId, directory) =>
     openCodeFetch(`/session/${encodeURIComponent(sessionId)}`, { directory });
 
-  const shouldSkipSession = (session) => {
+  const shouldSkipSession = (session, sessionId) => {
     if (!session || typeof session !== 'object') return true;
     if (typeof session.parentID === 'string' && session.parentID) return true;
-    return !isDefaultSessionTitle(session.title);
+    if (isDefaultSessionTitle(session.title)) return false;
+    // A non-default title is normally final (user rename or an earlier name).
+    // Only Claude's native ai-title may replace exactly the fallback title we
+    // applied ourselves, never a user-set title.
+    return fallbackTitles.get(sessionId) !== session.title;
   };
 
   const applyTitle = async (sessionId, directory, title, source) => {
@@ -159,7 +166,7 @@ export const createSessionTitleRuntime = ({
       console.warn('[session-title] fresh session fetch failed:', error?.message || error);
       return null;
     });
-    if (shouldSkipSession(freshSession)) return false;
+    if (shouldSkipSession(freshSession, sessionId)) return false;
     if (stopped) return false;
 
     await openCodeFetch(`/session/${encodeURIComponent(sessionId)}`, {
@@ -211,18 +218,25 @@ export const createSessionTitleRuntime = ({
       console.warn('[session-title] session fetch failed:', error?.message || error);
       return null;
     });
-    if (shouldSkipSession(session)) return;
+    if (shouldSkipSession(session, sessionId)) return;
 
     // Claude names its own sessions (`ai-title` transcript records); inherit
-    // that name instead of generating a divergent one.
+    // that name instead of generating a divergent one. This also upgrades an
+    // early fallback title once the CLI writes the native name at turn end.
     const nativeTitle = readNativeClaudeTitle(sessionId);
     if (nativeTitle) {
-      attempted.add(sessionId);
-      await applyTitle(sessionId, directory, nativeTitle, 'claude ai-title');
+      if (await applyTitle(sessionId, directory, nativeTitle, 'claude ai-title')) {
+        fallbackTitles.delete(sessionId);
+      }
       return;
     }
 
-    if (attempted.has(sessionId)) return;
+    if (attempted.has(sessionId)) {
+      // A fallback is applied (or generation failed): keep watching for the
+      // native name so a late ai-title still wins over the early fallback.
+      scheduleAiTitleRetry(sessionId, directory);
+      return;
+    }
 
     const userText = extractHarnessUserText(
       typeof getHarnessRecentMessages === 'function' ? getHarnessRecentMessages(sessionId) : null,
@@ -256,7 +270,12 @@ export const createSessionTitleRuntime = ({
       return;
     }
 
+    // Name the session immediately from the first user message instead of
+    // waiting for Claude to finish thinking and acting; Claude's own ai-title
+    // (written at turn end) replaces this fallback later.
+    fallbackTitles.set(sessionId, title);
     await applyTitle(sessionId, directory, title, `${generated?.providerID ?? 'unknown'}/${generated?.modelID ?? 'unknown'}`);
+    scheduleAiTitleRetry(sessionId, directory);
   };
 
   const armTimer = (sessionId, directory) => {
@@ -286,9 +305,7 @@ export const createSessionTitleRuntime = ({
     if (userMessage) {
       if (!attempted.has(userMessage.sessionId) && isClaudeBoundSession(userMessage.sessionId)) {
         sessionsWithUserMessage.add(userMessage.sessionId);
-        if (!workingSessions.has(userMessage.sessionId)) {
-          armTimer(userMessage.sessionId, directoryHint);
-        }
+        armTimer(userMessage.sessionId, directoryHint);
       }
       return;
     }
@@ -296,14 +313,18 @@ export const createSessionTitleRuntime = ({
     const status = extractSessionStatus(payload);
     if (!status) return;
     if (status.type === 'idle') {
-      workingSessions.delete(status.sessionId);
+      // The CLI writes its native ai-title when the turn ends, sometimes just
+      // after idle. Re-check with a fresh retry budget so an early fallback
+      // title is upgraded to the name Claude chose.
+      aiTitleRetries.delete(status.sessionId);
       if (sessionsWithUserMessage.has(status.sessionId)) {
         armTimer(status.sessionId, status.directory || directoryHint);
       }
       return;
     }
-    workingSessions.add(status.sessionId);
-    clearTimer(status.sessionId);
+    // Busy/retry statuses intentionally do not cancel the pending title timer:
+    // the title is generated as soon as the first user message is prepared,
+    // without waiting for Claude to finish thinking and acting.
   };
 
   const stop = () => {
@@ -316,7 +337,7 @@ export const createSessionTitleRuntime = ({
     attempted.clear();
     aiTitleRetries.clear();
     sessionsWithUserMessage.clear();
-    workingSessions.clear();
+    fallbackTitles.clear();
   };
 
   return { processHarnessPayload, stop };

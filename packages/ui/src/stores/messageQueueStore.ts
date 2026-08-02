@@ -88,7 +88,10 @@ interface MessageQueueState {
 }
 
 interface MessageQueueActions {
-    addToQueue: (target: MessageQueueTarget, message: Omit<QueuedMessage, 'id' | 'createdAt'>) => void;
+    addToQueue: (
+        target: MessageQueueTarget,
+        message: Omit<QueuedMessage, 'id' | 'createdAt'>,
+    ) => { ok: true; id: string } | { ok: false; reason: 'queue-full' | 'queue-targets-full' };
     removeFromQueue: (target: MessageQueueTarget, messageId: string) => void;
     reorderQueue: (target: MessageQueueTarget, fromId: string, toId: string) => void;
     popToInput: (target: MessageQueueTarget, messageId: string) => QueuedMessage | null;
@@ -130,6 +133,15 @@ export const useMessageQueueStore = create<MessageQueueStore>()(
 
                 addToQueue: (target, message) => {
                     const key = getMessageQueueKey(target);
+                    const state = get();
+                    const currentQueue = state.queuedMessages[key] ?? [];
+                    if (currentQueue.length >= MAX_MESSAGES_PER_QUEUE) {
+                        return { ok: false, reason: 'queue-full' };
+                    }
+                    if (!(key in state.queuedMessages) && Object.keys(state.queuedMessages).length >= MAX_QUEUE_TARGETS) {
+                        return { ok: false, reason: 'queue-targets-full' };
+                    }
+
                     const id = `queued-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
                     const queuedMessage: QueuedMessage = {
                         id,
@@ -141,21 +153,14 @@ export const useMessageQueueStore = create<MessageQueueStore>()(
 
                     set((state) => {
                         const currentQueue = state.queuedMessages[key] ?? [];
-                        const queuedMessages = {
-                            ...state.queuedMessages,
-                            [key]: [...currentQueue, queuedMessage].slice(-MAX_MESSAGES_PER_QUEUE),
-                        };
-                        const keys = Object.keys(queuedMessages);
-                        if (keys.length > MAX_QUEUE_TARGETS) {
-                            keys.sort((left, right) => (
-                                (queuedMessages[left]?.[0]?.createdAt ?? 0) - (queuedMessages[right]?.[0]?.createdAt ?? 0)
-                            ));
-                            for (const staleKey of keys.slice(0, keys.length - MAX_QUEUE_TARGETS)) delete queuedMessages[staleKey];
-                        }
                         return {
-                            queuedMessages,
+                            queuedMessages: {
+                                ...state.queuedMessages,
+                                [key]: [...currentQueue, queuedMessage],
+                            },
                         };
                     });
+                    return { ok: true, id };
                 },
 
                 removeFromQueue: (target, messageId) => {

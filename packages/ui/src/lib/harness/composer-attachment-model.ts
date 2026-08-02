@@ -1,9 +1,3 @@
-/**
- * Resolve which model metadata the composer should use for attachment
- * modality warnings. Must follow the active ExecutionTarget (Claude vs OpenCode),
- * not only OpenCode config-store currentProvider/currentModel.
- */
-
 import type { ModelMetadata } from '@/types';
 import type { HarnessCatalog } from '@/types/harness';
 import { resolveActiveClaudeModel } from '@/lib/harness/claude-models';

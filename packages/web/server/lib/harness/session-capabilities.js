@@ -1,8 +1,3 @@
-/**
- * Per-session Claude capability snapshot from system/init (slash commands,
- * MCP status, agents, skills, tools). In-memory only — not durable secrets.
- */
-
 /** @typedef {{
  *   sessionId: string,
  *   foreignSessionId?: string,
@@ -17,13 +12,6 @@
 /** @type {Map<string, SessionCapabilities>} */
 const bySessionId = new Map();
 
-/**
- * Sessions are never explicitly unbound here, so the map is capped the same way
- * `turn-snapshot.js` caps its own: an unbounded per-session Map would grow for
- * the whole life of a long-running server process. Dropping an entry is safe —
- * `getOrCreateSessionCapabilities` falls back to the built-in defaults and the
- * next `system/init` repopulates it.
- */
 const SESSION_LIMIT = 500;
 
 function evictOldest() {
@@ -35,11 +23,6 @@ function evictOldest() {
   if (oldest) bySessionId.delete(oldest.sessionId);
 }
 
-/**
- * Built-in Claude Code slash commands that work without a TTY and are safe to
- * offer before the first system/init arrives.
- * @type {readonly string[]}
- */
 export const CLAUDE_BUILTIN_SLASH_COMMANDS = Object.freeze([
   'clear',
   'compact',
@@ -53,10 +36,6 @@ export const CLAUDE_BUILTIN_SLASH_COMMANDS = Object.freeze([
   'usage',
 ]);
 
-/**
- * @param {unknown} value
- * @returns {string[]}
- */
 function sanitizeStringList(value) {
   if (!Array.isArray(value)) return [];
   const out = [];
@@ -71,10 +50,6 @@ function sanitizeStringList(value) {
   return out;
 }
 
-/**
- * @param {unknown} value
- * @returns {Array<{ name: string, status: string }>}
- */
 function sanitizeMcpServers(value) {
   if (!Array.isArray(value)) return [];
   /** @type {Array<{ name: string, status: string }>} */
@@ -93,22 +68,11 @@ function sanitizeMcpServers(value) {
   return out;
 }
 
-/**
- * @param {string} sessionId
- * @returns {SessionCapabilities | null}
- */
 function getSessionCapabilities(sessionId) {
   if (typeof sessionId !== 'string' || !sessionId.trim()) return null;
   return bySessionId.get(sessionId.trim()) || null;
 }
 
-/**
- * Public JSON shape for GET /api/harness/sessions/:id/capabilities.
- * Always returns a payload (with built-in slash defaults) even before init.
- *
- * @param {string} sessionId
- * @returns {SessionCapabilities}
- */
 export function getOrCreateSessionCapabilities(sessionId) {
   const existing = getSessionCapabilities(sessionId);
   if (existing) return existing;
@@ -124,39 +88,29 @@ export function getOrCreateSessionCapabilities(sessionId) {
   };
 }
 
-/**
- * Merge a system/init (or partial) capability update for a Claude session.
- *
- * @param {string} sessionId
- * @param {object} [input]
- * @returns {SessionCapabilities | null}
- */
+function sanitizeUpdate(input, key, legacyKey = key, sanitize = sanitizeStringList) {
+  if (!Array.isArray(input[key]) && !Array.isArray(input[legacyKey])) return null;
+  return sanitize(input[key] ?? input[legacyKey]);
+}
+
 export function updateSessionCapabilities(sessionId, input = {}) {
   const id = typeof sessionId === 'string' ? sessionId.trim() : '';
   if (!id) return null;
 
   const prev = bySessionId.get(id);
-  const hasSlash = Array.isArray(input.slashCommands) || Array.isArray(input.slash_commands);
-  const hasSkills = Array.isArray(input.skills);
-  const hasAgents = Array.isArray(input.agents);
-  const hasTools = Array.isArray(input.tools);
-  const hasMcp = Array.isArray(input.mcpServers) || Array.isArray(input.mcp_servers);
+  const slashCommands = sanitizeUpdate(input, 'slashCommands', 'slash_commands');
+  const skills = sanitizeUpdate(input, 'skills');
+  const agents = sanitizeUpdate(input, 'agents');
+  const tools = sanitizeUpdate(input, 'tools');
+  const mcpServers = sanitizeUpdate(input, 'mcpServers', 'mcp_servers', sanitizeMcpServers);
 
-  const slashCommands = hasSlash
-    ? sanitizeStringList(input.slashCommands ?? input.slash_commands)
-    : null;
-  const skills = hasSkills ? sanitizeStringList(input.skills) : null;
-  const agents = hasAgents ? sanitizeStringList(input.agents) : null;
-  const tools = hasTools ? sanitizeStringList(input.tools) : null;
-  const mcpServers = hasMcp
-    ? sanitizeMcpServers(input.mcpServers ?? input.mcp_servers)
-    : null;
-
-  const foreignSessionId = typeof input.foreignSessionId === 'string' && input.foreignSessionId.trim()
-    ? input.foreignSessionId.trim()
-    : typeof input.session_id === 'string' && input.session_id.trim()
-      ? input.session_id.trim()
-      : prev?.foreignSessionId;
+  let foreignSessionId = prev?.foreignSessionId;
+  if (typeof input.session_id === 'string' && input.session_id.trim()) {
+    foreignSessionId = input.session_id.trim();
+  }
+  if (typeof input.foreignSessionId === 'string' && input.foreignSessionId.trim()) {
+    foreignSessionId = input.foreignSessionId.trim();
+  }
 
   /** @type {SessionCapabilities} */
   const next = {
@@ -177,26 +131,15 @@ export function updateSessionCapabilities(sessionId, input = {}) {
   return next;
 }
 
-/**
- * @param {string} sessionId
- */
 export function clearSessionCapabilities(sessionId) {
   if (typeof sessionId !== 'string' || !sessionId.trim()) return;
   bySessionId.delete(sessionId.trim());
 }
 
-/** Test helper. */
 export function resetSessionCapabilities() {
   bySessionId.clear();
 }
 
-/**
- * Whether a slash command name is known for this Claude session (discovered or built-in).
- *
- * @param {string} sessionId
- * @param {string} commandName
- * @returns {boolean}
- */
 export function isClaudeSlashCommand(sessionId, commandName) {
   const name = typeof commandName === 'string' ? commandName.trim().replace(/^\//, '') : '';
   if (!name) return false;
