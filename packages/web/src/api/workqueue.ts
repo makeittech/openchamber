@@ -6,6 +6,7 @@ import type {
   WorkQueueFinishResult,
   WorkQueueItem,
   WorkQueueItemStatus,
+  WorkQueuePromptSettings,
   WorkQueueStalenessResult,
   WorkQueueSyncResult,
 } from '@openchamber/ui/lib/api/types';
@@ -59,11 +60,11 @@ export const createWebWorkQueueAPI = (): WorkQueueAPI => ({
     return payload;
   },
 
-  async analyze(id: string, directory?: string) {
+  async analyze(id: string, directory?: string, model?: string) {
     const response = await runtimeFetch(`/api/workqueue/items/${encodeURIComponent(id)}/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify(directory ? { directory } : {}),
+      body: JSON.stringify({ ...(directory ? { directory } : {}), ...(model ? { model } : {}) }),
     });
     const payload = await jsonOrNull<{ item?: WorkQueueItem; error?: string }>(response);
     if (!response.ok || !payload?.item) {
@@ -72,11 +73,11 @@ export const createWebWorkQueueAPI = (): WorkQueueAPI => ({
     return { item: payload.item };
   },
 
-  async analyzeBulk(directory?: string): Promise<WorkQueueBulkAnalysisResult> {
+  async analyzeBulk(directory?: string, model?: string): Promise<WorkQueueBulkAnalysisResult> {
     const response = await runtimeFetch('/api/workqueue/analyze-bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify(directory ? { directory } : {}),
+      body: JSON.stringify({ ...(directory ? { directory } : {}), ...(model ? { model } : {}) }),
     });
     const payload = await jsonOrNull<WorkQueueBulkAnalysisResult & { error?: string }>(response);
     if (!response.ok || !payload) {
@@ -240,5 +241,55 @@ export const createWebWorkQueueAPI = (): WorkQueueAPI => ({
     }
     const version = payload.apiVersion ?? 'v0';
     return { apiVersion: (version === 'v1' ? 'v1' : 'v0') as import('@openchamber/ui/lib/api/types').CursorApiVersion };
+  },
+
+  async promptSettingsGet(): Promise<WorkQueuePromptSettings> {
+    const response = await runtimeFetch('/api/workqueue/settings/prompts', {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    const payload = await jsonOrNull<WorkQueuePromptSettings & { error?: string }>(response);
+    if (!response.ok || !payload) {
+      throw new Error((payload as { error?: string } | null)?.error || response.statusText || 'Failed to load AI workflow prompt settings');
+    }
+    return payload;
+  },
+
+  async promptSettingsSet(patch: Partial<WorkQueuePromptSettings>): Promise<WorkQueuePromptSettings> {
+    const response = await runtimeFetch('/api/workqueue/settings/prompts', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    const payload = await jsonOrNull<WorkQueuePromptSettings & { error?: string }>(response);
+    if (!response.ok || !payload) {
+      throw new Error((payload as { error?: string } | null)?.error || response.statusText || 'Failed to save AI workflow prompt settings');
+    }
+    return payload;
+  },
+
+  async analysisModelGet(): Promise<{ model: string }> {
+    const response = await runtimeFetch('/api/workqueue/settings/model', {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    const payload = await jsonOrNull<{ model?: string; error?: string }>(response);
+    if (!response.ok) {
+      throw new Error(payload?.error || response.statusText || 'Failed to load default analysis model');
+    }
+    return { model: payload?.model || '' };
+  },
+
+  async analysisModelSet(model: string): Promise<{ model: string }> {
+    const response = await runtimeFetch('/api/workqueue/settings/model', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ model }),
+    });
+    const payload = await jsonOrNull<{ model?: string; error?: string }>(response);
+    if (!response.ok) {
+      throw new Error(payload?.error || response.statusText || 'Failed to save default analysis model');
+    }
+    return { model: payload?.model || '' };
   },
 });

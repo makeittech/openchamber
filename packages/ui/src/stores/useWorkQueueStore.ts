@@ -35,8 +35,8 @@ type WorkQueueStore = {
   linkSession: (api: WorkQueueAPI, id: string, sessionId: string) => Promise<void>;
   /** Records a PR the user manually attached as evidence this item is already done. */
   attachPr: (api: WorkQueueAPI, id: string, prUrl: string) => Promise<boolean>;
-  analyzeItem: (api: WorkQueueAPI, id: string, directory?: string) => Promise<void>;
-  analyzeAll: (api: WorkQueueAPI, directory?: string) => Promise<WorkQueueBulkAnalysisResult | null>;
+  analyzeItem: (api: WorkQueueAPI, id: string, directory?: string, model?: string) => Promise<void>;
+  analyzeAll: (api: WorkQueueAPI, directory?: string, model?: string) => Promise<WorkQueueBulkAnalysisResult | null>;
   finishItem: (
     api: WorkQueueAPI,
     id: string,
@@ -149,10 +149,10 @@ export const useWorkQueueStore = create<WorkQueueStore>((set, get) => ({
     }
   },
 
-  analyzeItem: async (api, id, directory) => {
+  analyzeItem: async (api, id, directory, model) => {
     set((state) => ({ pendingIds: new Set(state.pendingIds).add(id) }));
     try {
-      const { item } = await api.analyze(id, directory);
+      const { item } = await api.analyze(id, directory, model);
       set((state) => {
         const nextPending = new Set(state.pendingIds);
         nextPending.delete(id);
@@ -167,10 +167,10 @@ export const useWorkQueueStore = create<WorkQueueStore>((set, get) => ({
     }
   },
 
-  analyzeAll: async (api, directory) => {
+  analyzeAll: async (api, directory, model) => {
     set({ isBulkAnalyzing: true, error: null });
     try {
-      const result = await api.analyzeBulk(directory);
+      const result = await api.analyzeBulk(directory, model);
       set({ isBulkAnalyzing: false });
       // Bulk analysis rewrites many items server-side; reload rather than
       // trying to reconcile each one locally.

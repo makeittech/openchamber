@@ -25,7 +25,16 @@ enabled in `core-routes.js`.
 - `settings.js` — tracked `owner/repo` list for GitHub aggregation, stored in
   `settings.json` as `workqueueRepos`. Also stores the user-selected Cursor API
   version (`cursorApiVersion`: `v0` or `v1`) and resolves effective version
-  with `OPENCHAMBER_CURSOR_API_VERSION` env precedence.
+  with `OPENCHAMBER_CURSOR_API_VERSION` env precedence. Also stores three
+  user-authored prompt fields (Settings > AI Workflow):
+  `workqueueAnalysisPromptExtra`, `workqueueAlreadySolvedPromptExtra`,
+  `workqueueRemoteAgentPromptSuffix` — each defaults to `''` and is exposed via
+  `getWorkQueuePromptSettings()`/`setWorkQueuePromptSettings()`. Also stores an
+  optional default analysis model (`workqueueAnalysisModel`, `provider/model`,
+  validated with the `small-model` module's `parseModelRef()`) via
+  `getWorkQueueAnalysisModel()`/`setWorkQueueAnalysisModel()` — empty/invalid
+  clears it so analysis stays on the small-model module's normal
+  auto-resolution chain rather than being locked to one provider.
 - `sources.js` — `syncGitHub()` (iterates tracked repos via the GitHub
   module's `getOctokitOrNull()`, one repo's failure does not block the
   others) and `syncLinear()` (reuses the Linear module's `issuesList` query
@@ -66,15 +75,23 @@ enabled in `core-routes.js`.
   callback to `checkItemStaleness()` when a directory is active. The model may
   only reference a commit hash or item id that was actually listed —
   `groundDuplicateAndStalenessClaims()` drops anything else before it reaches
-  storage, so a hallucinated reference can never be persisted. Pull requests
-  are refused (`ANALYSIS_NOT_APPLICABLE`) — their review signal is the
-  automated PR review comments, not a model pass. A malformed response *or* a
-  reasoning model that spent its whole output budget before answering gets one
-  retry with a larger budget; anything else (auth, network) is reported
-  without a retry. A persistent failure stores the real reason in
-  `aiAnalysisError`, never a guess. `analyzeAllPending()` is the bulk pass: it
-  skips PRs and already-analyzed items, runs with bounded concurrency, and one
-  failed item never aborts the rest.
+  storage, so a hallucinated reference can never be persisted. Issues and pull
+  requests are analyzed the same way. `buildSystemPrompt()` appends the
+  user-authored `analysisPromptExtra`/`alreadySolvedPromptExtra` (from
+  `settings.js`) after the fixed `ANALYSIS_SYSTEM_PROMPT` — always additive,
+  never a replacement, so the required JSON response schema stays intact
+  regardless of what the user writes. A malformed response *or* a reasoning
+  model that spent its whole output budget before answering gets one retry
+  with a larger budget; anything else (auth, network) is reported without a
+  retry. A persistent failure stores the real reason in `aiAnalysisError`,
+  never a guess. `analyzeAllPending()` is the bulk pass: it skips
+  already-analyzed items, runs with bounded concurrency, and one failed item
+  never aborts the rest. Both `analyzeItem()` and `analyzeAllPending()` accept
+  an optional `model` (`provider/model`) forwarded straight to
+  `generateSmallModelText()`; the route layer resolves it (explicit per-call
+  choice, else the persisted default from `settings.js`, else the small-model
+  module's own auto-resolution) so analysis is never pinned to one
+  provider/model unless the user explicitly picked or defaulted to one.
 - `cursor/auth.js` — Cursor API key storage (`cursor-auth.json`, `0600`,
   atomic), resolved from `OPENCHAMBER_CURSOR_API_KEY` env or the stored key.
 - `cursor/client.js` — version-aware REST client for the Cursor Cloud Agents
@@ -112,9 +129,12 @@ All routes require normal OpenChamber UI auth.
 - `POST /api/workqueue/items/:id/staleness` `{ directory }` — advisory
   "already fixed?" check; uses the AI similar-commit search when the small
   model is available, otherwise falls back to exact references only.
-- `POST /api/workqueue/items/:id/analyze` `{ directory? }` — `400` for PRs
-- `POST /api/workqueue/analyze-bulk` `{ directory? }` →
-  `{ total, done, failed }`; long-running by nature
+- `POST /api/workqueue/items/:id/analyze` `{ directory?, model? }` — issues
+  and pull requests are analyzed the same way; `model` (`provider/model`)
+  overrides the persisted default for this call only
+- `POST /api/workqueue/analyze-bulk` `{ directory?, model? }` →
+  `{ total, done, failed }`; long-running by nature; `model` overrides the
+  persisted default for the whole pass
 - `PATCH /api/workqueue/items/:id` `{ status?, assignee? }` — a transition
   into `in_progress` on an item with no assignee yet self-assigns it at the
   source (GitHub `addAssignees` or Linear `issueUpdate(assigneeId)`) as a
@@ -146,6 +166,14 @@ All routes require normal OpenChamber UI auth.
 - `PUT /api/workqueue/settings/cursor-version` `{ apiVersion: 'v0'|'v1' }` —
   persists the user-selected Cursor API version. Ignored when the env override
   is active.
+- `GET /api/workqueue/settings/prompts` →
+  `{ analysisPromptExtra, alreadySolvedPromptExtra, remoteAgentPromptSuffix }`
+- `PUT /api/workqueue/settings/prompts` — patches only the string-typed fields
+  present in the body; returns the full triple.
+- `GET /api/workqueue/settings/model` → `{ model }` — the persisted default
+  analysis model (`provider/model`), or `''` when unset.
+- `PUT /api/workqueue/settings/model` `{ model }` — sets the persisted
+  default; an empty or malformed value clears it back to auto-resolution.
 
 ## Invariants
 
@@ -155,9 +183,21 @@ All routes require normal OpenChamber UI auth.
 - Analysis results are only ever produced by the model or explicitly marked
   as failed; a parse failure never silently becomes a fabricated/default
   analysis.
-- Pull requests are never AI-analyzed, in the server action and in the UI.
-  The PR detail view shows the GitHub description and the automated
-  `openchamber-bot[bot]` review comments and nothing else.
+- Pull requests are analyzed the same way issues are, both in the server
+  action and in the UI. The PR detail view additionally shows the automated
+  `openchamber-bot[bot]` review comments on its own Review tab.
+- Analysis is never hardcoded to a single provider/model: the detail panel
+  lets the user pick any authenticated provider/model per analysis run, and
+  a separate "set as default" action (Settings > AI Workflow, or the panel's
+  own toggle) persists a preferred model — both read/write the same
+  `workqueueAnalysisModel` setting. Leaving it unset keeps analysis on the
+  small-model module's own auto-resolution chain across authenticated
+  providers.
+- User-configured prompt text (Settings > AI Workflow) is additive-only: it is
+  always appended after the hardcoded `ANALYSIS_SYSTEM_PROMPT` and the
+  generated Cursor dispatch prompt, and never replaces any part of either —
+  the JSON response schema the model must follow stays authoritative
+  regardless of what the user writes.
 - The card Overview is populated from the synced source description alone, so
   it has real content immediately after the first sync, with no dependency on
   an analysis pass having run.

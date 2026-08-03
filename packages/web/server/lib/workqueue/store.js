@@ -87,8 +87,8 @@ const normalizeItem = (entry) => {
     url: typeof entry.url === 'string' ? entry.url : '',
     author: typeof entry.author === 'string' ? entry.author : '',
     labels: Array.isArray(entry.labels) ? entry.labels.filter((label) => typeof label === 'string') : [],
-    // Automated PR review comments (openchamber-bot). PRs are never AI-analyzed;
-    // this is what the PR detail view shows instead.
+    // Automated PR review comments (openchamber-bot), shown on the PR detail
+    // view's Review tab alongside its AI analysis.
     reviewComments: Array.isArray(entry.reviewComments)
       ? entry.reviewComments
         .filter((comment) => comment && typeof comment === 'object' && typeof comment.body === 'string')

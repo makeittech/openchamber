@@ -11,6 +11,9 @@ import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useUIStore } from '@/stores/useUIStore';
 import { useWorkQueueStore } from '@/stores/useWorkQueueStore';
+import { ModelSelector } from '@/components/sections/agents/ModelSelector';
+import { parseModelIdentifier } from '@/lib/modelIdentifier';
+import { runtimeFetch } from '@/lib/runtime-fetch';
 import type { WorkQueueCloseReason, WorkQueueItem, WorkQueueStalenessResult } from '@/lib/api/types';
 import { WorkQueueComplexityBadge, WorkQueueEnvBadges, WorkQueuePriorityBadge } from './workQueueBadges';
 import { WorkQueueCloudAgentDialog } from './WorkQueueCloudAgentDialog';
@@ -36,8 +39,8 @@ interface WorkQueueDetailPanelProps {
   onClose: () => void;
 }
 
-// Pull requests are never AI-analyzed; their second tab shows the automated
-// PR review comments instead of an analysis pass.
+// Pull requests get an extra Review tab for the automated PR review comments,
+// alongside the same Analysis tab issues get.
 type DetailTab = 'overview' | 'analysis' | 'review';
 
 const FINISH_TOAST_KEY_BY_CLOSE_REASON: Record<
@@ -72,9 +75,76 @@ export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item
   const [prUrlInput, setPrUrlInput] = React.useState('');
   const [isAttachingPr, setIsAttachingPr] = React.useState(false);
 
+  // Analysis model: the user can pick any authenticated provider/model for a
+  // single run (never locked to one), and separately persist their choice as
+  // the default via handleSetDefaultAnalysisModel. `analysisModel` starts out
+  // mirroring the persisted default, then tracks the user's in-panel choice.
+  const [defaultAnalysisModel, setDefaultAnalysisModel] = React.useState('');
+  const [analysisModel, setAnalysisModel] = React.useState('');
+  const [analysisModelProviders, setAnalysisModelProviders] = React.useState<string[] | undefined>();
+  const [isSavingDefaultModel, setIsSavingDefaultModel] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!workQueue) return;
+    let cancelled = false;
+    void workQueue.analysisModelGet()
+      .then(({ model }) => {
+        if (cancelled) return;
+        setDefaultAnalysisModel(model);
+        setAnalysisModel(model);
+      })
+      .catch(() => {
+        // Best-effort: the picker simply starts on auto-resolution.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workQueue]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await runtimeFetch('/api/small-model', { method: 'GET', headers: { Accept: 'application/json' } });
+        if (!response.ok) return;
+        const payload = await response.json().catch(() => null) as { authenticatedProviders?: unknown } | null;
+        if (!cancelled && Array.isArray(payload?.authenticatedProviders)) {
+          setAnalysisModelProviders(payload.authenticatedProviders.filter((id): id is string => typeof id === 'string'));
+        }
+      } catch {
+        // leave undefined — picker falls back to showing all providers
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const parsedAnalysisModel = React.useMemo(() => parseModelIdentifier(analysisModel) ?? { providerId: '', modelId: '' }, [analysisModel]);
+
+  const handleAnalysisModelChange = React.useCallback((providerId: string, modelId: string) => {
+    setAnalysisModel(providerId && modelId ? `${providerId}/${modelId}` : '');
+  }, []);
+
+  const handleSetDefaultAnalysisModel = async () => {
+    if (!workQueue) return;
+    setIsSavingDefaultModel(true);
+    try {
+      const { model } = await workQueue.analysisModelSet(analysisModel);
+      setDefaultAnalysisModel(model);
+      toast.success(t('workQueue.detail.toast.defaultModelSet'));
+    } catch (error) {
+      toast.error(t('workQueue.detail.toast.defaultModelSetFailed'), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setIsSavingDefaultModel(false);
+    }
+  };
+
   const isPullRequest = item.type === 'pr';
   const tabs = React.useMemo<DetailTab[]>(
-    () => (isPullRequest ? ['overview', 'review'] : ['overview', 'analysis']),
+    () => (isPullRequest ? ['overview', 'analysis', 'review'] : ['overview', 'analysis']),
     [isPullRequest],
   );
 
@@ -100,7 +170,7 @@ export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item
     if (!workQueue) return;
     setIsAnalyzing(true);
     try {
-      await analyzeItem(workQueue, item.id, projectDirectory || undefined);
+      await analyzeItem(workQueue, item.id, projectDirectory || undefined, analysisModel || undefined);
     } catch (error) {
       toast.error(t('workQueue.detail.toast.analyzeFailed'), {
         description: error instanceof Error ? error.message : String(error),
@@ -380,6 +450,49 @@ export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item
             {item.aiAnalysisError && (
               <p className="typography-ui-label text-destructive">{item.aiAnalysisError}</p>
             )}
+
+            {/* Never locked to one provider/model: any authenticated provider can be
+                picked per run, and the star persists a choice as the default for
+                future runs (this panel and bulk analysis alike). */}
+            <div className="space-y-1.5">
+              <div className="typography-micro font-medium uppercase tracking-wide text-muted-foreground/60">
+                {t('workQueue.detail.field.analysisModel')}
+              </div>
+              <div className="flex items-center gap-1.5">
+                <ModelSelector
+                  providerId={parsedAnalysisModel.providerId}
+                  modelId={parsedAnalysisModel.modelId}
+                  onChange={handleAnalysisModelChange}
+                  allowedProviderIds={analysisModelProviders}
+                  placeholder={t('workQueue.detail.analysis.modelAuto')}
+                  className="h-8"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 flex-shrink-0"
+                  onClick={handleSetDefaultAnalysisModel}
+                  disabled={isSavingDefaultModel || analysisModel === defaultAnalysisModel}
+                  aria-label={
+                    analysisModel === defaultAnalysisModel
+                      ? t('workQueue.detail.analysis.isDefaultModel')
+                      : t('workQueue.detail.analysis.setDefaultModel')
+                  }
+                  title={
+                    analysisModel === defaultAnalysisModel
+                      ? t('workQueue.detail.analysis.isDefaultModel')
+                      : t('workQueue.detail.analysis.setDefaultModel')
+                  }
+                >
+                  <Icon
+                    name={analysisModel === defaultAnalysisModel ? 'star-fill' : 'star'}
+                    className={cn('h-3.5 w-3.5', analysisModel === defaultAnalysisModel && 'text-primary')}
+                  />
+                </Button>
+              </div>
+            </div>
+
             <Button variant="outline" size="sm" onClick={handleAnalyze} disabled={isAnalyzing} className="gap-1.5">
               <Icon name="sparkling" className={isAnalyzing ? 'h-3.5 w-3.5 animate-spin' : 'h-3.5 w-3.5'} />
               {item.aiAnalysis ? t('workQueue.detail.actions.reanalyze') : t('workQueue.detail.actions.analyze')}

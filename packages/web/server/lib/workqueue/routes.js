@@ -3,7 +3,18 @@ import { syncAll, resolveDefaultLinearTeam } from './sources.js';
 import { analyzeItem, analyzeAllPending } from './analysis.js';
 import { checkItemStaleness } from './staleness.js';
 import { finishItem } from './finish.js';
-import { getCursorApiVersion, isCursorApiVersionConfiguredViaEnv, setCursorApiVersion, getTrackedRepos, setTrackedRepos } from './settings.js';
+import {
+  getCursorApiVersion,
+  isCursorApiVersionConfiguredViaEnv,
+  setCursorApiVersion,
+  getTrackedRepos,
+  setTrackedRepos,
+  getRemoteAgentPromptSuffix,
+  getWorkQueuePromptSettings,
+  setWorkQueuePromptSettings,
+  getWorkQueueAnalysisModel,
+  setWorkQueueAnalysisModel,
+} from './settings.js';
 import { columnToLinearStateType } from './columns.js';
 import { moveIssueToStateType, assignIssueToViewer, createIssue } from '../linear/client.js';
 import { getGitHubAuth } from '../github/auth.js';
@@ -39,6 +50,9 @@ const buildCloudAgentPrompt = (item) => {
       : 'Testing: the cloud agent environment is limited to web, desktop-linux, and headless. If this task needs anything else, implement what you can verify headlessly and state in the PR what still needs manual checking.',
     '',
     `REQUIRED: the pull request must be linked to ${item.sourceId} (for example "Closes ${item.sourceId}" in the PR description).`,
+    // User-authored text from Settings > AI Workflow, always appended after
+    // the generated prompt rather than replacing any part of it.
+    getRemoteAgentPromptSuffix(),
   ];
   return sections.filter((section) => section !== '').join('\n');
 };
@@ -150,15 +164,17 @@ export function registerWorkQueueRoutes(app, { getSmallModelService }) {
   app.post('/api/workqueue/items/:id/analyze', async (req, res) => {
     const item = getItem(req.params.id);
     if (!item) return res.status(404).json({ error: 'Item not found' });
-    if (item.type === 'pr') {
-      return res.status(400).json({ error: 'Pull requests are not AI-analyzed' });
-    }
     try {
       const { generateSmallModelText } = await getSmallModelService();
+      const requestedModel = typeof req.body?.model === 'string' ? req.body.model.trim() : '';
       const updated = await analyzeItem(item, {
         generateSmallModelText,
         directory: typeof req.body?.directory === 'string' ? req.body.directory : undefined,
         allItems: listItems(),
+        // An explicit per-call model always wins; otherwise fall back to the
+        // persisted default (empty means stay on the normal auto-resolution
+        // chain, never locked to one provider/model).
+        model: requestedModel || getWorkQueueAnalysisModel() || undefined,
       });
       res.json({ item: updated });
     } catch (error) {
@@ -201,9 +217,11 @@ export function registerWorkQueueRoutes(app, { getSmallModelService }) {
   app.post('/api/workqueue/analyze-bulk', async (req, res) => {
     try {
       const { generateSmallModelText } = await getSmallModelService();
+      const requestedModel = typeof req.body?.model === 'string' ? req.body.model.trim() : '';
       const result = await analyzeAllPending({
         generateSmallModelText,
         directory: typeof req.body?.directory === 'string' ? req.body.directory : undefined,
+        model: requestedModel || getWorkQueueAnalysisModel() || undefined,
       });
       res.json(result);
     } catch (error) {
@@ -462,5 +480,27 @@ export function registerWorkQueueRoutes(app, { getSmallModelService }) {
 
   app.delete('/api/workqueue/settings/cursor-auth', (_req, res) => {
     res.json({ removed: clearCursorApiKey() });
+  });
+
+  app.get('/api/workqueue/settings/prompts', (_req, res) => {
+    res.json(getWorkQueuePromptSettings());
+  });
+
+  app.put('/api/workqueue/settings/prompts', (req, res) => {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const patch = {};
+    if (typeof body.analysisPromptExtra === 'string') patch.analysisPromptExtra = body.analysisPromptExtra;
+    if (typeof body.alreadySolvedPromptExtra === 'string') patch.alreadySolvedPromptExtra = body.alreadySolvedPromptExtra;
+    if (typeof body.remoteAgentPromptSuffix === 'string') patch.remoteAgentPromptSuffix = body.remoteAgentPromptSuffix;
+    res.json(setWorkQueuePromptSettings(patch));
+  });
+
+  app.get('/api/workqueue/settings/model', (_req, res) => {
+    res.json({ model: getWorkQueueAnalysisModel() });
+  });
+
+  app.put('/api/workqueue/settings/model', (req, res) => {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    res.json({ model: setWorkQueueAnalysisModel(typeof body.model === 'string' ? body.model : '') });
   });
 }

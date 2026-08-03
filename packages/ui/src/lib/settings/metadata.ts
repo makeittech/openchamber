@@ -16,6 +16,7 @@ export type SettingsPageSlug =
   | 'skills.installed'
   | 'skills.catalog'
   | 'git'
+  | 'ai-workflow'
   | 'appearance'
   | 'chat'
   | 'shortcuts'
@@ -158,6 +159,14 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
     group: 'projects',
     kind: 'single',
     keywords: ['git', 'github', 'identity', 'identities', 'ssh', 'profiles', 'credentials', 'keys', 'commit', 'gitmoji', 'oauth', 'prs', 'issues'],
+    isAvailable: (ctx) => !ctx.isVSCode,
+  },
+  {
+    slug: 'ai-workflow',
+    title: 'AI Workflow',
+    group: 'projects',
+    kind: 'single',
+    keywords: ['cursor', 'linear', 'ai workflow', 'workqueue', 'work queue', 'prompt', 'analyze', 'analysis', 'issues', 'pull requests', 'cloud agent'],
     isAvailable: (ctx) => !ctx.isVSCode,
   },
   {
