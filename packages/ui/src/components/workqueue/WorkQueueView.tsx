@@ -97,9 +97,8 @@ export const WorkQueueView: React.FC<WorkQueueViewProps> = ({ onClose }) => {
     return sortItems(matched, filters.sort);
   }, [allItems, section, filters]);
 
-  // PRs are never AI-analyzed, so they are not part of the bulk-analysis backlog.
   const pendingAnalysisCount = React.useMemo(
-    () => allItems.filter((item) => item.type !== 'pr' && !item.aiAnalysis).length,
+    () => allItems.filter((item) => !item.aiAnalysis).length,
     [allItems],
   );
 

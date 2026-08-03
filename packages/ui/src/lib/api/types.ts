@@ -1302,7 +1302,7 @@ export type WorkQueueCloudAgent = {
   createdAt?: number;
 };
 
-/** An automated PR review comment (openchamber-bot); PRs are never AI-analyzed. */
+/** An automated PR review comment (openchamber-bot), shown on the PR detail view's Review tab alongside its AI analysis. */
 export type WorkQueueReviewComment = {
   body: string;
   url: string;
@@ -1397,6 +1397,13 @@ export type WorkQueueCursorAuthStatus = {
   versionConfiguredViaEnv: boolean;
 };
 
+/** User-authored text (Settings > AI Workflow), always appended to the hardcoded analysis/dispatch prompts, never a replacement for them. */
+export type WorkQueuePromptSettings = {
+  analysisPromptExtra: string;
+  alreadySolvedPromptExtra: string;
+  remoteAgentPromptSuffix: string;
+};
+
 export interface WorkQueueAPI {
   itemsList(options?: {
     status?: WorkQueueItemStatus;
@@ -1407,9 +1414,10 @@ export interface WorkQueueAPI {
   }): Promise<{ items: WorkQueueItem[] }>;
   itemGet(id: string): Promise<{ item: WorkQueueItem }>;
   sync(): Promise<WorkQueueSyncResult>;
-  analyze(id: string, directory?: string): Promise<{ item: WorkQueueItem }>;
-  /** Analyzes every not-yet-analyzed issue; PRs are excluded by design. */
-  analyzeBulk(directory?: string): Promise<WorkQueueBulkAnalysisResult>;
+  /** `model` (`provider/model`) overrides the persisted default analysis model for this call only. */
+  analyze(id: string, directory?: string, model?: string): Promise<{ item: WorkQueueItem }>;
+  /** Analyzes every not-yet-analyzed issue or pull request. `model` overrides the persisted default for the whole pass. */
+  analyzeBulk(directory?: string, model?: string): Promise<WorkQueueBulkAnalysisResult>;
   patch(id: string, patch: { status?: WorkQueueItemStatus; assignee?: string; linkedSessionId?: string; attachedPrUrl?: string }): Promise<{ item: WorkQueueItem; linearSyncWarning?: string; assigneeSyncWarning?: string; linearCreateWarning?: string }>;
   finish(id: string, options?: { mergePr?: boolean; closeReason?: WorkQueueCloseReason; duplicateOfUrl?: string }): Promise<WorkQueueFinishResult>;
   /** Advisory freshness check: searches the repo's commit log for a reference to this item. Not persisted. */
@@ -1425,6 +1433,14 @@ export interface WorkQueueAPI {
   cursorAuthConnect(apiKey: string): Promise<{ connected: boolean }>;
   cursorAuthDisconnect(): Promise<{ removed: boolean }>;
   cursorApiVersionSet(apiVersion: CursorApiVersion): Promise<{ apiVersion: CursorApiVersion }>;
+
+  promptSettingsGet(): Promise<WorkQueuePromptSettings>;
+  promptSettingsSet(patch: Partial<WorkQueuePromptSettings>): Promise<WorkQueuePromptSettings>;
+
+  /** Persisted default analysis model (`provider/model`), or `''` when unset (auto-resolution). */
+  analysisModelGet(): Promise<{ model: string }>;
+  /** Empty string clears the default back to auto-resolution. */
+  analysisModelSet(model: string): Promise<{ model: string }>;
 }
 
 export interface RemoteClientRecord {

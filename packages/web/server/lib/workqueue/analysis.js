@@ -1,6 +1,7 @@
 import { patchItem, listItems } from './store.js';
 import { findDuplicateCandidates } from './dedup.js';
 import { checkItemStaleness } from './staleness.js';
+import { getAnalysisPromptExtra, getAlreadySolvedPromptExtra } from './settings.js';
 
 const BULK_CONCURRENCY = 3;
 
@@ -38,6 +39,22 @@ Respond with ONLY a single JSON object, no markdown fences, no prose, matching e
   "duplicateReasoning": string (why it is/isn't a duplicate of the listed candidates; if it is, explain why that
     candidate — not this item — is the "parent": e.g. it was reported first, or it is better/more fully described)
 }`;
+
+// User-configured text (Settings > AI Workflow) is always appended after the
+// schema-defining prompt above, never substituted for it — the JSON response
+// contract must stay intact regardless of what the user writes.
+const buildSystemPrompt = () => {
+  const extra = [];
+  const analysisExtra = getAnalysisPromptExtra();
+  if (analysisExtra) {
+    extra.push(`\nAdditional analysis instructions from the user:\n${analysisExtra}`);
+  }
+  const alreadySolvedExtra = getAlreadySolvedPromptExtra();
+  if (alreadySolvedExtra) {
+    extra.push(`\nAdditional instructions for judging "alreadySolved":\n${alreadySolvedExtra}`);
+  }
+  return extra.length > 0 ? `${ANALYSIS_SYSTEM_PROMPT}\n${extra.join('\n')}` : ANALYSIS_SYSTEM_PROMPT;
+};
 
 // The issue body is the single most useful analysis input; without it the
 // model only ever saw the title and produced near-useless guesses.
@@ -132,15 +149,7 @@ const groundDuplicateAndStalenessClaims = (parsed, { stalenessMatches, duplicate
 // pass over the recent log when no direct reference exists. Both are
 // best-effort: a lookup failure just means the corresponding prompt section
 // is omitted, it never fails the analysis.
-export async function analyzeItem(item, { generateSmallModelText, directory, allItems } = {}) {
-  // Pull requests are never AI-analyzed: their review signal is the automated
-  // PR review workflow's comments, which the PR detail view shows instead.
-  if (item.type === 'pr') {
-    const error = new Error('Pull requests are not AI-analyzed');
-    error.code = 'ANALYSIS_NOT_APPLICABLE';
-    throw error;
-  }
-
+export async function analyzeItem(item, { generateSmallModelText, directory, allItems, model } = {}) {
   const duplicateCandidates = findDuplicateCandidates(item, allItems || listItems());
   let stalenessMatches = [];
   if (directory) {
@@ -153,14 +162,16 @@ export async function analyzeItem(item, { generateSmallModelText, directory, all
   }
 
   const prompt = buildAnalysisPrompt(item, { stalenessMatches, duplicateCandidates });
+  const systemPrompt = buildSystemPrompt();
   let text = '';
   let firstError = null;
   try {
     const result = await generateSmallModelText({
       prompt,
-      system: ANALYSIS_SYSTEM_PROMPT,
+      system: systemPrompt,
       maxOutputTokens: ANALYSIS_MAX_OUTPUT_TOKENS,
       directory,
+      model,
     });
     text = result.text;
   } catch (error) {
@@ -177,9 +188,10 @@ export async function analyzeItem(item, { generateSmallModelText, directory, all
     try {
       const retry = await generateSmallModelText({
         prompt: `${prompt}\n\nReturn ONLY the JSON object. Do not think out loud, do not explain.`,
-        system: ANALYSIS_SYSTEM_PROMPT,
+        system: systemPrompt,
         maxOutputTokens: ANALYSIS_RETRY_MAX_OUTPUT_TOKENS,
         directory,
+        model,
       });
       parsed = parseAnalysisResponse(retry.text);
     } catch (error) {
@@ -202,16 +214,16 @@ export async function analyzeItem(item, { generateSmallModelText, directory, all
   });
 }
 
-// Bulk pass over every not-yet-analyzed issue, with bounded concurrency so a
-// few hundred items do not open a few hundred model requests at once. PRs are
-// excluded by design. Resumable: an item that already has an analysis is
-// skipped, so re-running only picks up what is still missing.
-export async function analyzeAllPending({ generateSmallModelText, directory, concurrency = BULK_CONCURRENCY } = {}) {
+// Bulk pass over every not-yet-analyzed issue or pull request, with bounded
+// concurrency so a few hundred items do not open a few hundred model requests
+// at once. Resumable: an item that already has an analysis is skipped, so
+// re-running only picks up what is still missing.
+export async function analyzeAllPending({ generateSmallModelText, directory, concurrency = BULK_CONCURRENCY, model } = {}) {
   // One snapshot for the whole pass: every open item (not just the pending
   // ones) is a valid duplicate target, and re-reading the store per item
   // would be wasted work across a few hundred items.
   const allItems = listItems();
-  const pending = allItems.filter((item) => item.type !== 'pr' && !item.aiAnalysis);
+  const pending = allItems.filter((item) => !item.aiAnalysis);
 
   let done = 0;
   let failed = 0;
@@ -223,7 +235,7 @@ export async function analyzeAllPending({ generateSmallModelText, directory, con
       if (index >= pending.length) return;
       const item = pending[index];
       try {
-        const updated = await analyzeItem(item, { generateSmallModelText, directory, allItems });
+        const updated = await analyzeItem(item, { generateSmallModelText, directory, allItems, model });
         if (updated?.aiAnalysis) done += 1;
         else failed += 1;
       } catch {

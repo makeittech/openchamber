@@ -94,7 +94,7 @@ export const CursorSettings: React.FC = () => {
   return (
     <SettingsSection
       title={t('settings.cursor.page.title')}
-      settingsItem="git.cursor-workspace"
+      settingsItem="ai-workflow.cursor-workspace"
       info={t('settings.cursor.page.tooltip.connectWorkspace')}
     >
       <div className="rounded-lg bg-[var(--surface-elevated)]/70 overflow-hidden flex flex-col">

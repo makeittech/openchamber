@@ -207,8 +207,9 @@ export const LinearSettings: React.FC = () => {
   return (
     <SettingsSection
       title={t('settings.linear.page.title')}
-      settingsItem="git.linear-workspace"
+      settingsItem="ai-workflow.linear-workspace"
       info={t('settings.linear.page.tooltip.connectWorkspace')}
+      divider={false}
     >
       <div className="rounded-lg bg-[var(--surface-elevated)]/70 overflow-hidden flex flex-col">
         {connected ? (

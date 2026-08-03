@@ -74,7 +74,6 @@ export const WorkQueueCard = React.forwardRef<HTMLDivElement, WorkQueueCardProps
     };
 
     const isBusy = isAnalyzing || pendingIds.has(item.id);
-    const isPullRequest = item.type === 'pr';
 
     const handleAnalyze = async (event: React.MouseEvent<HTMLButtonElement>) => {
       event.stopPropagation();
@@ -165,28 +164,21 @@ export const WorkQueueCard = React.forwardRef<HTMLDivElement, WorkQueueCardProps
                 <Icon name="sparkling" className="h-3 w-3" />
                 {t('workQueue.card.confidence', { confidence: analysis.confidence })}
               </span>
-              {!isPullRequest && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="xs"
-                  aria-label={t('workQueue.card.reanalyze')}
-                  title={t('workQueue.card.reanalyze')}
-                  onClick={handleAnalyze}
-                  onPointerDown={stopCardInteraction}
-                  onKeyDown={stopCardInteraction}
-                  disabled={isBusy}
-                >
-                  <Icon name="sparkling" className={isBusy ? 'h-3 w-3 animate-spin' : 'h-3 w-3'} />
-                </Button>
-              )}
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                aria-label={t('workQueue.card.reanalyze')}
+                title={t('workQueue.card.reanalyze')}
+                onClick={handleAnalyze}
+                onPointerDown={stopCardInteraction}
+                onKeyDown={stopCardInteraction}
+                disabled={isBusy}
+              >
+                <Icon name="sparkling" className={isBusy ? 'h-3 w-3 animate-spin' : 'h-3 w-3'} />
+              </Button>
             </span>
           </div>
-        ) : isPullRequest ? (
-          // PRs are never AI-analyzed (their review comments are automated
-          // instead), so they get no analyze affordance and no misleading
-          // "not analyzed" line.
-          null
         ) : item.aiAnalysisError ? (
           <div className="flex flex-wrap items-center justify-between gap-1.5">
             <span className="typography-micro text-destructive">{t('workQueue.card.analysisError')}</span>

@@ -86,6 +86,7 @@ const MOBILE_SETTINGS_PAGES = [
   'notifications',
   'sessions',
   'git',
+  'ai-workflow',
   'magic-prompts',
   'behavior',
   'mcp',

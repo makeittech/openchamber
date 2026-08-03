@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { parseModelRef } from '../small-model/resolve.js';
 
 const OPENCHAMBER_DATA_DIR = process.env.OPENCHAMBER_DATA_DIR
   ? path.resolve(process.env.OPENCHAMBER_DATA_DIR)
@@ -94,4 +95,57 @@ export function setCursorApiVersion(version) {
   settings.cursorApiVersion = version;
   writeSettingsFile(settings);
   return version;
+}
+
+// User-authored text (Settings > AI Workflow) that is always appended to the
+// hardcoded prompts in analysis.js/routes.js, never a replacement for them.
+export function getWorkQueuePromptSettings() {
+  const settings = readSettingsFile();
+  return {
+    analysisPromptExtra: typeof settings.workqueueAnalysisPromptExtra === 'string' ? settings.workqueueAnalysisPromptExtra : '',
+    alreadySolvedPromptExtra: typeof settings.workqueueAlreadySolvedPromptExtra === 'string' ? settings.workqueueAlreadySolvedPromptExtra : '',
+    remoteAgentPromptSuffix: typeof settings.workqueueRemoteAgentPromptSuffix === 'string' ? settings.workqueueRemoteAgentPromptSuffix : '',
+  };
+}
+
+export function setWorkQueuePromptSettings(patch) {
+  const settings = readSettingsFile();
+  if (typeof patch?.analysisPromptExtra === 'string') settings.workqueueAnalysisPromptExtra = patch.analysisPromptExtra;
+  if (typeof patch?.alreadySolvedPromptExtra === 'string') settings.workqueueAlreadySolvedPromptExtra = patch.alreadySolvedPromptExtra;
+  if (typeof patch?.remoteAgentPromptSuffix === 'string') settings.workqueueRemoteAgentPromptSuffix = patch.remoteAgentPromptSuffix;
+  writeSettingsFile(settings);
+  return getWorkQueuePromptSettings();
+}
+
+export function getAnalysisPromptExtra() {
+  return getWorkQueuePromptSettings().analysisPromptExtra;
+}
+
+export function getAlreadySolvedPromptExtra() {
+  return getWorkQueuePromptSettings().alreadySolvedPromptExtra;
+}
+
+export function getRemoteAgentPromptSuffix() {
+  return getWorkQueuePromptSettings().remoteAgentPromptSuffix;
+}
+
+// The default model used for AI analysis (Settings > AI Workflow, and the
+// "set as default" action in the issue detail panel). Empty means analysis
+// stays on the small-model module's normal auto-resolution chain — it is
+// never hardcoded to one provider — rather than a required override.
+export function getWorkQueueAnalysisModel() {
+  const settings = readSettingsFile();
+  return typeof settings.workqueueAnalysisModel === 'string' ? settings.workqueueAnalysisModel : '';
+}
+
+export function setWorkQueueAnalysisModel(model) {
+  const trimmed = typeof model === 'string' ? model.trim() : '';
+  const settings = readSettingsFile();
+  if (trimmed && parseModelRef(trimmed)) {
+    settings.workqueueAnalysisModel = trimmed;
+  } else {
+    delete settings.workqueueAnalysisModel;
+  }
+  writeSettingsFile(settings);
+  return getWorkQueueAnalysisModel();
 }

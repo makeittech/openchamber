@@ -275,6 +275,40 @@ describe('cursor API version settings', () => {
   });
 });
 
+describe('work queue prompt settings', () => {
+  it('defaults every field to an empty string', async () => {
+    const { getWorkQueuePromptSettings } = await import('./settings.js');
+    expect(getWorkQueuePromptSettings()).toEqual({
+      analysisPromptExtra: '',
+      alreadySolvedPromptExtra: '',
+      remoteAgentPromptSuffix: '',
+    });
+  });
+
+  it('persists a partial patch and round-trips it through a fresh module load', async () => {
+    const { setWorkQueuePromptSettings } = await import('./settings.js');
+    setWorkQueuePromptSettings({ analysisPromptExtra: 'Prefer minimal diffs.' });
+
+    vi.resetModules();
+    const { getWorkQueuePromptSettings } = await import('./settings.js');
+    expect(getWorkQueuePromptSettings()).toEqual({
+      analysisPromptExtra: 'Prefer minimal diffs.',
+      alreadySolvedPromptExtra: '',
+      remoteAgentPromptSuffix: '',
+    });
+  });
+
+  it('ignores non-string values in a patch instead of persisting them', async () => {
+    const { setWorkQueuePromptSettings, getWorkQueuePromptSettings } = await import('./settings.js');
+    setWorkQueuePromptSettings({ remoteAgentPromptSuffix: 42, alreadySolvedPromptExtra: null });
+    expect(getWorkQueuePromptSettings()).toEqual({
+      analysisPromptExtra: '',
+      alreadySolvedPromptExtra: '',
+      remoteAgentPromptSuffix: '',
+    });
+  });
+});
+
 describe('cursor request timeout resolution', () => {
   it('uses the default for missing and invalid values', async () => {
     const { resolveCursorRequestTimeoutMs } = await import('./cursor/client.js');
@@ -310,7 +344,7 @@ describe('analysis', () => {
     generatedPrompt: 'Do the thing',
   });
 
-  it('refuses to analyze a pull request', async () => {
+  it('analyzes a pull request the same way as an issue', async () => {
     const { upsertSyncedItems, listItems } = await import('./store.js');
     const { analyzeItem } = await import('./analysis.js');
     upsertSyncedItems([
@@ -319,9 +353,9 @@ describe('analysis', () => {
     const [pr] = listItems();
 
     const generateSmallModelText = smallModelReturning(VALID_ANALYSIS);
-    await expect(analyzeItem(pr, { generateSmallModelText }))
-      .rejects.toMatchObject({ code: 'ANALYSIS_NOT_APPLICABLE' });
-    expect(generateSmallModelText).not.toHaveBeenCalled();
+    const updated = await analyzeItem(pr, { generateSmallModelText });
+    expect(generateSmallModelText).toHaveBeenCalledTimes(1);
+    expect(updated.aiAnalysis).toMatchObject({ summary: 'A summary of the task.' });
   });
 
   it('includes the synced description in the analysis prompt', async () => {
@@ -344,6 +378,28 @@ describe('analysis', () => {
 
     const { prompt } = generateSmallModelText.mock.calls[0][0];
     expect(prompt).toContain('Steps to reproduce: click save twice.');
+  });
+
+  it('appends user-configured prompt settings to the system prompt without dropping the schema contract', async () => {
+    const { upsertSyncedItems, listItems } = await import('./store.js');
+    const { setWorkQueuePromptSettings } = await import('./settings.js');
+    const { analyzeItem } = await import('./analysis.js');
+    setWorkQueuePromptSettings({
+      analysisPromptExtra: 'Always flag security issues as critical.',
+      alreadySolvedPromptExtra: 'Only trust commits merged to main.',
+    });
+    upsertSyncedItems([
+      { source: 'github', sourceId: 'acme/repo#2', repo: 'acme/repo', type: 'issue', title: 'Bug' },
+    ]);
+    const [issue] = listItems();
+
+    const generateSmallModelText = smallModelReturning(VALID_ANALYSIS);
+    await analyzeItem(issue, { generateSmallModelText });
+
+    const { system } = generateSmallModelText.mock.calls[0][0];
+    expect(system).toContain('Respond with ONLY a single JSON object');
+    expect(system).toContain('Always flag security issues as critical.');
+    expect(system).toContain('Only trust commits merged to main.');
   });
 
   it('retries with a bigger output budget when a reasoning model returns no answer', async () => {
@@ -384,7 +440,7 @@ describe('analysis', () => {
     expect(updated.aiAnalysisError).toContain('401 Unauthorized');
   });
 
-  it('bulk analysis skips PRs and already-analyzed issues, and one failure does not stop the rest', async () => {
+  it('bulk analysis includes PRs and skips already-analyzed items, and one failure does not stop the rest', async () => {
     const { upsertSyncedItems, listItems, patchItem } = await import('./store.js');
     const { analyzeAllPending } = await import('./analysis.js');
     upsertSyncedItems([
@@ -398,16 +454,31 @@ describe('analysis', () => {
 
     const generateSmallModelText = vi.fn()
       .mockResolvedValueOnce({ text: VALID_ANALYSIS })
+      .mockResolvedValueOnce({ text: VALID_ANALYSIS })
       .mockRejectedValue(new Error('model unavailable'));
 
     const result = await analyzeAllPending({ generateSmallModelText, concurrency: 1 });
 
-    // Only the two un-analyzed issues are attempted; the PR and the
-    // already-analyzed issue are skipped entirely.
-    expect(result.total).toBe(2);
-    expect(result.done).toBe(1);
+    // The two un-analyzed issues and the PR are attempted; the
+    // already-analyzed issue is skipped entirely.
+    expect(result.total).toBe(3);
+    expect(result.done).toBe(2);
     expect(result.failed).toBe(1);
     expect(listItems().find((item) => item.title === 'Already done').aiAnalysis.summary).toBe('existing');
+  });
+
+  it('forwards an explicit model to generateSmallModelText instead of the auto-resolution default', async () => {
+    const { upsertSyncedItems, listItems } = await import('./store.js');
+    const { analyzeItem } = await import('./analysis.js');
+    upsertSyncedItems([
+      { source: 'github', sourceId: 'acme/repo#5', repo: 'acme/repo', type: 'issue', title: 'Model override case' },
+    ]);
+    const [issue] = listItems();
+
+    const generateSmallModelText = smallModelReturning(VALID_ANALYSIS);
+    await analyzeItem(issue, { generateSmallModelText, model: 'anthropic/claude-opus-5' });
+
+    expect(generateSmallModelText.mock.calls[0][0].model).toBe('anthropic/claude-opus-5');
   });
 });
 
@@ -860,6 +931,128 @@ describe('work queue Cursor settings routes', () => {
     await app.handler('PUT', '/api/workqueue/settings/cursor-version')({ body: { apiVersion: 'v2' } }, res);
     expect(res.statusCode).toBe(400);
     expect(res.body.error).toContain('v0');
+  });
+});
+
+describe('work queue prompt settings routes', () => {
+  it('returns and updates the configured prompt fields', async () => {
+    const { registerWorkQueueRoutes } = await import('./routes.js');
+    const app = createFakeApp();
+    registerWorkQueueRoutes(app, { getSmallModelService: vi.fn() });
+
+    const getRes = createFakeRes();
+    await app.handler('GET', '/api/workqueue/settings/prompts')({ query: {} }, getRes);
+    expect(getRes.statusCode).toBe(200);
+    expect(getRes.body).toEqual({
+      analysisPromptExtra: '',
+      alreadySolvedPromptExtra: '',
+      remoteAgentPromptSuffix: '',
+    });
+
+    const putRes = createFakeRes();
+    await app.handler('PUT', '/api/workqueue/settings/prompts')(
+      { body: { remoteAgentPromptSuffix: 'Always run the linter before finishing.' } },
+      putRes,
+    );
+    expect(putRes.statusCode).toBe(200);
+    expect(putRes.body).toEqual({
+      analysisPromptExtra: '',
+      alreadySolvedPromptExtra: '',
+      remoteAgentPromptSuffix: 'Always run the linter before finishing.',
+    });
+  });
+
+  it('appends the configured remote agent suffix to the cloud agent draft prompt', async () => {
+    const { setWorkQueuePromptSettings } = await import('./settings.js');
+    setWorkQueuePromptSettings({ remoteAgentPromptSuffix: 'Always run the linter before finishing.' });
+
+    const { upsertSyncedItems, listItems } = await import('./store.js');
+    upsertSyncedItems([
+      { source: 'github', sourceId: 'acme/repo#9', repo: 'acme/repo', type: 'issue', title: 'Bug' },
+    ]);
+    const [item] = listItems();
+
+    const { registerWorkQueueRoutes } = await import('./routes.js');
+    const app = createFakeApp();
+    registerWorkQueueRoutes(app, { getSmallModelService: vi.fn() });
+
+    const res = createFakeRes();
+    await app.handler('GET', '/api/workqueue/items/:id/cloud-agent/draft')({ params: { id: item.id }, query: {} }, res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.prompt).toContain('Always run the linter before finishing.');
+  });
+});
+
+describe('work queue model settings routes', () => {
+  it('defaults to unset and persists a valid provider/model override', async () => {
+    const { registerWorkQueueRoutes } = await import('./routes.js');
+    const app = createFakeApp();
+    registerWorkQueueRoutes(app, { getSmallModelService: vi.fn() });
+
+    const getRes = createFakeRes();
+    await app.handler('GET', '/api/workqueue/settings/model')({ query: {} }, getRes);
+    expect(getRes.statusCode).toBe(200);
+    expect(getRes.body).toEqual({ model: '' });
+
+    const putRes = createFakeRes();
+    await app.handler('PUT', '/api/workqueue/settings/model')({ body: { model: 'anthropic/claude-opus-5' } }, putRes);
+    expect(putRes.statusCode).toBe(200);
+    expect(putRes.body).toEqual({ model: 'anthropic/claude-opus-5' });
+
+    const getAfterRes = createFakeRes();
+    await app.handler('GET', '/api/workqueue/settings/model')({ query: {} }, getAfterRes);
+    expect(getAfterRes.body).toEqual({ model: 'anthropic/claude-opus-5' });
+  });
+
+  it('clears the default back to auto-resolution on a malformed value', async () => {
+    const { registerWorkQueueRoutes } = await import('./routes.js');
+    const app = createFakeApp();
+    registerWorkQueueRoutes(app, { getSmallModelService: vi.fn() });
+
+    await app.handler('PUT', '/api/workqueue/settings/model')({ body: { model: 'anthropic/claude-opus-5' } }, createFakeRes());
+    const clearRes = createFakeRes();
+    await app.handler('PUT', '/api/workqueue/settings/model')({ body: { model: 'not-a-valid-ref' } }, clearRes);
+    expect(clearRes.body).toEqual({ model: '' });
+  });
+
+  it('analyze route uses the persisted default model when no explicit model is given, and an explicit model wins otherwise', async () => {
+    const { upsertSyncedItems, listItems } = await import('./store.js');
+    const { setWorkQueueAnalysisModel } = await import('./settings.js');
+    upsertSyncedItems([
+      { source: 'github', sourceId: 'acme/repo#8', repo: 'acme/repo', type: 'issue', title: 'Model routing case' },
+    ]);
+    const [item] = listItems();
+    setWorkQueueAnalysisModel('openai/gpt-5.4-mini');
+
+    const generateSmallModelText = vi.fn().mockResolvedValue({
+      text: JSON.stringify({
+        summary: 'A summary of the task.',
+        complexity: 'easy',
+        priority: 'high',
+        confidence: 80,
+        estimateMinutes: 30,
+        needsHeadless: false,
+        needsBrowser: false,
+        needsDocker: false,
+        generatedPrompt: 'Do the thing',
+      }),
+    });
+    const { registerWorkQueueRoutes } = await import('./routes.js');
+    const app = createFakeApp();
+    registerWorkQueueRoutes(app, { getSmallModelService: async () => ({ generateSmallModelText }) });
+
+    const defaultRes = createFakeRes();
+    await app.handler('POST', '/api/workqueue/items/:id/analyze')({ params: { id: item.id }, body: {} }, defaultRes);
+    expect(defaultRes.statusCode).toBe(200);
+    expect(generateSmallModelText.mock.calls[0][0].model).toBe('openai/gpt-5.4-mini');
+
+    const overrideRes = createFakeRes();
+    await app.handler('POST', '/api/workqueue/items/:id/analyze')(
+      { params: { id: item.id }, body: { model: 'anthropic/claude-opus-5' } },
+      overrideRes,
+    );
+    expect(overrideRes.statusCode).toBe(200);
+    expect(generateSmallModelText.mock.calls[1][0].model).toBe('anthropic/claude-opus-5');
   });
 });
 
