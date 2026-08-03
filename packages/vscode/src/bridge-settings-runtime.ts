@@ -299,33 +299,6 @@ export const persistSettings = async (changes: Record<string, unknown>, ctx?: Br
     }
   }
 
-  if ('smallModelUseDefault' in restChanges && typeof restChanges.smallModelUseDefault !== 'boolean') {
-    delete restChanges.smallModelUseDefault;
-  }
-
-  if ('sessionRecapEnabled' in restChanges && typeof restChanges.sessionRecapEnabled !== 'boolean') {
-    delete restChanges.sessionRecapEnabled;
-  }
-
-  if ('sessionSuggestionEnabled' in restChanges && typeof restChanges.sessionSuggestionEnabled !== 'boolean') {
-    delete restChanges.sessionSuggestionEnabled;
-  }
-
-  if ('sessionGoalEnabled' in restChanges && typeof restChanges.sessionGoalEnabled !== 'boolean') {
-    delete restChanges.sessionGoalEnabled;
-  }
-
-  if ('sessionGoalDefaultBudgetEnabled' in restChanges && typeof restChanges.sessionGoalDefaultBudgetEnabled !== 'boolean') {
-    delete restChanges.sessionGoalDefaultBudgetEnabled;
-  }
-
-  if ('sessionGoalDefaultBudget' in restChanges) {
-    const budget = restChanges.sessionGoalDefaultBudget;
-    if (typeof budget !== 'number' || !Number.isFinite(budget) || budget <= 0) {
-      delete restChanges.sessionGoalDefaultBudget;
-    }
-  }
-
   if (typeof restChanges.usageAutoRefresh !== 'boolean') {
     delete restChanges.usageAutoRefresh;
   }

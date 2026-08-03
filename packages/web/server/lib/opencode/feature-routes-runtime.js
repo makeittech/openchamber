@@ -13,6 +13,7 @@ import { registerConfigEntityRoutes } from './config-entity-routes.js';
 import { registerSettingsUtilityRoutes } from './core-routes.js';
 import { registerProjectIconRoutes } from './project-icon-routes.js';
 import { registerScheduledTaskRoutes } from '../scheduled-tasks/routes.js';
+import { registerMessageQueueRoutes } from '../message-queue/routes.js';
 import { registerOpenChamberSessionRoutes } from '../openchamber-sessions/routes.js';
 import { registerOpenChamberControlRoutes } from '../openchamber-control/routes.js';
 import { registerSkillRoutes } from './skill-routes.js';
@@ -114,6 +115,7 @@ export const createFeatureRoutesRuntime = (dependencies) => {
       buildAugmentedPath,
       projectConfigRuntime,
       scheduledTasksRuntime,
+      messageQueueRuntime,
       scheduledTaskService,
       openChamberSessionService,
       openChamberControlService,
@@ -176,6 +178,10 @@ export const createFeatureRoutesRuntime = (dependencies) => {
       getOpenChamberEventClients,
       writeSseEvent,
     });
+
+    if (messageQueueRuntime) {
+      registerMessageQueueRoutes(app, { messageQueueRuntime });
+    }
 
     registerOpenChamberSessionRoutes(app, {
       readSettingsFromDiskMigrated,

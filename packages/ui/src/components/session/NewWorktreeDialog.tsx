@@ -895,6 +895,28 @@ export function NewWorktreeDialog({
         onOpenChange(false);
         setIsCreating(false);
 
+        // Re-notify Discord with the session id so the worktree thread binds
+        // this session (the createWorktree call above already ensured the
+        // thread without a session).
+        void import('@/stores/useMessengerStore')
+          .then(({ useMessengerStore }) => {
+            const notify = useMessengerStore.getState().notifyWorktreeAdded;
+            void notify(
+              {
+                id: projectRef.id,
+                path: projectRef.path,
+                label: projectRef.path.split('/').pop() ?? projectRef.path,
+              },
+              {
+                path: metadata.path,
+                branch: metadata.branch,
+                label: metadata.label,
+              },
+              createdSessionId,
+            );
+          })
+          .catch(() => undefined);
+
         void sessionActions.updateSessionTitle(session.id, sessionTitle).catch(() => undefined);
 
         try {

@@ -174,6 +174,7 @@ export type ProviderResult = {
 const OPENCODE_CONFIG_DIR = path.join(os.homedir(), '.config', 'opencode');
 const OPENCODE_DATA_DIR = path.join(os.homedir(), '.local', 'share', 'opencode');
 const AUTH_FILE = path.join(OPENCODE_DATA_DIR, 'auth.json');
+const OLLAMA_CLOUD_COOKIE_PATH = path.join(os.homedir(), '.config', 'ollama-quota', 'cookie');
 
 
 const ANTIGRAVITY_ACCOUNTS_PATHS = [
@@ -268,6 +269,19 @@ const readJsonFile = (filePath: string): Record<string, unknown> | null => {
     return parsed as Record<string, unknown>;
   } catch (error) {
     console.warn(`Failed to read JSON file: ${filePath}`, error);
+    return null;
+  }
+};
+
+const readTextFile = (filePath: string): string | null => {
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  try {
+    const content = fs.readFileSync(filePath, 'utf8').trim();
+    return content || null;
+  } catch (error) {
+    console.warn(`Failed to read text file: ${filePath}`, error);
     return null;
   }
 };
@@ -428,9 +442,6 @@ const durationToSeconds = (duration?: number, unit?: string) => {
 export const listConfiguredQuotaProviders = () => {
   const auth = readAuthFile();
   const configured = new Set<string>();
-  if (readCredential('opencode-go')) configured.add('opencode-go');
-  if (readCredential('ollama-cloud')) configured.add('ollama-cloud');
-  if (readCredential('cursor')) configured.add('cursor');
 
   const anthropicAuth = normalizeAuthEntry(getAuthEntry(auth, ['anthropic', 'claude']));
   if (anthropicAuth && ((anthropicAuth as Record<string, unknown>).access || (anthropicAuth as Record<string, unknown>).token)) {
@@ -487,6 +498,9 @@ export const listConfiguredQuotaProviders = () => {
     configured.add('github-copilot-addon');
   }
 
+  if (readTextFile(OLLAMA_CLOUD_COOKIE_PATH)) {
+    configured.add('ollama-cloud');
+  }
 
   const waferAuth = normalizeAuthEntry(getAuthEntry(auth, ['wafer', 'wafer-ai', 'wafer_ai', 'wafer.ai']));
   if (waferAuth && ((waferAuth as Record<string, unknown>).key || (waferAuth as Record<string, unknown>).token)) {
@@ -549,18 +563,16 @@ const fetchCodexQuota = async (): Promise<ProviderResult> => {
 
     const windows: Record<string, UsageWindow> = {};
     if (primary) {
-      const windowSeconds = toNumber(primary.limit_window_seconds);
-      windows[resolveWindowLabel(windowSeconds)] = toUsageWindow({
+      windows['5h'] = toUsageWindow({
         usedPercent: toNumber(primary.used_percent),
-        windowSeconds,
+        windowSeconds: toNumber(primary.limit_window_seconds),
         resetAt: toTimestamp(primary.reset_at),
       });
     }
     if (secondary) {
-      const windowSeconds = toNumber(secondary.limit_window_seconds);
-      windows[resolveWindowLabel(windowSeconds)] = toUsageWindow({
+      windows['weekly'] = toUsageWindow({
         usedPercent: toNumber(secondary.used_percent),
-        windowSeconds,
+        windowSeconds: toNumber(secondary.limit_window_seconds),
         resetAt: toTimestamp(secondary.reset_at),
       });
     }
@@ -1435,7 +1447,7 @@ const parseOllamaSettingsHtml = (html: string) => {
 };
 
 const fetchOllamaCloudQuota = async (): Promise<ProviderResult> => {
-  const cookie = readCredential('ollama-cloud')?.cookie;
+  const cookie = readTextFile(OLLAMA_CLOUD_COOKIE_PATH);
 
   if (!cookie) {
     return buildResult({
@@ -1482,19 +1494,6 @@ const fetchOllamaCloudQuota = async (): Promise<ProviderResult> => {
       error: error instanceof Error ? error.message : 'Request failed',
     });
   }
-};
-
-const fetchCursorQuota = async (): Promise<ProviderResult> => {
-  const accessToken = readCredential('cursor')?.accessToken;
-  if (!accessToken) return buildResult({ providerId: 'cursor', providerName: 'Cursor', ok: false, configured: false, error: 'Not configured' });
-  try {
-    const response = await fetch('https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage', { method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1' }, body: '{}', signal: AbortSignal.timeout(15_000) });
-    if (!response.ok) throw new Error(response.status === 401 ? 'Cursor session expired' : `API error: ${response.status}`);
-    const payload = await response.json() as Record<string, unknown>;
-    const plan = (payload.planUsage as Record<string, unknown> | undefined) ?? {};
-    const usedPercent = toNumber(plan.totalPercentUsed);
-    return buildResult({ providerId: 'cursor', providerName: 'Cursor', ok: true, configured: true, usage: { windows: { billing_cycle: toUsageWindow({ usedPercent, windowSeconds: null, resetAt: toTimestamp(payload.billingCycleEnd) }) } } });
-  } catch (error) { return buildResult({ providerId: 'cursor', providerName: 'Cursor', ok: false, configured: true, error: error instanceof Error ? error.message : 'Request failed' }); }
 };
 
 const fetchOpenRouterQuota = async (): Promise<ProviderResult> => {

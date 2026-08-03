@@ -90,6 +90,10 @@ function parseArgs(argv = process.argv.slice(2)) {
     foreground: false,
     lan: false,
     apiOnly: false,
+    channel: undefined,
+    thread: undefined,
+    sendAt: undefined,
+    notifyOnly: false,
     project: undefined,
     task: undefined,
     session: undefined,
@@ -391,6 +395,51 @@ function parseArgs(argv = process.argv.slice(2)) {
         options.server = value.trim();
         break;
       }
+      case 'channel': {
+        const { value, nextIndex } = consumeValue(i, inlineValue);
+        i = nextIndex;
+        options.channel = typeof value === 'string' ? value : options.channel;
+        break;
+      }
+      case 'thread': {
+        const { value, nextIndex } = consumeValue(i, inlineValue);
+        i = nextIndex;
+        options.thread = typeof value === 'string' ? value : options.thread;
+        break;
+      }
+      case 'session': {
+        const { value, nextIndex } = consumeValue(i, inlineValue);
+        i = nextIndex;
+        options.session = typeof value === 'string' ? value : options.session;
+        break;
+      }
+      case 'prompt': {
+        const { value, nextIndex } = consumeValue(i, inlineValue);
+        i = nextIndex;
+        options.prompt = typeof value === 'string' ? value : options.prompt;
+        break;
+      }
+      case 'send-at': {
+        const { value, nextIndex } = consumeValue(i, inlineValue);
+        i = nextIndex;
+        options.sendAt = typeof value === 'string' ? value : options.sendAt;
+        break;
+      }
+      case 'notify-only':
+        options.notifyOnly = true;
+        break;
+      case 'model': {
+        const { value, nextIndex } = consumeValue(i, inlineValue);
+        i = nextIndex;
+        options.model = typeof value === 'string' ? value : options.model;
+        break;
+      }
+      case 'agent': {
+        const { value, nextIndex } = consumeValue(i, inlineValue);
+        i = nextIndex;
+        options.agent = typeof value === 'string' ? value : options.agent;
+        break;
+      }
       case 'connect-ttl': {
         const { value, nextIndex } = consumeValue(i, inlineValue);
         i = nextIndex;
@@ -536,6 +585,7 @@ function parseArgs(argv = process.argv.slice(2)) {
   const subcommand = command === 'tunnel' ? (positional[1] || 'help') : null;
   const tunnelAction = command === 'tunnel' ? (positional[2] || null) : null;
   const startupAction = command === 'startup' ? (positional[1] || 'status') : null;
+  const messengerAction = command === 'messenger' ? (positional[1] || 'help') : null;
   const scheduleAction = command === 'schedule' ? (positional[1] || 'help') : null;
   const sessionAction = command === 'session' ? (positional[1] || 'help') : null;
   const controlAction = command === 'control' ? (positional[1] || 'help') : null;
@@ -553,6 +603,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     subcommand,
     tunnelAction,
     startupAction,
+    messengerAction,
     scheduleAction,
     sessionAction,
     controlAction,
@@ -582,6 +633,7 @@ COMMANDS:
   control        Show OpenChamber control-plane commands
   tunnel         Tunnel lifecycle commands
   startup        Manage launch at system startup
+  messenger      Send or schedule Discord messenger messages
   logs           Tail OpenChamber logs
   connect-url    Generate URL/QR for connecting another client
   update         Check for and install updates
@@ -619,8 +671,35 @@ EXAMPLES:
   openchamber connect-url --server https://openchamber.example.com
   openchamber control           # Show control-plane commands for agents/scripts
   openchamber startup enable     # Start OpenChamber at user login
+  openchamber messenger send --channel 123 --prompt "Build is green"
   openchamber tunnel help        # Show tunnel lifecycle help
   openchamber logs               # Follow logs for latest running instance
+`);
+}
+
+function showMessengerHelp() {
+  console.log(`
+ OpenChamber Messenger Commands
+
+USAGE:
+  openchamber messenger send --prompt <text> (--channel <id|url> | --thread <id|url> | --session <id>) [OPTIONS]
+
+OPTIONS:
+  --channel <id|url>      Discord channel URL or id
+  --thread <id|url>       Discord thread URL or id
+  --session <id>          OpenCode session id bound to a Discord thread
+  --prompt <text>         Message or task prompt to send
+  --send-at <utc-iso>     Schedule through OpenChamber scheduled tasks (e.g. 2026-03-01T09:00Z)
+  --notify-only           Suppress Discord notifications for immediate sends; for schedules, create a notification-only prompt
+  --model <provider/id>   Model for scheduled sends
+  --agent <name>          Agent for scheduled sends
+  --json                  Output machine-readable JSON
+  -q, --quiet             Print one compact result line
+
+EXAMPLES:
+  openchamber messenger send --channel 123 --prompt "Build is green"
+  openchamber messenger send --thread https://discord.com/channels/1/2 --prompt "Deploy finished" --notify-only
+  openchamber messenger send --channel 123 --send-at 2026-03-01T09:00Z --model anthropic/claude-sonnet-4 --prompt "Run release checks"
 `);
 }
 
@@ -981,6 +1060,7 @@ export {
   showStartupHelp,
   showConnectUrlHelp,
   showTunnelHelp,
+  showMessengerHelp,
   generateCompletionScript,
   findClosestMatch,
 };

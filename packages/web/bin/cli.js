@@ -26,6 +26,7 @@ import {
   showStartupHelp,
   showConnectUrlHelp,
   showTunnelHelp,
+  showMessengerHelp,
   generateCompletionScript,
   findClosestMatch,
 } from './lib/cli-args.js';
@@ -43,6 +44,7 @@ import { createConnectUrlCommand } from './lib/commands-connect-url.js';
 import { createLifecycleCommands } from './lib/commands-lifecycle.js';
 import { createServeCommand } from './lib/commands-serve.js';
 import { createTunnelCommand, isValidTunnelDoctorResponse, shouldDisplayTunnelQr } from './lib/commands-tunnel.js';
+import { createMessengerCommand } from './lib/commands-messenger.js';
 import {
   resolveDoctorPortStatuses,
   discoverRunningInstances,
@@ -194,6 +196,8 @@ const commands = {
   startup: startupCommand,
 
   update: null,
+
+  messenger: null,
 };
 
 commands.serve = createServeCommand({
@@ -229,9 +233,11 @@ commands.update = createUpdateCommand({
   serveCommand: commands.serve.bind(commands),
 });
 
+commands.messenger = createMessengerCommand();
+
 async function main() {
   const parsed = parseArgs();
-  const { command, subcommand, tunnelAction, startupAction, scheduleAction, sessionAction, controlAction, options, removedFlagErrors, helpRequested, versionRequested } = parsed;
+  const { command, subcommand, tunnelAction, startupAction, messengerAction, scheduleAction, sessionAction, controlAction, options, removedFlagErrors, helpRequested, versionRequested } = parsed;
   activeCommandOptions = options;
 
   if (versionRequested) {
@@ -267,6 +273,8 @@ async function main() {
       showStartupHelp();
     } else if (command === 'connect-url') {
       showConnectUrlHelp();
+    } else if (command === 'messenger') {
+      showMessengerHelp();
     } else if (command === 'schedule') {
       await commands.schedule(options, 'help');
     } else if (command === 'session') {
@@ -290,6 +298,11 @@ async function main() {
 
   if (command === 'startup') {
     await commands.startup(options, startupAction);
+    return;
+  }
+
+  if (command === 'messenger') {
+    await commands.messenger(options, messengerAction);
     return;
   }
 
@@ -322,7 +335,7 @@ async function main() {
   }
 
   if (!commands[command]) {
-    const knownCommands = ['serve', 'stop', 'restart', 'status', 'schedule', 'session', 'models', 'projects', 'control', 'tunnel', 'startup', 'logs', 'update'];
+    const knownCommands = ['serve', 'stop', 'restart', 'status', 'schedule', 'session', 'models', 'projects', 'control', 'messenger', 'tunnel', 'startup', 'logs', 'update'];
     const suggestion = findClosestMatch(command, knownCommands);
     const hint = suggestion ? ` Did you mean '${suggestion}'?` : '';
     if (isJsonMode(options)) {

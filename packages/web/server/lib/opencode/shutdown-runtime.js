@@ -20,6 +20,8 @@ export const createGracefulShutdownRuntime = (dependencies) => {
     setTerminalRuntime,
     getMessageStreamRuntime,
     setMessageStreamRuntime,
+    getOpenChamberAgentEventsWebSocketRuntime,
+    setOpenChamberAgentEventsWebSocketRuntime,
     shouldSkipOpenCodeStop,
     getOpenCodePort,
     getOpenCodeProcess,
@@ -78,6 +80,16 @@ export const createGracefulShutdownRuntime = (dependencies) => {
       } catch {
       } finally {
         setMessageStreamRuntime(null);
+      }
+    }
+
+    const openChamberAgentEventsWebSocketRuntime = getOpenChamberAgentEventsWebSocketRuntime?.();
+    if (openChamberAgentEventsWebSocketRuntime) {
+      try {
+        await openChamberAgentEventsWebSocketRuntime.close();
+      } catch {
+      } finally {
+        setOpenChamberAgentEventsWebSocketRuntime?.(null);
       }
     }
 

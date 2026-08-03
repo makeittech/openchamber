@@ -7,6 +7,7 @@ import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint'
 import { Icon } from "@/components/icon/Icon";
 import type { Session } from '@opencode-ai/sdk/v2';
 import { useProjectsStore } from '@/stores/useProjectsStore';
+import { useMessengerStore } from '@/stores/useMessengerStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSessions } from '@/sync/sync-context';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
@@ -40,6 +41,43 @@ export interface WorktreeSectionContentProps {
 }
 
 const SETUP_COMMANDS_SAVE_DELAY_MS = 450;
+
+/** "Open in Discord" link shown when the worktree has a bound Discord thread. */
+const WorktreeDiscordLink: React.FC<{ worktreePath: string }> = ({ worktreePath }) => {
+  const { t } = useI18n();
+  const fetchWorktreeDiscordUrl = useMessengerStore((state) => state.fetchWorktreeDiscordUrl);
+  const syncWorktrees = useMessengerStore(
+    (state) => state.connections.find((connection) => connection.type === 'discord')?.syncWorktrees !== false,
+  );
+  const [discordUrl, setDiscordUrl] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (!syncWorktrees) {
+      setDiscordUrl(null);
+      return;
+    }
+    let cancelled = false;
+    void fetchWorktreeDiscordUrl(worktreePath).then((url) => {
+      if (!cancelled) setDiscordUrl(url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchWorktreeDiscordUrl, syncWorktrees, worktreePath]);
+
+  if (!discordUrl) return null;
+
+  return (
+    <a
+      href={discordUrl}
+      target="_blank"
+      rel="noreferrer"
+      className="typography-micro text-primary hover:underline flex-shrink-0"
+    >
+      {t('settings.openchamber.worktrees.list.openInDiscord')}
+    </a>
+  );
+};
 
 export const WorktreeSectionContent: React.FC<WorktreeSectionContentProps> = ({ projectRef: projectRefProp = null, sections = 'all' }) => {
   const { t } = useI18n();
@@ -465,6 +503,7 @@ export const WorktreeSectionContent: React.FC<WorktreeSectionContentProps> = ({ 
                   <p className="typography-micro truncate text-muted-foreground/60">
                     {formatPathForDisplay(worktree.path, homeDirectory)}
                   </p>
+                  <WorktreeDiscordLink worktreePath={worktree.path} />
                 </div>
                 <button
                   type="button"

@@ -1,3 +1,5 @@
+import { discordIntegrationI18n } from './discord-integration.i18n';
+
 export const settingsDict = {
   'settings.providers.page.openCodeGo.title': 'Śledzenie użycia OpenCode Go',
   'settings.providers.page.openCodeGo.description': 'Połącz panel OpenCode Go, aby wyświetlać limity kroczące, tygodniowe i miesięczne.',
@@ -1200,6 +1202,7 @@ export const settingsDict = {
   'settings.openchamber.visual.section.userMessageRendering': 'Renderowanie wiadomości użytkownika',
   'settings.openchamber.visual.section.userMessageRenderingAria': 'Tryb renderowania wiadomości użytkownika',
   'settings.openchamber.worktrees.list.deleteWorktreeAria': 'Usuń worktree {name}',
+  'settings.openchamber.worktrees.list.openInDiscord': 'Otwórz w Discordzie',
   'settings.openchamber.worktrees.list.detachedHead': 'Odłączony HEAD',
   'settings.openchamber.worktrees.list.empty': 'Nie znaleziono worktree dla tego projektu',
   'settings.openchamber.worktrees.list.loading': 'Ładowanie worktree...',
@@ -1226,6 +1229,7 @@ export const settingsDict = {
   'settings.page.chat.description': 'Skonfiguruj sposób wyświetlania wiadomości i narzędzi.',
   'settings.page.commands.title': 'Polecenia',
   'settings.page.git.title': 'Git',
+  'settings.page.integrations.title': 'Integracje',
   'settings.page.magicPrompts.title': 'Magiczne Prompty',
   'settings.page.mcp.title': 'MCP',
   'settings.page.plugins.title': 'Plugins',
@@ -2126,3 +2130,29 @@ export const settingsDict = {
   'settings.harness.capability.openchamber-tool': 'Narzędzie OpenChamber',
 
 };
+  ...discordIntegrationI18n.pl,
+  'settings.integrations.discord.commands.category.project': 'Projekty',
+  'settings.integrations.discord.commands.category.mcp': 'Serwery MCP',
+  'settings.integrations.discord.commands.category.ops': 'Operacje sesji',
+  'settings.integrations.discord.commands.desc.addProject': 'Powiąż istniejący folder jako projekt',
+  'settings.integrations.discord.commands.desc.createNewProject': 'Utwórz folder projektu i kanał Discord',
+  'settings.integrations.discord.commands.desc.removeProject': 'Odłącz kanał bez usuwania plików',
+  'settings.integrations.discord.commands.desc.worktrees': 'Pokaż worktree tego projektu',
+  'settings.integrations.discord.commands.desc.toggleWorktrees': 'Przełącz automatyczne worktree dla nowych sesji',
+  'settings.integrations.discord.commands.desc.mcp': 'Pokaż lub włącz/wyłącz skonfigurowane serwery MCP',
+  'settings.integrations.discord.commands.desc.queueCommand': 'Dodaj polecenie slash OpenCode do kolejki',
+  'settings.integrations.discord.commands.desc.contextUsage': 'Pokaż użycie tokenów sesji',
+  'settings.integrations.discord.commands.desc.sessionId': 'Pokaż ID sesji i URL Discord',
+  'settings.integrations.discord.bridge.proxyNote': 'Połączenia gateway respektują HTTP_PROXY, HTTPS_PROXY, ALL_PROXY i NO_PROXY ze środowiska serwera.',
+  'settings.integrations.discord.bridge.autoWorktreeNote': 'Użyj /toggle-worktrees w kanale projektu, aby automatycznie tworzyć izolowane worktree dla nowych sesji.',
+  'settings.integrations.discord.commands.desc.usage': 'Pokaż użycie tokenów i szacowany koszt tej sesji',
+  'settings.integrations.discord.commands.desc.credits': 'Alias /usage',
+  'settings.integrations.discord.commands.desc.login': 'Uwierzytelnij dostawcę przez OpenCode',
+  'settings.integrations.discord.commands.desc.tunnel': 'Uruchom skonfigurowany tunel OpenChamber',
+  'settings.integrations.discord.commands.desc.diff': 'Pokaż diff Git do przeglądu',
+  'settings.integrations.discord.bridge.notifyOnComplete.title': 'Wzmianka po zakończeniu pracy',
+  'settings.integrations.discord.bridge.notifyOnComplete.description': 'Po włączeniu Discord wspomni ostatniego użytkownika, który wysłał prompt, po zakończeniu rzeczywistej odpowiedzi asystenta. Domyślnie wyłączone.',
+  'settings.integrations.discord.bridge.interruptTimeout.title': 'Limit czasu przerwania',
+  'settings.integrations.discord.bridge.interruptTimeout.description': 'Jak długo czekać, aż przerwany przebieg się ustabilizuje, zanim zostanie wysłany zastępujący prompt. Domyślnie 8000 ms.',
+  'settings.integrations.discord.bridge.interruptTimeout.unit': 'ms',
+} as const;

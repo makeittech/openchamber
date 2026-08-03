@@ -3,6 +3,8 @@ import type { Session } from '@opencode-ai/sdk/v2';
 import { toast } from '@/components/ui';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { useI18n } from '@/lib/i18n';
+import { fetchSessionReference } from '@/lib/sessionReference';
+import { getSessionShareUrl, isSessionShared } from '@/stores/useGlobalSessionsStore';
 import type { MainTab } from '@/stores/useUIStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { streamPerfMark } from '@/stores/utils/streamDebug';
@@ -166,13 +168,40 @@ export const useSessionActions = (args: Args) => {
   }, [t]);
 
   const handleUnshareSession = React.useCallback(async (sessionId: string) => {
-    const result = await args.unshareSession(sessionId);
-    if (result) {
-      toast.success(t('sessions.sidebar.session.unshare.success'));
-    } else {
+    try {
+      const result = await args.unshareSession(sessionId);
+      if (result && !isSessionShared(result)) {
+        toast.success(t('sessions.sidebar.session.unshare.success'));
+      } else {
+        toast.error(t('sessions.sidebar.session.unshare.error'));
+      }
+    } catch {
       toast.error(t('sessions.sidebar.session.unshare.error'));
     }
   }, [args, t]);
+
+  const handleCopySessionReference = React.useCallback(async (session: Session) => {
+    try {
+      const payload = await fetchSessionReference(session.id);
+      const reference = payload?.reference ?? session.id;
+      const result = await copyTextToClipboard(reference);
+      if (!result.ok) {
+        toast.error(t('sessions.sidebar.session.reference.copyError'));
+        return;
+      }
+      setCopiedSessionId(session.id);
+      if (copyTimeout.current) {
+        clearTimeout(copyTimeout.current);
+      }
+      copyTimeout.current = window.setTimeout(() => {
+        setCopiedSessionId(null);
+        copyTimeout.current = null;
+      }, 2000);
+      toast.success(t('sessions.sidebar.session.reference.success'));
+    } catch {
+      toast.error(t('sessions.sidebar.session.reference.copyError'));
+    }
+  }, [t]);
 
   const collectDescendants = React.useCallback((sessionId: string): Session[] => {
     const collected: Session[] = [];
@@ -295,6 +324,7 @@ export const useSessionActions = (args: Args) => {
     handleShareSession,
     handleCopyShareUrl,
     handleCopySessionId,
+    handleCopySessionReference,
     handleUnshareSession,
     handleDeleteSession,
     confirmDeleteSession,

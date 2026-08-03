@@ -5,6 +5,7 @@ export const createStartupPipelineRuntime = (dependencies) => {
     createTerminalRuntime,
     createDictationRuntime,
     createMessageStreamWsRuntime,
+    createOpenChamberAgentEventsWebSocketRuntime,
     createServerStartupRuntime,
   } = dependencies;
 
@@ -101,6 +102,13 @@ export const createStartupPipelineRuntime = (dependencies) => {
       upstreamStallTimeoutMs,
     });
 
+    const openChamberAgentEventsWebSocketRuntime = createOpenChamberAgentEventsWebSocketRuntime({
+      server,
+      uiAuthController,
+      isRequestOriginAllowed,
+      rejectWebSocketUpgrade,
+    });
+
     setupProxy(app);
 
     if (apiOnly) {
@@ -146,6 +154,7 @@ export const createStartupPipelineRuntime = (dependencies) => {
       terminalRuntime,
       dictationRuntime,
       messageStreamRuntime,
+      openChamberAgentEventsWebSocketRuntime,
     };
   };
 
