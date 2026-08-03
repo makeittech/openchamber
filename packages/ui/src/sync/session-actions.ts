@@ -29,7 +29,6 @@ import { getImperativeSessionMessageLoader } from "./session-message-loader"
 import { cleanupPersistedSessionState } from "./session-deletion-cleanup"
 import { getRuntimeKey } from "@/lib/runtime-switch"
 import { harnessAbort, harnessPermissionReply, harnessQuestionReply } from "@/lib/harness/client"
-import { isClaudeSubagentSessionId } from "@/lib/harness/claude-subagent"
 import { useSelectionStore } from "./selection-store"
 import { applyGlobalSessionStatusEvent } from "./global-session-status"
 
@@ -1265,24 +1264,68 @@ export async function abortCurrentOperation(sessionId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Claude subagent asks are stamped on synthetic child session ids. The sticky
- * harness target lives on the parent — walk parentID so Allow/Deny still hits
- * `/api/harness/permission/reply` instead of the OpenCode SDK.
+ * Synthetic Claude harness subagent session ids (`ses_claude_sub_*`). They are
+ * transcript-only broadcast shells, not selectable sessions, so permission
+ * asks stamped on them must resolve back to the real parent session before
+ * the reply can reach the harness endpoint.
  */
-function resolveHarnessTargetForPermissionSession(sessionId: string) {
-  const selection = useSelectionStore.getState()
-  const direct = selection.getSessionTarget(sessionId)
-  if (direct?.harnessId === "claude-code") return direct
-  if (!isClaudeSubagentSessionId(sessionId) || !_childStores) return direct
+const CLAUDE_SUBAGENT_SESSION_PREFIX = "ses_claude_sub_"
 
-  for (const store of _childStores.children.values()) {
-    const child = store.getState().session.find((session) => session.id === sessionId)
-    const parentId = typeof child?.parentID === "string" ? child.parentID : ""
-    if (!parentId) continue
-    const parentTarget = selection.getSessionTarget(parentId)
-    if (parentTarget?.harnessId === "claude-code") return parentTarget
+function isClaudeSubagentSessionId(sessionId: string): boolean {
+  return typeof sessionId === "string" && sessionId.startsWith(CLAUDE_SUBAGENT_SESSION_PREFIX)
+}
+
+/**
+ * Walk loaded child stores to find the real parent of a synthetic Claude
+ * subagent session id: either the session record itself (`parentID`) or the
+ * pending permission/ask carrying `metadata.parentSessionID`.
+ */
+function findClaudeSubagentParentSessionId(sessionId: string, requestId: string): string | null {
+  if (!isClaudeSubagentSessionId(sessionId)) return null
+  const stores = _childStores
+  if (!stores) return null
+
+  for (const [, store] of stores.children) {
+    const state = store.getState()
+    const session = state.session.find((entry) => entry.id === sessionId)
+    const parentId = session?.parentID
+    if (typeof parentId === "string" && parentId.length > 0) return parentId
   }
-  return direct
+
+  if (requestId) {
+    for (const [, store] of stores.children) {
+      const state = store.getState()
+      const requests = state.permission?.[sessionId]
+      if (!requests) continue
+      const request = requests.find((entry) => entry.id === requestId)
+      const parentSessionID = request?.metadata?.parentSessionID
+      if (typeof parentSessionID === "string" && parentSessionID.length > 0) return parentSessionID
+    }
+  }
+
+  return null
+}
+
+/**
+ * Resolve the harness target a permission reply must be sent through. For a
+ * synthetic Claude subagent session id the direct lookup fails (the id is not
+ * a selectable session), so walk up to the real parent and use its target —
+ * otherwise Allow/Deny would silently hit the OpenCode runtime instead of the
+ * Claude harness reply endpoint.
+ */
+function resolveClaudeHarnessReplyTarget(
+  sessionId: string,
+  requestId: string,
+): { sessionId: string } | null {
+  const direct = useSelectionStore.getState().getSessionTarget(sessionId)
+  if (direct?.harnessId === "claude-code") return { sessionId }
+  if (!isClaudeSubagentSessionId(sessionId)) return null
+
+  const parentSessionId = findClaudeSubagentParentSessionId(sessionId, requestId)
+  if (!parentSessionId) return null
+  const parentTarget = useSelectionStore.getState().getSessionTarget(parentSessionId)
+  if (parentTarget?.harnessId !== "claude-code") return null
+  return { sessionId: parentSessionId }
 }
 
 export async function respondToPermission(
@@ -1292,15 +1335,15 @@ export async function respondToPermission(
   directoryOverride?: string,
 ): Promise<void> {
   await waitForConnectionOrThrow()
+  const harnessTarget = resolveClaudeHarnessReplyTarget(sessionId, requestId)
   const directory = directoryOverride
     || resolveDirectoryForBlockingRequest("permission", sessionId, requestId)
     || getSessionDirectory(sessionId)
+    || (harnessTarget ? getSessionDirectory(harnessTarget.sessionId) : "")
     || dir()
-
-  const target = resolveHarnessTargetForPermissionSession(sessionId)
-  if (target?.harnessId === "claude-code") {
+  if (harnessTarget) {
     const result = await harnessPermissionReply({
-      sessionId,
+      sessionId: harnessTarget.sessionId,
       requestId,
       reply: response,
       ...(directory ? { directory } : {}),
@@ -1314,7 +1357,6 @@ export async function respondToPermission(
     ? opencodeClient.getScopedSdkClient(directoryOverride)
     : getRequestReplyClient("permission", sessionId, requestId)
   const result = await client.permission.reply({
-
     requestID: requestId,
     reply: response,
     ...(directory ? { directory } : {}),
@@ -1329,13 +1371,14 @@ export async function dismissPermission(
   requestId: string,
 ): Promise<void> {
   await waitForConnectionOrThrow()
+  const harnessTarget = resolveClaudeHarnessReplyTarget(sessionId, requestId)
   const directory = resolveDirectoryForBlockingRequest("permission", sessionId, requestId)
     || getSessionDirectory(sessionId)
+    || (harnessTarget ? getSessionDirectory(harnessTarget.sessionId) : "")
     || dir()
-  const target = resolveHarnessTargetForPermissionSession(sessionId)
-  if (target?.harnessId === "claude-code") {
+  if (harnessTarget) {
     const result = await harnessPermissionReply({
-      sessionId,
+      sessionId: harnessTarget.sessionId,
       requestId,
       reply: "reject",
       ...(directory ? { directory } : {}),
@@ -1593,21 +1636,6 @@ export async function dismissOpenQuestionsForSession(sessionId: string): Promise
  * 5. Set pendingInputText so the reverted message text appears in the input
  */
 export async function revertToMessage(sessionId: string, messageId: string): Promise<void> {
-  const target = useSelectionStore.getState().getSessionTarget(sessionId)
-  if (target?.harnessId === "claude-code") {
-    // OpenCode `session.revert` only rewrites the OpenCode message store. Claude
-    // transcripts live in JSONL + resume via foreignSessionId, so a successful
-    // OC revert is a no-op that leaves model context intact (engines-claude-code
-    // spec: rewind UI is a non-goal). Refuse instead of faking a UI-only undo.
-    const { toast } = await import("sonner")
-    const { useI18nStore, formatMessage } = await import("@/lib/i18n/store")
-    const { dictionary } = useI18nStore.getState()
-    toast.error(formatMessage(dictionary, "chat.revert.toast.unsupportedHarness"))
-    const error = new Error("Revert is not supported on Claude Code sessions")
-    ;(error as Error & { code?: string }).code = "REVERT_UNSUPPORTED_HARNESS"
-    throw error
-  }
-
   const { store, directory } = dirStoreForSession(sessionId)
   const state = store.getState()
 
@@ -1749,17 +1777,6 @@ export async function refetchSessionMessages(sessionId: string): Promise<void> {
  * Restore all previously reverted messages. Aborts if busy, merges result.
  */
 export async function unrevertSession(sessionId: string): Promise<void> {
-  const target = useSelectionStore.getState().getSessionTarget(sessionId)
-  if (target?.harnessId === "claude-code") {
-    const { toast } = await import("sonner")
-    const { useI18nStore, formatMessage } = await import("@/lib/i18n/store")
-    const { dictionary } = useI18nStore.getState()
-    toast.error(formatMessage(dictionary, "chat.revert.toast.unsupportedHarness"))
-    const error = new Error("Revert is not supported on Claude Code sessions")
-    ;(error as Error & { code?: string }).code = "REVERT_UNSUPPORTED_HARNESS"
-    throw error
-  }
-
   const { store, directory } = dirStoreForSession(sessionId)
   const state = store.getState()
   const previousMessageCount = state.message[sessionId]?.length ?? 0

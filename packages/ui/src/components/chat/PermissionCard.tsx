@@ -10,6 +10,7 @@ import { Icon } from "@/components/icon/Icon";
 import { DiffPreview, WritePreview } from './DiffPreview';
 import { useI18n } from '@/lib/i18n';
 import { getVisiblePermissionPatterns } from './permissionCardPatterns';
+import { isPermissionFromSubagent } from './permissionCardSubagent';
 
 const PERMISSION_BASH_CUSTOM_STYLE: React.CSSProperties = {
   margin: 0,
@@ -98,15 +99,10 @@ export const PermissionCard: React.FC<PermissionCardProps> = ({
   const respondToPermission = sessionActions.respondToPermission;
   const sessions = useSessions();
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
-  const isFromSubagent = React.useMemo(() => {
-    if (permission.metadata && typeof permission.metadata === 'object') {
-      const meta = permission.metadata as Record<string, unknown>;
-      if (meta.fromSubagent === true) return true;
-    }
-    if (!currentSessionId || permission.sessionID === currentSessionId) return false;
-    const sourceSession = sessions.find((session) => session.id === permission.sessionID);
-    return Boolean(sourceSession?.parentID && sourceSession.parentID === currentSessionId);
-  }, [permission.metadata, permission.sessionID, currentSessionId, sessions]);
+  const isFromSubagent = React.useMemo(
+    () => isPermissionFromSubagent(permission, currentSessionId, sessions),
+    [permission, currentSessionId, sessions],
+  );
 
   const handleResponse = async (response: PermissionResponse) => {
     setIsResponding(true);

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  bindSession,
   configureSessionBindings,
   resetSessionBindings,
   getSessionBinding,
@@ -16,9 +17,18 @@ import {
   resolveClaudeProjectsRoot,
 } from './import-from-disk.js';
 
+const tempRoots = new Set();
+const makeTempRoot = (prefix) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  tempRoots.add(root);
+  return root;
+};
+
 afterEach(() => {
   resetSessionBindings({ clearDisk: false });
   configureSessionBindings({ persist: false, load: true });
+  for (const root of tempRoots) fs.rmSync(root, { recursive: true, force: true });
+  tempRoots.clear();
 });
 
 describe('decodeClaudeProjectKey', () => {
@@ -30,7 +40,7 @@ describe('decodeClaudeProjectKey', () => {
 
 describe('inspectClaudeSessionJsonl', () => {
   it('reads cwd and first user title from JSONL', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-import-jsonl-'));
+    const dir = makeTempRoot('claude-import-jsonl-');
     const filePath = path.join(dir, '11111111-1111-4111-8111-111111111111.jsonl');
     fs.writeFileSync(filePath, [
       JSON.stringify({
@@ -48,12 +58,10 @@ describe('inspectClaudeSessionJsonl', () => {
     expect(meta.directory).toBe('/tmp/demo-project');
     expect(meta.title).toBe('Fix the flaky test');
     expect(meta.updatedAt).toBeGreaterThan(0);
-
-    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it('skips malformed lines without failing', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-import-bad-'));
+    const dir = makeTempRoot('claude-import-bad-');
     const filePath = path.join(dir, '22222222-2222-4222-8222-222222222222.jsonl');
     fs.writeFileSync(filePath, [
       'not-json',
@@ -63,12 +71,10 @@ describe('inspectClaudeSessionJsonl', () => {
     const meta = inspectClaudeSessionJsonl(filePath);
     expect(meta.title).toBe('Auth refactor');
     expect(meta.directory).toBe('/repo');
-
-    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it('prefers Claude ai-title over summary and first user text', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-import-title-'));
+    const dir = makeTempRoot('claude-import-title-');
     const filePath = path.join(dir, '33333333-3333-4333-8333-333333333333.jsonl');
     fs.writeFileSync(filePath, [
       JSON.stringify({ type: 'summary', summary: 'Summary name', cwd: '/repo' }),
@@ -82,12 +88,10 @@ describe('inspectClaudeSessionJsonl', () => {
 
     const meta = inspectClaudeSessionJsonl(filePath);
     expect(meta.title).toBe('Claude native name');
-
-    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it('prefers a custom user-set name over ai-title', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-import-custom-'));
+    const dir = makeTempRoot('claude-import-custom-');
     const filePath = path.join(dir, '44444444-4444-4444-8444-444444444444.jsonl');
     fs.writeFileSync(filePath, [
       JSON.stringify({ type: 'ai-title', aiTitle: 'Claude native name', cwd: '/repo' }),
@@ -96,15 +100,13 @@ describe('inspectClaudeSessionJsonl', () => {
 
     const meta = inspectClaudeSessionJsonl(filePath);
     expect(meta.title).toBe('My custom name');
-
-    fs.rmSync(dir, { recursive: true, force: true });
   });
 });
 
 describe('listClaudeImportCandidates', () => {
   it('lists projects/sessions and marks already-imported ids', async () => {
     configureSessionBindings({ persist: false, load: true });
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-import-root-'));
+    const root = makeTempRoot('claude-import-root-');
     const configDir = path.join(root, '.claude');
     const projectsRoot = path.join(configDir, 'projects');
     const projectKey = '-tmp-demo-project';
@@ -135,7 +137,6 @@ describe('listClaudeImportCandidates', () => {
     // Subagent transcript should be ignored.
     fs.writeFileSync(path.join(projectDir, 'agent-cccc.jsonl'), '{}\n');
 
-    const { bindSession } = await import('../../session-bindings.js');
     bindSession({
       sessionId: 'ses_existing',
       harnessId: 'claude-code',
@@ -160,12 +161,10 @@ describe('listClaudeImportCandidates', () => {
     expect(byId[importedId].alreadyImported).toBe(true);
     expect(byId[freshId].alreadyImported).toBe(false);
     expect(byId[freshId].title).toBe('Fresh chat');
-
-    fs.rmSync(root, { recursive: true, force: true });
   });
 
   it('returns empty projects when Claude config is missing (not failure)', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-import-missing-'));
+    const root = makeTempRoot('claude-import-missing-');
     const payload = await listClaudeImportCandidates({
       env: {},
       homeDir: root,
@@ -173,14 +172,13 @@ describe('listClaudeImportCandidates', () => {
     });
     expect(payload.projectsRoot).toBeNull();
     expect(payload.projects).toEqual([]);
-    fs.rmSync(root, { recursive: true, force: true });
   });
 });
 
 describe('importClaudeSessions', () => {
   it('imports, skips already-bound, and continues after failures', async () => {
     configureSessionBindings({ persist: false, load: true });
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-import-run-'));
+    const root = makeTempRoot('claude-import-run-');
     const goodDir = path.join(root, 'good');
     fs.mkdirSync(goodDir, { recursive: true });
 
@@ -197,7 +195,6 @@ describe('importClaudeSessions', () => {
       fs.writeFileSync(path.join(projectDir, `${id}.jsonl`), '');
     }
 
-    const { bindSession } = await import('../../session-bindings.js');
     bindSession({
       sessionId: 'ses_old',
       harnessId: 'claude-code',
@@ -238,14 +235,12 @@ describe('importClaudeSessions', () => {
     ]);
     expect(getSessionBinding('ses_2')?.foreignSessionId).toBe(okId);
     expect(listSessionBindings().some((b) => b.foreignSessionId === okId)).toBe(true);
-
-    fs.rmSync(root, { recursive: true, force: true });
   });
 });
 
 describe('resolveClaudeProjectsRoot', () => {
   it('prefers CLAUDE_CONFIG_DIR', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-import-cfg-'));
+    const root = makeTempRoot('claude-import-cfg-');
     const configDir = path.join(root, 'custom');
     fs.mkdirSync(path.join(configDir, 'projects'), { recursive: true });
     fs.mkdirSync(path.join(root, '.claude', 'projects'), { recursive: true });
@@ -255,7 +250,5 @@ describe('resolveClaudeProjectsRoot', () => {
       homeDir: root,
       fs,
     })).toBe(path.join(configDir, 'projects'));
-
-    fs.rmSync(root, { recursive: true, force: true });
   });
 });

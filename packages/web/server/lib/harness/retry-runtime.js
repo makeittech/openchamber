@@ -1,16 +1,3 @@
-/**
- * Durable retry scheduler runtime for Claude session-limit auto-resume.
- *
- * Consumes the pending-retry store (persistence), retry-policy (deadlines),
- * and recovery-transcript (safety analysis). Uses record generations as
- * compare-and-swap ownership around every asynchronous boundary so stale
- * callbacks/finalizers cannot reinstall canceled or superseded work.
- *
- * One earliest-deadline wake timer is maintained (long waits chunked via
- * `nextTimerChunk`). Bounded concurrency of 2. Failure to persist on schedule
- * rejects (the translator must not claim automatic recovery exists).
- */
-
 import { computeNextAttempt, nextTimerChunk } from './retry-policy.js';
 
 const MAX_CONCURRENCY = 2;
@@ -30,14 +17,16 @@ const MESSAGE_BLOCKED = 'claude-recovery-blocked';
  * @param {(sessionId: string) => Promise<'exists' | 'deleted' | 'unknown'>} deps.sessionExists
  */
 export function createHarnessRetryRuntime(deps) {
-  const store = deps.store;
+  const {
+    store,
+    setTimer,
+    clearTimer,
+    inspectTranscript,
+    launchRecovery,
+    emitStatus,
+    sessionExists,
+  } = deps;
   const now = typeof deps.now === 'function' ? deps.now : Date.now;
-  const setTimer = deps.setTimer;
-  const clearTimer = deps.clearTimer;
-  const inspectTranscript = deps.inspectTranscript;
-  const launchRecovery = deps.launchRecovery;
-  const emitStatus = deps.emitStatus;
-  const sessionExists = deps.sessionExists;
 
   let wakeTimer = null;
   let activeLaunches = 0;
@@ -101,14 +90,46 @@ export function createHarnessRetryRuntime(deps) {
     emitStatus(sessionId, directory, { type: 'idle' });
   }
 
+  function clearWakeTimer() {
+    if (wakeTimer === null) return;
+    clearTimer(wakeTimer);
+    wakeTimer = null;
+  }
+
+  async function inspect(record) {
+    try {
+      return await inspectTranscript({
+        foreignSessionId: record.foreignSessionId,
+        expectedTailUuid: record.expectedTailUuid,
+        launchUuid: record.launchUuid,
+      });
+    } catch {
+      return { safe: false, reason: 'transcript-unreadable' };
+    }
+  }
+
+  function resetLaunchingRecord(record) {
+    const waiting = {
+      ...record,
+      state: 'waiting',
+      launchUuid: undefined,
+      updatedAt: now(),
+    };
+    waiting.nextAttemptAt = computeDeadline(waiting) || (now() + 5000);
+    try {
+      store.put(waiting, { expectedGeneration: record.generation });
+    } catch {
+      // A failed rewrite leaves the existing durable launch authoritative.
+    }
+  }
+
   function armWake() {
     if (stopped) return;
-    if (wakeTimer !== null) {
-      clearTimer(wakeTimer);
-      wakeTimer = null;
-    }
-    const records = store.list().filter((r) => r.state === 'waiting' || r.state === 'observed');
-    const waiting = records.filter((r) => r.nextAttemptAt && r.nextAttemptAt > 0);
+    clearWakeTimer();
+    const waiting = store.list().filter((record) => (
+      (record.state === 'waiting' || record.state === 'observed')
+      && record.nextAttemptAt > 0
+    ));
     if (waiting.length === 0) return;
     const earliest = waiting.reduce((min, r) => (r.nextAttemptAt < min.nextAttemptAt ? r : min));
     const delay = nextTimerChunk(earliest.nextAttemptAt, now());
@@ -131,10 +152,8 @@ export function createHarnessRetryRuntime(deps) {
 
   async function launchCycle(record) {
     if (stopped) return;
-    // CAS: transition to launching only if still waiting
     const fresh = store.get(record.sessionId);
-    if (!fresh || fresh.state !== 'waiting') return;
-    if (fresh.generation !== record.generation) return;
+    if (!fresh || fresh.state !== 'waiting' || fresh.generation !== record.generation) return;
 
     const launchingRecord = {
       ...fresh,
@@ -147,7 +166,6 @@ export function createHarnessRetryRuntime(deps) {
     try {
       putResult = store.put(launchingRecord, { expectedGeneration: fresh.generation });
     } catch {
-      // persistence failure -> remain waiting, re-arm
       armWake();
       return;
     }
@@ -156,7 +174,6 @@ export function createHarnessRetryRuntime(deps) {
       || putResult.generation !== launchingRecord.generation
       || putResult.state !== 'launching'
     ) {
-      // CAS failed (stale) -> do not launch
       armWake();
       return;
     }
@@ -167,23 +184,10 @@ export function createHarnessRetryRuntime(deps) {
     activeLaunches += 1;
 
     try {
-      // Safety check the transcript
-      let inspection;
-      try {
-        inspection = await inspectTranscript({
-          foreignSessionId: putResult.foreignSessionId,
-          expectedTailUuid: putResult.expectedTailUuid,
-          launchUuid: putResult.launchUuid,
-        });
-      } catch {
-        inspection = { safe: false, reason: 'transcript-unreadable' };
-      }
+      const inspection = await inspect(putResult);
 
-      // Re-check generation after async
       const afterInspect = store.get(record.sessionId);
-      if (!afterInspect || afterInspect.generation !== launchGen) {
-        return; // canceled/superseded
-      }
+      if (!afterInspect || afterInspect.generation !== launchGen) return;
 
       if (!inspection.safe) {
         const blockedRecord = {
@@ -199,13 +203,15 @@ export function createHarnessRetryRuntime(deps) {
         } catch {
           // ignore
         }
-        emitRetry({ ...putResult, attempt: putResult.attempt }, null);
+        emitRetry(putResult, null);
         return;
       }
 
       let toolGuard = null;
       try {
-        toolGuard = inspection.fingerprints ? createRecoveryToolGuardAdapter(inspection.fingerprints) : null;
+        toolGuard = Array.isArray(inspection.fingerprints) && inspection.fingerprints.length > 0
+          ? inspection.fingerprints
+          : null;
       } catch {
         toolGuard = null;
       }
@@ -220,15 +226,12 @@ export function createHarnessRetryRuntime(deps) {
         });
         outcome = result?.outcome;
         terminal = result?.terminal;
-      } catch (error) {
+      } catch {
         outcome = 'error';
       }
 
-      // Re-check generation after async launch
       const afterLaunch = store.get(record.sessionId);
-      if (!afterLaunch || afterLaunch.generation !== launchGen) {
-        return; // canceled/superseded
-      }
+      if (!afterLaunch || afterLaunch.generation !== launchGen) return;
 
       if (outcome === 'success') {
         store.delete(record.sessionId, { expectedGeneration: launchGen });
@@ -236,7 +239,7 @@ export function createHarnessRetryRuntime(deps) {
       } else if (outcome === 'rate-limit' && terminal) {
         const retryRecord = {
           ...afterLaunch,
-          state: 'observed',
+          state: 'waiting',
           generation: launchGen + 1,
           attempt: (afterLaunch.attempt || 1) + 1,
           rateLimitType: terminal.rateLimitType || afterLaunch.rateLimitType,
@@ -245,10 +248,8 @@ export function createHarnessRetryRuntime(deps) {
           expectedTailUuid: terminal.assistantUuid || afterLaunch.expectedTailUuid,
           launchUuid: undefined,
           blockedReason: undefined,
-          stateUpdatedAt: now(),
           updatedAt: now(),
         };
-        retryRecord.state = 'waiting';
         retryRecord.nextAttemptAt = computeDeadline(retryRecord) || 0;
         try {
           store.put(retryRecord, { expectedGeneration: launchGen });
@@ -257,14 +258,12 @@ export function createHarnessRetryRuntime(deps) {
         }
         emitRetry(retryRecord, retryRecord.nextAttemptAt);
       } else {
-        // error or unknown outcome
         store.delete(record.sessionId, { expectedGeneration: launchGen });
         emitIdle(record.sessionId, record.directory);
       }
     } finally {
       cancelControllers.delete(record.sessionId);
       activeLaunches -= 1;
-      // The wake loop re-arms after all launches in this batch settle.
     }
   }
 
@@ -297,17 +296,11 @@ export function createHarnessRetryRuntime(deps) {
     }
     record.nextAttemptAt = deadline || 0;
 
-    let putResult;
-    try {
-      putResult = store.put(record, existing
-        ? { expectedGeneration: existing.generation }
-        : { expectedGeneration: null });
-    } catch (error) {
-      // propagation failure -> the translator must not claim automatic recovery
-      throw error;
-    }
+    const putResult = store.put(record, existing
+      ? { expectedGeneration: existing.generation }
+      : { expectedGeneration: null });
     if (!putResult || putResult.generation !== record.generation) {
-      return; // CAS no-op
+      return;
     }
 
     emitRetry(record, deadline);
@@ -319,16 +312,7 @@ export function createHarnessRetryRuntime(deps) {
     if (!existing) {
       return null;
     }
-    // Abort any active launch
-    const controller = cancelControllers.get(sessionId);
-    if (controller) {
-      try {
-        controller.abort();
-      } catch {
-        // ignore
-      }
-    }
-    cancelControllers.delete(sessionId);
+    abortLaunch(sessionId);
     store.delete(sessionId);
     if (existing.directory) {
       emitIdle(sessionId, existing.directory);
@@ -347,27 +331,10 @@ export function createHarnessRetryRuntime(deps) {
         state = 'unknown';
       }
     }
-    if (state === 'unknown') {
-      return null; // preserve
-    }
-    if (state === 'exists') {
-      return null; // no-op
-    }
-    // deleted
-    const controller = cancelControllers.get(sessionId);
-    if (controller) {
-      try {
-        controller.abort();
-      } catch {
-        // ignore
-      }
-    }
-    cancelControllers.delete(sessionId);
+    if (state === 'unknown' || state === 'exists') return null;
+    abortLaunch(sessionId);
     store.delete(sessionId);
-    if (wakeTimer !== null) {
-      clearTimer(wakeTimer);
-      wakeTimer = null;
-    }
+    clearWakeTimer();
     armWake();
     return { removed: true };
   }
@@ -376,26 +343,26 @@ export function createHarnessRetryRuntime(deps) {
     return store.get(sessionId) != null;
   }
 
+  function abortLaunch(sessionId) {
+    try {
+      cancelControllers.get(sessionId)?.abort();
+    } catch {
+      // Abort is best-effort; deleting the durable obligation remains authoritative.
+    }
+    cancelControllers.delete(sessionId);
+  }
+
   function listPendingForStatus() {
     const result = {};
     for (const record of store.list()) {
-      if (record.state === 'waiting' || record.state === 'launching' || record.state === 'observed') {
-        const status = {
-          type: 'retry',
-          attempt: record.attempt,
-          message: record.state === 'blocked' ? MESSAGE_BLOCKED : MESSAGE_WAITING,
-        };
-        if (record.nextAttemptAt) {
-          status.next = record.nextAttemptAt;
-        }
-        result[record.sessionId] = status;
-      } else if (record.state === 'blocked') {
-        result[record.sessionId] = {
-          type: 'retry',
-          attempt: record.attempt,
-          message: MESSAGE_BLOCKED,
-        };
-      }
+      if (!['waiting', 'launching', 'observed', 'blocked'].includes(record.state)) continue;
+      const status = {
+        type: 'retry',
+        attempt: record.attempt,
+        message: record.state === 'blocked' ? MESSAGE_BLOCKED : MESSAGE_WAITING,
+      };
+      if (record.state !== 'blocked' && record.nextAttemptAt) status.next = record.nextAttemptAt;
+      result[record.sessionId] = status;
     }
     return result;
   }
@@ -405,37 +372,13 @@ export function createHarnessRetryRuntime(deps) {
     const records = store.list();
     for (const record of records) {
       if (record.state === 'launching') {
-        // Classify persisted launching on restart via transcript
-        let inspection;
-        try {
-          inspection = await inspectTranscript({
-            foreignSessionId: record.foreignSessionId,
-            expectedTailUuid: record.expectedTailUuid,
-            launchUuid: record.launchUuid,
-          });
-        } catch {
-          inspection = { safe: false, reason: 'transcript-unreadable' };
-        }
+        const inspection = await inspect(record);
         if (inspection.safe && inspection.tailPresent) {
-          // Likely success -> delete
           store.delete(record.sessionId, { expectedGeneration: record.generation });
           continue;
         }
-        // Otherwise: ambiguous/block or rate-limit present -> back to waiting
-        const waiting = {
-          ...record,
-          state: 'waiting',
-          launchUuid: undefined,
-          updatedAt: now(),
-        };
-        waiting.nextAttemptAt = computeDeadline(waiting) || (now() + 5000);
-        try {
-          store.put(waiting, { expectedGeneration: record.generation });
-        } catch {
-          // ignore
-        }
+        resetLaunchingRecord(record);
       }
-      // Seed retry status
       const fresh = store.get(record.sessionId);
       if (fresh) {
         emitRetry(fresh, fresh.nextAttemptAt || null);
@@ -446,34 +389,12 @@ export function createHarnessRetryRuntime(deps) {
 
   function stop() {
     stopped = true;
-    if (wakeTimer !== null) {
-      clearTimer(wakeTimer);
-      wakeTimer = null;
-    }
-    // Convert any launching records back to waiting for restart safety
+    clearWakeTimer();
     for (const record of store.list()) {
-      if (record.state === 'launching') {
-        const waiting = {
-          ...record,
-          state: 'waiting',
-          launchUuid: undefined,
-          updatedAt: now(),
-        };
-        waiting.nextAttemptAt = computeDeadline(waiting) || (now() + 5000);
-        try {
-          store.put(waiting, { expectedGeneration: record.generation });
-        } catch {
-          // ignore
-        }
-      }
+      if (record.state === 'launching') resetLaunchingRecord(record);
     }
-    // Abort active launches
-    for (const controller of cancelControllers.values()) {
-      try {
-        controller.abort();
-      } catch {
-        // ignore
-      }
+    for (const sessionId of cancelControllers.keys()) {
+      abortLaunch(sessionId);
     }
     cancelControllers.clear();
   }
@@ -487,16 +408,4 @@ export function createHarnessRetryRuntime(deps) {
     hasPending,
     listPendingForStatus,
   };
-}
-
-/**
- * Adapter so the runtime can hand a hook function to the translator's
- * `startClaudeQuery({ hooks })` without importing recovery-transcript's
- * module-specific shape here. The translator (Task 7) wraps it.
- *
- * @param {any[]} fingerprints
- */
-function createRecoveryToolGuardAdapter(fingerprints) {
-  if (!Array.isArray(fingerprints) || fingerprints.length === 0) return null;
-  return fingerprints;
 }

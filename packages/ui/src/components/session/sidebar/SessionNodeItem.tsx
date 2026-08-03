@@ -529,9 +529,12 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
       return;
     }
 
-
-    await sync.ensureSessionRenderable(session.id, true, sessionDirectory);
-
+    try {
+      await sync.loadCompleteHistory(session.id, sessionDirectory);
+    } catch {
+      toast.error(t('sessions.sidebar.session.export.failedLoadHistory'));
+      return;
+    }
 
     const records = buildSessionMessageRecordsSnapshot(directoryStore.getState(), session.id).list;
     if (records.length === 0) {

@@ -1,8 +1,3 @@
-/**
- * OpenChamber harness HTTP client — non-OpenCode engine prompt/abort.
- * Uses runtimeFetch only (ui-api-decoupling). Never logs secrets or attachment bytes.
- */
-
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import type { ExecutionTarget } from '@/types/harness';
 import { isExecutionTarget } from '@/types/harness';
@@ -22,32 +17,12 @@ export type HarnessPromptParams = {
   messageId?: string;
   assistantMessageId?: string;
   seedFromSessionId?: string;
-  /** Claude agents mode for this turn (`opencode` inherits OpenChamber agent prompt/permissions). */
   agentsMode?: 'claude' | 'opencode';
-  /**
-   * Selected OpenCode agent name (`agentsMode: 'opencode'`).
-   *
-   * Only the name travels: the server re-reads the agent's prompt and
-   * permission ruleset from OpenCode, so a client cannot hand the permission
-   * bridge a ruleset that allows everything.
-   */
+  /** The server resolves this OpenCode agent's prompt and permissions. */
   agent?: string;
-  /** Selected native Claude agent name (`agentsMode: 'claude'`). */
   claudeAgent?: string;
-  /**
-   * OpenCode agent system prompt to append when agentsMode is `opencode`.
-   *
-   * Fallback only — the server prefers its own authoritative lookup and uses
-   * this when the runtime has no OpenCode URL builder to resolve agents with.
-   */
+  /** Fallback for runtimes where the server cannot resolve the OpenCode agent. */
   systemPromptAppend?: string;
-  /**
-   * OpenCode/OpenChamber slash command to translate into prompt text.
-   *
-   * Only the name and arguments travel: the server resolves the authoritative
-   * template from OpenCode itself, so the client never supplies the (shell
-   * bearing) template body.
-   */
   command?: HarnessOpenCodeCommand;
 };
 
@@ -125,46 +100,85 @@ export class HarnessClientError extends Error {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+const trimmedString = (value: unknown): string | null =>
+  typeof value === 'string' && value.trim() ? value.trim() : null;
+
+const JSON_HEADERS = {
+  Accept: 'application/json',
+  'Content-Type': 'application/json',
+};
+
+const readJson = (response: Response): Promise<unknown> => response.json().catch(() => null);
+
+const str = (value: unknown): string | undefined => (typeof value === 'string' ? value : undefined);
+
 const readErrorPayload = async (response: Response): Promise<{ message: string; code: string; status?: string }> => {
+  const payload = await readJson(response);
+  const fallback = `Request failed (${response.status})`;
+  if (!isRecord(payload)) return { message: fallback, code: 'HARNESS_ERROR' };
+  return {
+    message: trimmedString(payload.error) ?? trimmedString(payload.message) ?? fallback,
+    code: trimmedString(payload.code) ?? 'HARNESS_ERROR',
+    status: str(payload.status),
+  };
+};
+
+async function requestHarness(
+  path: string,
+  init: Parameters<typeof runtimeFetch>[1],
+  networkMessage: string,
+): Promise<Response> {
+  let response: Response;
   try {
-    const payload = await response.json() as { error?: unknown; message?: unknown; code?: unknown; status?: unknown } | null;
-    if (isRecord(payload)) {
-      const message = typeof payload.error === 'string' && payload.error.trim()
-        ? payload.error.trim()
-        : typeof payload.message === 'string' && payload.message.trim()
-          ? payload.message.trim()
-          : `Request failed (${response.status})`;
-      const code = typeof payload.code === 'string' && payload.code.trim()
-        ? payload.code.trim()
-        : 'HARNESS_ERROR';
-      const status = typeof payload.status === 'string' ? payload.status : undefined;
-      return { message, code, status };
-    }
-  } catch {
-    // ignore parse failures
+    response = await runtimeFetch(path, init);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : networkMessage;
+    throw new HarnessClientError(message, 'HARNESS_NETWORK', 0);
   }
-  return { message: `Request failed (${response.status})`, code: 'HARNESS_ERROR' };
-};
 
-const normalizeFiles = (files: HarnessPromptParams['files']): HarnessAttachmentFile[] | undefined => {
-  if (!files || files.length === 0) {
-    return undefined;
+  if (!response.ok) {
+    const { message, code, status } = await readErrorPayload(response);
+    throw new HarnessClientError(message, code, response.status, status);
   }
-  return files.map((file) => ({
-    mime: file.mime,
-    url: file.url,
-    filename: file.filename,
-  }));
-};
+  return response;
+}
 
-/** Shape the prompt request body for POST /api/harness/prompt (exported for tests). */
-export function buildHarnessPromptBody(params: HarnessPromptParams): Record<string, unknown> {
-  if (!params.sessionId.trim()) {
-    throw new HarnessClientError('sessionId is required', 'PROMPT_INVALID', 400);
+const postJson = (path: string, body: unknown, networkMessage: string) => requestHarness(path, {
+  method: 'POST',
+  headers: JSON_HEADERS,
+  body: JSON.stringify(body),
+}, networkMessage);
+
+const getJson = (
+  path: string,
+  networkMessage: string,
+  query?: Record<string, string>,
+) => requestHarness(path, {
+  method: 'GET',
+  headers: { Accept: 'application/json' },
+  query,
+}, networkMessage);
+
+async function readRecord(response: Response, invalidMessage: string): Promise<Record<string, unknown>> {
+  const payload = await readJson(response);
+  if (!isRecord(payload)) {
+    throw new HarnessClientError(invalidMessage, 'HARNESS_INVALID_RESPONSE', response.status);
   }
-  if (!params.directory.trim()) {
-    throw new HarnessClientError('directory is required', 'PROMPT_INVALID', 400);
-  }
+  return payload;
+}
+
+function addTrimmed(body: Record<string, unknown>, key: string, value: unknown): void {
+  const trimmed = trimmedString(value);
+  if (trimmed) body[key] = trimmed;
+}
+
+function requireValue(value: string, name: string, code: string): void {
+  if (!value.trim()) throw new HarnessClientError(`${name} is required`, code, 400);
+}
+
+function buildHarnessPromptBody(params: HarnessPromptParams): Record<string, unknown> {
+  requireValue(params.sessionId, 'sessionId', 'PROMPT_INVALID');
+  requireValue(params.directory, 'directory', 'PROMPT_INVALID');
   if (!isExecutionTarget(params.target) || params.target.harnessId === 'opencode') {
     throw new HarnessClientError('target must be a non-OpenCode ExecutionTarget', 'PROMPT_INVALID', 400);
   }
@@ -176,31 +190,18 @@ export function buildHarnessPromptBody(params: HarnessPromptParams): Record<stri
     text: params.text,
   };
 
-  const files = normalizeFiles(params.files);
-  if (files) {
-    body.files = files;
+  if (params.files?.length) {
+    body.files = params.files.map(({ mime, url, filename }) => ({ mime, url, filename }));
   }
-  if (params.messageId) {
-    body.messageId = params.messageId;
-  }
-  if (params.assistantMessageId) {
-    body.assistantMessageId = params.assistantMessageId;
-  }
-  if (params.seedFromSessionId?.trim()) {
-    body.seedFromSessionId = params.seedFromSessionId.trim();
-  }
+  if (params.messageId) body.messageId = params.messageId;
+  if (params.assistantMessageId) body.assistantMessageId = params.assistantMessageId;
+  addTrimmed(body, 'seedFromSessionId', params.seedFromSessionId);
   if (params.agentsMode === 'claude' || params.agentsMode === 'opencode') {
     body.agentsMode = params.agentsMode;
   }
-  if (typeof params.agent === 'string' && params.agent.trim()) {
-    body.agent = params.agent.trim();
-  }
-  if (typeof params.claudeAgent === 'string' && params.claudeAgent.trim()) {
-    body.claudeAgent = params.claudeAgent.trim();
-  }
-  if (typeof params.systemPromptAppend === 'string' && params.systemPromptAppend.trim()) {
-    body.systemPromptAppend = params.systemPromptAppend.trim();
-  }
+  addTrimmed(body, 'agent', params.agent);
+  addTrimmed(body, 'claudeAgent', params.claudeAgent);
+  addTrimmed(body, 'systemPromptAppend', params.systemPromptAppend);
   const commandName = params.command?.name.trim();
   if (commandName) {
     body.command = {
@@ -213,79 +214,35 @@ export function buildHarnessPromptBody(params: HarnessPromptParams): Record<stri
 
 export async function harnessPrompt(params: HarnessPromptParams): Promise<HarnessPromptResult> {
   const body = buildHarnessPromptBody(params);
-  let response: Response;
-  try {
-    response = await runtimeFetch('/api/harness/prompt', {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Harness prompt request failed';
-    throw new HarnessClientError(message, 'HARNESS_NETWORK', 0);
-  }
-
-  if (!response.ok) {
-    const { message, code, status } = await readErrorPayload(response);
-    throw new HarnessClientError(message, code, response.status, status);
-  }
-
-  const payload = await response.json().catch(() => null);
-  if (!isRecord(payload)) {
-    throw new HarnessClientError('Invalid harness prompt response', 'HARNESS_INVALID_RESPONSE', response.status);
-  }
+  const response = await postJson('/api/harness/prompt', body, 'Harness prompt request failed');
+  const payload = await readRecord(response, 'Invalid harness prompt response');
 
   return {
     ok: payload.ok !== false,
-    sessionId: typeof payload.sessionId === 'string' ? payload.sessionId : params.sessionId,
-    harnessId: typeof payload.harnessId === 'string' ? payload.harnessId : params.target.harnessId,
+    sessionId: str(payload.sessionId) ?? params.sessionId,
+    harnessId: str(payload.harnessId) ?? params.target.harnessId,
     ...(typeof payload.messageId === 'string' ? { messageId: payload.messageId } : {}),
     ...(typeof payload.assistantMessageId === 'string' ? { assistantMessageId: payload.assistantMessageId } : {}),
-    status: typeof payload.status === 'string' ? payload.status : 'started',
+    status: str(payload.status) ?? 'started',
   };
 }
 
 export async function harnessAbort(params: HarnessAbortParams): Promise<HarnessAbortResult> {
-  if (!params.sessionId.trim()) {
-    throw new HarnessClientError('sessionId is required', 'ABORT_INVALID', 400);
-  }
+  requireValue(params.sessionId, 'sessionId', 'ABORT_INVALID');
 
   const body: Record<string, unknown> = { sessionId: params.sessionId };
-  if (params.directory?.trim()) {
-    body.directory = params.directory.trim();
-  }
+  addTrimmed(body, 'directory', params.directory);
 
-  let response: Response;
-  try {
-    response = await runtimeFetch('/api/harness/abort', {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Harness abort request failed';
-    throw new HarnessClientError(message, 'HARNESS_NETWORK', 0);
-  }
+  const response = await postJson('/api/harness/abort', body, 'Harness abort request failed');
 
-  if (!response.ok) {
-    const { message, code, status } = await readErrorPayload(response);
-    throw new HarnessClientError(message, code, response.status, status);
-  }
-
-  const payload = await response.json().catch(() => null);
+  const payload = await readJson(response);
   if (!isRecord(payload)) {
     return { ok: true, sessionId: params.sessionId };
   }
 
   return {
     ok: payload.ok !== false,
-    ...(typeof payload.sessionId === 'string' ? { sessionId: payload.sessionId } : { sessionId: params.sessionId }),
+    sessionId: str(payload.sessionId) ?? params.sessionId,
     ...(typeof payload.status === 'string' ? { status: payload.status } : {}),
     ...(typeof payload.aborted === 'boolean' ? { aborted: payload.aborted } : {}),
     ...(typeof payload.reason === 'string' ? { reason: payload.reason } : {}),
@@ -295,12 +252,8 @@ export async function harnessAbort(params: HarnessAbortParams): Promise<HarnessA
 export async function harnessPermissionReply(
   params: HarnessPermissionReplyParams,
 ): Promise<HarnessPermissionReplyResult> {
-  if (!params.sessionId.trim()) {
-    throw new HarnessClientError('sessionId is required', 'PERMISSION_REPLY_INVALID', 400);
-  }
-  if (!params.requestId.trim()) {
-    throw new HarnessClientError('requestId is required', 'PERMISSION_REPLY_INVALID', 400);
-  }
+  requireValue(params.sessionId, 'sessionId', 'PERMISSION_REPLY_INVALID');
+  requireValue(params.requestId, 'requestId', 'PERMISSION_REPLY_INVALID');
   if (params.reply !== 'once' && params.reply !== 'always' && params.reply !== 'reject') {
     throw new HarnessClientError('reply must be once, always, or reject', 'PERMISSION_REPLY_INVALID', 400);
   }
@@ -310,104 +263,53 @@ export async function harnessPermissionReply(
     requestId: params.requestId,
     reply: params.reply,
   };
-  if (params.directory?.trim()) {
-    body.directory = params.directory.trim();
-  }
+  addTrimmed(body, 'directory', params.directory);
 
-  let response: Response;
-  try {
-    response = await runtimeFetch('/api/harness/permission/reply', {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Harness permission reply failed';
-    throw new HarnessClientError(message, 'HARNESS_NETWORK', 0);
-  }
+  const response = await postJson('/api/harness/permission/reply', body, 'Harness permission reply failed');
 
-  if (!response.ok) {
-    const { message, code, status } = await readErrorPayload(response);
-    throw new HarnessClientError(message, code, response.status, status);
-  }
-
-  const payload = await response.json().catch(() => null);
+  const payload = await readJson(response);
   if (!isRecord(payload)) {
-    return {
-      ok: true,
-      sessionId: params.sessionId,
-      requestId: params.requestId,
-      reply: params.reply,
-    };
+    return { ok: true, sessionId: params.sessionId, requestId: params.requestId, reply: params.reply };
   }
-
-  const reply = payload.reply === 'once' || payload.reply === 'always' || payload.reply === 'reject'
-    ? payload.reply
-    : params.reply;
 
   return {
     ok: payload.ok !== false,
-    sessionId: typeof payload.sessionId === 'string' ? payload.sessionId : params.sessionId,
-    requestId: typeof payload.requestId === 'string' ? payload.requestId : params.requestId,
-    reply,
+    sessionId: str(payload.sessionId) ?? params.sessionId,
+    requestId: str(payload.requestId) ?? params.requestId,
+    reply: payload.reply === 'once' || payload.reply === 'always' || payload.reply === 'reject'
+      ? payload.reply
+      : params.reply,
   };
 }
 
 export async function harnessQuestionReply(
   params: HarnessQuestionReplyParams,
 ): Promise<HarnessQuestionReplyResult> {
-  if (!params.sessionId.trim()) {
-    throw new HarnessClientError('sessionId is required', 'QUESTION_REPLY_INVALID', 400);
-  }
-  if (!params.requestId.trim()) {
-    throw new HarnessClientError('requestId is required', 'QUESTION_REPLY_INVALID', 400);
-  }
+  requireValue(params.sessionId, 'sessionId', 'QUESTION_REPLY_INVALID');
+  requireValue(params.requestId, 'requestId', 'QUESTION_REPLY_INVALID');
 
   const body: Record<string, unknown> = {
     sessionId: params.sessionId,
     requestId: params.requestId,
   };
-  if (params.directory?.trim()) {
-    body.directory = params.directory.trim();
-  }
+  addTrimmed(body, 'directory', params.directory);
   if (params.reject === true) {
     body.reject = true;
   } else if (Array.isArray(params.answers)) {
     body.answers = params.answers;
   }
 
-  let response: Response;
-  try {
-    response = await runtimeFetch('/api/harness/question/reply', {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Harness question reply failed';
-    throw new HarnessClientError(message, 'HARNESS_NETWORK', 0);
-  }
+  const response = await postJson('/api/harness/question/reply', body, 'Harness question reply failed');
 
-  if (!response.ok) {
-    const { message, code, status } = await readErrorPayload(response);
-    throw new HarnessClientError(message, code, response.status, status);
-  }
-
-  const payload = await response.json().catch(() => null);
+  const payload = await readJson(response);
   if (!isRecord(payload)) {
     return { ok: true, sessionId: params.sessionId, requestId: params.requestId };
   }
 
   return {
     ok: payload.ok !== false,
-    sessionId: typeof payload.sessionId === 'string' ? payload.sessionId : params.sessionId,
-    requestId: typeof payload.requestId === 'string' ? payload.requestId : params.requestId,
+    sessionId: str(payload.sessionId) ?? params.sessionId,
+    requestId: str(payload.requestId) ?? params.requestId,
   };
 }
 
@@ -428,72 +330,55 @@ export type HarnessSessionCapabilitiesResult = {
   capabilities: ClaudeSessionCapabilities;
 };
 
-const sanitizeStringList = (value: unknown): string[] => {
+/** Maps each array entry to a `[dedupeKey, value]` pair, dropping `null` and repeated keys. */
+function sanitizeList<T>(value: unknown, map: (entry: unknown) => [string, T] | null): T[] {
   if (!Array.isArray(value)) return [];
-  const out: string[] = [];
+  const out: T[] = [];
   const seen = new Set<string>();
   for (const entry of value) {
-    if (typeof entry !== 'string') continue;
-    const trimmed = entry.trim();
-    if (!trimmed || seen.has(trimmed)) continue;
-    seen.add(trimmed);
-    out.push(trimmed);
+    const mapped = map(entry);
+    if (!mapped || seen.has(mapped[0])) continue;
+    seen.add(mapped[0]);
+    out.push(mapped[1]);
   }
   return out;
-};
+}
 
-const sanitizeMcpServers = (value: unknown): Array<{ name: string; status: string }> => {
-  if (!Array.isArray(value)) return [];
-  const out: Array<{ name: string; status: string }> = [];
-  const seen = new Set<string>();
-  for (const entry of value) {
-    if (!isRecord(entry)) continue;
-    const name = typeof entry.name === 'string' ? entry.name.trim() : '';
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    out.push({
-      name,
-      status: typeof entry.status === 'string' && entry.status.trim() ? entry.status.trim() : 'unknown',
-    });
-  }
-  return out;
-};
+const sanitizeStringList = (value: unknown): string[] => sanitizeList(value, (entry) => {
+  const trimmed = trimmedString(entry);
+  return trimmed ? [trimmed, trimmed] : null;
+});
+
+const sanitizeMcpServers = (value: unknown): Array<{ name: string; status: string }> =>
+  sanitizeList(value, (entry) => {
+    if (!isRecord(entry)) return null;
+    const name = trimmedString(entry.name);
+    if (!name) return null;
+    return [name, { name, status: trimmedString(entry.status) ?? 'unknown' }];
+  });
 
 export async function harnessSessionCapabilities(
   sessionId: string,
 ): Promise<HarnessSessionCapabilitiesResult> {
   const id = sessionId.trim();
-  if (!id) {
-    throw new HarnessClientError('sessionId is required', 'PROMPT_INVALID', 400);
-  }
+  requireValue(id, 'sessionId', 'PROMPT_INVALID');
 
-  let response: Response;
-  try {
-    response = await runtimeFetch(`/api/harness/sessions/${encodeURIComponent(id)}/capabilities`, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Harness capabilities request failed';
-    throw new HarnessClientError(message, 'HARNESS_NETWORK', 0);
-  }
+  const response = await getJson(
+    `/api/harness/sessions/${encodeURIComponent(id)}/capabilities`,
+    'Harness capabilities request failed',
+  );
 
-  if (!response.ok) {
-    const { message, code, status } = await readErrorPayload(response);
-    throw new HarnessClientError(message, code, response.status, status);
-  }
-
-  const payload = await response.json().catch(() => null);
-  if (!isRecord(payload) || !isRecord(payload.capabilities)) {
+  const payload = await readRecord(response, 'Invalid harness capabilities response');
+  if (!isRecord(payload.capabilities)) {
     throw new HarnessClientError('Invalid harness capabilities response', 'HARNESS_INVALID_RESPONSE', response.status);
   }
 
   const caps = payload.capabilities;
   return {
-    sessionId: typeof payload.sessionId === 'string' ? payload.sessionId : id,
-    harnessId: typeof payload.harnessId === 'string' ? payload.harnessId : 'claude-code',
+    sessionId: str(payload.sessionId) ?? id,
+    harnessId: str(payload.harnessId) ?? 'claude-code',
     capabilities: {
-      sessionId: typeof caps.sessionId === 'string' ? caps.sessionId : id,
+      sessionId: str(caps.sessionId) ?? id,
       ...(typeof caps.foreignSessionId === 'string' ? { foreignSessionId: caps.foreignSessionId } : {}),
       slashCommands: sanitizeStringList(caps.slashCommands),
       skills: sanitizeStringList(caps.skills),
@@ -505,7 +390,6 @@ export async function harnessSessionCapabilities(
   };
 }
 
-/** A Claude-native agent the composer can select as the main-thread agent. */
 export type ClaudeAgent = {
   name: string;
   description: string;
@@ -518,63 +402,33 @@ export type HarnessClaudeAgentsResult = {
   roots: { user: string | null; project: string | null };
 };
 
-const sanitizeClaudeAgents = (value: unknown): ClaudeAgent[] => {
-  if (!Array.isArray(value)) return [];
-  const out: ClaudeAgent[] = [];
-  const seen = new Set<string>();
-  for (const entry of value) {
-    if (!isRecord(entry)) continue;
-    const name = typeof entry.name === 'string' ? entry.name.trim() : '';
-    if (!name) continue;
-    const key = name.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({
-      name,
-      description: typeof entry.description === 'string' ? entry.description.trim() : '',
-      model: typeof entry.model === 'string' ? entry.model.trim() : '',
-      source: entry.source === 'user' || entry.source === 'project' ? entry.source : 'builtin',
-    });
-  }
-  return out;
-};
+const sanitizeClaudeAgents = (value: unknown): ClaudeAgent[] => sanitizeList(value, (entry) => {
+  if (!isRecord(entry)) return null;
+  const name = trimmedString(entry.name);
+  if (!name) return null;
+  return [name.toLowerCase(), {
+    name,
+    description: trimmedString(entry.description) ?? '',
+    model: trimmedString(entry.model) ?? '',
+    source: entry.source === 'user' || entry.source === 'project' ? entry.source : 'builtin',
+  }];
+});
 
-/**
- * List the Claude-native agents available for a directory (built-ins plus
- * `.claude/agents` from user and project scope).
- *
- * Throws on failure — an unreachable harness must not look like "this project
- * defines no agents", which would silently empty the composer picker.
- */
 export async function harnessClaudeAgents(directory?: string): Promise<HarnessClaudeAgentsResult> {
-  let response: Response;
-  try {
-    response = await runtimeFetch('/api/harness/claude-code/agents', {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      ...(directory?.trim() ? { query: { directory: directory.trim() } } : {}),
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Harness agents request failed';
-    throw new HarnessClientError(message, 'HARNESS_NETWORK', 0);
-  }
+  const trimmedDirectory = directory?.trim();
+  const response = await getJson(
+    '/api/harness/claude-code/agents',
+    'Harness agents request failed',
+    trimmedDirectory ? { directory: trimmedDirectory } : undefined,
+  );
 
-  if (!response.ok) {
-    const { message, code, status } = await readErrorPayload(response);
-    throw new HarnessClientError(message, code, response.status, status);
-  }
-
-  const payload = await response.json().catch(() => null);
-  if (!isRecord(payload)) {
-    throw new HarnessClientError('Invalid harness agents response', 'HARNESS_INVALID_RESPONSE', response.status);
-  }
-
+  const payload = await readRecord(response, 'Invalid harness agents response');
   const roots = isRecord(payload.roots) ? payload.roots : {};
   return {
     agents: sanitizeClaudeAgents(payload.agents),
     roots: {
-      user: typeof roots.user === 'string' && roots.user.trim() ? roots.user.trim() : null,
-      project: typeof roots.project === 'string' && roots.project.trim() ? roots.project.trim() : null,
+      user: trimmedString(roots.user),
+      project: trimmedString(roots.project),
     },
   };
 }
@@ -585,21 +439,12 @@ export type HarnessSessionBinding = {
   directory?: string;
   target?: ExecutionTarget;
   foreignSessionId?: string;
-  /**
-   * Agent selection the session's last turn ran under. The server re-stamps it
-   * every turn so server-driven turns can replay it; the composer reads it back
-   * so a reload does not silently drop the user's pick.
-   */
+  /** Agent selection used by the session's last turn. */
   agentsMode?: 'claude' | 'opencode';
   agentName?: string;
   claudeAgentName?: string;
 };
 
-/**
- * Fetch the server-side sticky harness binding for a session.
- * Returns null when no binding exists (plain OpenCode session) or the lookup
- * fails — callers must treat null as "unknown", not as "definitely OpenCode".
- */
 export async function harnessSessionBinding(sessionId: string): Promise<HarnessSessionBinding | null> {
   const id = sessionId.trim();
   if (!id) return null;
@@ -615,7 +460,7 @@ export async function harnessSessionBinding(sessionId: string): Promise<HarnessS
   }
   if (!response.ok) return null;
 
-  const payload = await response.json().catch(() => null);
+  const payload = await readJson(response);
   const binding = isRecord(payload) && isRecord(payload.binding) ? payload.binding : null;
   if (!binding || typeof binding.sessionId !== 'string' || typeof binding.harnessId !== 'string') {
     return null;
@@ -626,15 +471,9 @@ export async function harnessSessionBinding(sessionId: string): Promise<HarnessS
     ...(typeof binding.directory === 'string' ? { directory: binding.directory } : {}),
     ...(isExecutionTarget(binding.target) ? { target: binding.target } : {}),
     ...(typeof binding.foreignSessionId === 'string' ? { foreignSessionId: binding.foreignSessionId } : {}),
-    ...(binding.agentsMode === 'claude' || binding.agentsMode === 'opencode'
-      ? { agentsMode: binding.agentsMode }
-      : {}),
-    ...(typeof binding.agentName === 'string' && binding.agentName
-      ? { agentName: binding.agentName }
-      : {}),
-    ...(typeof binding.claudeAgentName === 'string' && binding.claudeAgentName
-      ? { claudeAgentName: binding.claudeAgentName }
-      : {}),
+    ...(binding.agentsMode === 'claude' || binding.agentsMode === 'opencode' ? { agentsMode: binding.agentsMode } : {}),
+    ...(typeof binding.agentName === 'string' && binding.agentName ? { agentName: binding.agentName } : {}),
+    ...(typeof binding.claudeAgentName === 'string' && binding.claudeAgentName ? { claudeAgentName: binding.claudeAgentName } : {}),
   };
 }
 
@@ -688,90 +527,61 @@ export type ClaudeImportResult = {
   };
 };
 
-const parseImportCandidates = (payload: unknown): ClaudeImportCandidatesResult => {
-  if (!isRecord(payload)) {
-    throw new HarnessClientError('Invalid Claude import candidates response', 'HARNESS_INVALID_RESPONSE', 500);
-  }
-  const projectsRaw = Array.isArray(payload.projects) ? payload.projects : [];
-  const projects: ClaudeImportProjectCandidate[] = [];
-  for (const project of projectsRaw) {
-    if (!isRecord(project)) continue;
-    const sessionsRaw = Array.isArray(project.sessions) ? project.sessions : [];
-    const sessions: ClaudeImportSessionCandidate[] = [];
-    for (const session of sessionsRaw) {
-      if (!isRecord(session)) continue;
-      if (typeof session.foreignSessionId !== 'string' || !session.foreignSessionId.trim()) continue;
-      sessions.push({
-        foreignSessionId: session.foreignSessionId.trim(),
-        title: typeof session.title === 'string' ? session.title : null,
-        directory: typeof session.directory === 'string' ? session.directory : null,
-        updatedAt: typeof session.updatedAt === 'number' && Number.isFinite(session.updatedAt)
-          ? session.updatedAt
-          : null,
-        alreadyImported: session.alreadyImported === true,
-        directoryMissing: session.directoryMissing === true,
-      });
-    }
-    projects.push({
-      projectKey: typeof project.projectKey === 'string' ? project.projectKey : '',
-      directory: typeof project.directory === 'string' ? project.directory : null,
-      directoryMissing: project.directoryMissing === true,
-      sessionCount: typeof project.sessionCount === 'number' ? project.sessionCount : sessions.length,
-      sessions,
+const recordList = (value: unknown): Array<Record<string, unknown>> =>
+  (Array.isArray(value) ? value.filter(isRecord) : []);
+
+const parseImportSessions = (value: unknown): ClaudeImportSessionCandidate[] => {
+  const sessions: ClaudeImportSessionCandidate[] = [];
+  for (const session of recordList(value)) {
+    const foreignSessionId = trimmedString(session.foreignSessionId);
+    if (!foreignSessionId) continue;
+    sessions.push({
+      foreignSessionId,
+      title: str(session.title) ?? null,
+      directory: str(session.directory) ?? null,
+      updatedAt: typeof session.updatedAt === 'number' && Number.isFinite(session.updatedAt)
+        ? session.updatedAt
+        : null,
+      alreadyImported: session.alreadyImported === true,
+      directoryMissing: session.directoryMissing === true,
     });
   }
-  return {
-    configDir: typeof payload.configDir === 'string' ? payload.configDir : null,
-    projectsRoot: typeof payload.projectsRoot === 'string' ? payload.projectsRoot : null,
-    projects,
-  };
+  return sessions;
 };
 
 export async function listClaudeImportCandidates(): Promise<ClaudeImportCandidatesResult> {
-  let response: Response;
-  try {
-    response = await runtimeFetch('/api/harness/claude-code/import/candidates', {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Claude import candidates request failed';
-    throw new HarnessClientError(message, 'HARNESS_NETWORK', 0);
+  const response = await getJson(
+    '/api/harness/claude-code/import/candidates',
+    'Claude import candidates request failed',
+  );
+
+  const payload = await readJson(response);
+  if (!isRecord(payload)) {
+    throw new HarnessClientError('Invalid Claude import candidates response', 'HARNESS_INVALID_RESPONSE', 500);
   }
 
-  if (!response.ok) {
-    const { message, code, status } = await readErrorPayload(response);
-    throw new HarnessClientError(message, code, response.status, status);
-  }
-
-  const payload = await response.json().catch(() => null);
-  return parseImportCandidates(payload);
+  return {
+    configDir: str(payload.configDir) ?? null,
+    projectsRoot: str(payload.projectsRoot) ?? null,
+    projects: recordList(payload.projects).map((project) => {
+      const sessions = parseImportSessions(project.sessions);
+      return {
+        projectKey: str(project.projectKey) ?? '',
+        directory: str(project.directory) ?? null,
+        directoryMissing: project.directoryMissing === true,
+        sessionCount: typeof project.sessionCount === 'number' ? project.sessionCount : sessions.length,
+        sessions,
+      };
+    }),
+  };
 }
 
 export async function importClaudeSessions(
   sessions: ClaudeImportSessionRequest[],
 ): Promise<ClaudeImportResult> {
-  let response: Response;
-  try {
-    response = await runtimeFetch('/api/harness/claude-code/import', {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ sessions }),
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Claude import request failed';
-    throw new HarnessClientError(message, 'HARNESS_NETWORK', 0);
-  }
+  const response = await postJson('/api/harness/claude-code/import', { sessions }, 'Claude import request failed');
 
-  if (!response.ok) {
-    const { message, code, status } = await readErrorPayload(response);
-    throw new HarnessClientError(message, code, response.status, status);
-  }
-
-  const payload = await response.json().catch(() => null);
+  const payload = await readJson(response);
   if (!isRecord(payload) || !isRecord(payload.summary) || !Array.isArray(payload.results)) {
     throw new HarnessClientError('Invalid Claude import response', 'HARNESS_INVALID_RESPONSE', response.status);
   }

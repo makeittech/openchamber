@@ -31,11 +31,8 @@ import { bootstrapGlobal, bootstrapDirectory } from "./bootstrap"
 import { retry } from "./retry"
 import { touchStreamingSession, updateChangedStreamingSessions, updateStreamingState } from "./streaming"
 import { countSyncPerformance } from "./performance-diagnostics"
-
-import { runBackgroundNetworkTask } from "@/lib/background-network"
-
 import { applyStaleToolPartSettlements } from "./stale-tool-parts"
-
+import { runBackgroundNetworkTask } from "@/lib/background-network"
 import { setActionRefs } from "./session-actions"
 import { setSyncRefs, getAllSyncSessions } from "./sync-refs"
 import { stripSessionDiffSnapshots } from "./sanitize"
@@ -1800,10 +1797,8 @@ export function SyncProvider(props: {
     })
   }
   const messageLoader = messageLoaderRef.current
-
   // Render-path configure kept for sdk/runtime identity checks; the effect below
   // also configures so Strict Mode dispose+re-run revives the same instance.
-
   messageLoader.configure({ sdk: props.sdk, runtimeKey })
   const routingIndexRef = useRef<EventRoutingIndex | null>(null)
   if (!routingIndexRef.current) routingIndexRef.current = createEventRoutingIndex()
@@ -2270,7 +2265,6 @@ export function SyncProvider(props: {
   }, [props.sdk, props.directory, childStores, messageLoader, routingIndex])
 
   useEffect(() => {
-
     // Configure (and revive after Strict Mode dispose) in an effect so the
     // cleanup+re-run cycle restores a disposed loader before chat ensure runs.
     messageLoader.configure({ sdk: props.sdk, runtimeKey })
@@ -2294,7 +2288,6 @@ export function SyncProvider(props: {
   // stores that already hold hydrated Claude messages and leaving chat on
   // skeletons. Child stores are discarded with the provider instance on a
   // real unmount (runtime key change recreates SyncProvider via key=).
-
 
   // Subscribe to child store for streaming state derivation
   useEffect(() => {

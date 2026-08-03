@@ -1,17 +1,19 @@
-/**
- * Harness prompt/abort dispatch.
- */
-
 import { createClaudeCodeTranslator } from './translators/claude-code/index.js';
-import { createOpenCodeTranslator } from './translators/opencode/index.js';
 
-/**
- * @param {object} [deps]
- * @param {() => ((payload: object, options?: object) => void) | null | undefined} [deps.getBroadcast]
- * @param {(options?: object) => Promise<Record<string, unknown> | null>} [deps.createOpenChamberMcpServers]
- * @param {(params: { name: string, args: string, directory: string }) => Promise<{ name: string, text: string }>} [deps.resolveOpenCodeCommand]
- * @param {(params: { directory: string, agentName?: string }) => Promise<import('./translators/claude-code/opencode-agents.js').OpenCodeAgentInheritance>} [deps.resolveOpenCodeAgents]
- */
+function opencodeSdkError() {
+  const error = new Error('OpenCode harness prompts use the OpenCode SDK path');
+  error.code = 'OPENCODE_SDK_PATH';
+  error.statusCode = 400;
+  throw error;
+}
+
+function unavailable(message, code) {
+  const error = new Error(message);
+  error.code = code;
+  error.statusCode = 503;
+  throw error;
+}
+
 export function createHarnessRouter(deps = {}) {
   const getBroadcast = deps.getBroadcast || (() => null);
   const claude = deps.claudeTranslator || createClaudeCodeTranslator({
@@ -20,11 +22,8 @@ export function createHarnessRouter(deps = {}) {
     resolveOpenCodeCommand: deps.resolveOpenCodeCommand,
     resolveOpenCodeAgents: deps.resolveOpenCodeAgents,
   });
-  const opencode = deps.opencodeTranslator || createOpenCodeTranslator();
+  const opencode = deps.opencodeTranslator || { prompt: opencodeSdkError };
 
-  /**
-   * @param {object} body
-   */
   const prompt = async (body) => {
     const harnessId = body?.target?.harnessId || body?.harnessId;
     if (harnessId === 'opencode') {
@@ -41,45 +40,16 @@ export function createHarnessRouter(deps = {}) {
     throw error;
   };
 
-  /**
-   * @param {object} body
-   */
-  const abort = async (body) => {
-    // Abort is session-scoped; Claude translator owns active-turn state.
-    // OpenCode abort remains on the SDK path.
-    return claude.abort(body);
-  };
-
-  /**
-   * Resolve a bridged Claude permission prompt.
-   * @param {object} body
-   */
-  const replyPermission = async (body) => {
-    if (typeof claude.replyPermission !== 'function') {
-      const error = new Error('Permission reply is unavailable');
-      error.code = 'PERMISSION_UNAVAILABLE';
-      error.statusCode = 503;
-      throw error;
-    }
-    return claude.replyPermission(body);
-  };
-
-  /**
-   * Resolve a bridged Claude question prompt.
-   * @param {object} body
-   */
-  const replyQuestion = async (body) => {
-    if (typeof claude.replyQuestion !== 'function') {
-      const error = new Error('Question reply is unavailable');
-      error.code = 'QUESTION_UNAVAILABLE';
-      error.statusCode = 503;
-      throw error;
-    }
-    return claude.replyQuestion(body);
+  const reply = (method, message, code) => async (body) => {
+    if (typeof claude[method] !== 'function') unavailable(message, code);
+    return claude[method](body);
   };
 
   return {
-    prompt, abort, replyPermission, replyQuestion,
+    prompt,
+    abort: async (body) => claude.abort(body),
+    replyPermission: reply('replyPermission', 'Permission reply is unavailable', 'PERMISSION_UNAVAILABLE'),
+    replyQuestion: reply('replyQuestion', 'Question reply is unavailable', 'QUESTION_UNAVAILABLE'),
     start: () => claude.start?.(),
     stop: () => claude.stop?.(),
     hasPendingRetry: (sessionId) => Boolean(claude.hasPendingRetry?.(sessionId)),

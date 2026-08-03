@@ -7,76 +7,53 @@ import {
 import { mergeHarnessActiveIntoSessionStatuses } from './session-status.js';
 import { withHarnessEventDirectory } from './events/emit.js';
 
-describe('withHarnessEventDirectory', () => {
-  it('stamps directory onto event properties for SSE routing', () => {
-    const stamped = withHarnessEventDirectory({
-      type: 'session.status',
-      properties: {
-        sessionID: 'ses_1',
-        status: { type: 'busy' },
-      },
-    }, '/repo');
-    expect(stamped.properties.directory).toBe('/repo');
-    expect(stamped.properties.sessionID).toBe('ses_1');
-  });
+const statusEvent = (sessionID, status) => ({
+  type: 'session.status',
+  properties: { sessionID, status },
+});
 
-  it('preserves an existing properties.directory', () => {
-    const stamped = withHarnessEventDirectory({
-      type: 'session.status',
-      properties: {
-        sessionID: 'ses_1',
-        directory: '/kept',
-        status: { type: 'busy' },
-      },
-    }, '/repo');
-    expect(stamped.properties.directory).toBe('/kept');
-  });
+describe('withHarnessEventDirectory', () => {
+  for (const [name, existing, expected] of [
+    ['adds a missing directory', undefined, '/repo'],
+    ['preserves an existing directory', '/kept', '/kept'],
+  ]) {
+    it(name, () => {
+      const event = statusEvent('ses_1', { type: 'busy' });
+      if (existing) event.properties.directory = existing;
+      expect(withHarnessEventDirectory(event, '/repo').properties).toMatchObject({
+        sessionID: 'ses_1', directory: expected,
+      });
+    });
+  }
 });
 
 describe('mergeHarnessActiveIntoSessionStatuses', () => {
-  beforeEach(() => {
-    resetHarnessTurnSnapshots();
-  });
+  beforeEach(resetHarnessTurnSnapshots);
 
-  it('overlays harness busy onto OpenCode status snapshots', () => {
-    applyHarnessEventToSnapshot({
-      type: 'session.status',
-      properties: { sessionID: 'ses_claude', status: { type: 'busy' } },
-    }, '/repo');
-
-    const merged = mergeHarnessActiveIntoSessionStatuses(
-      { ses_opencode: { type: 'busy' } },
-      '/repo',
-    );
-    expect(merged).toEqual({
+  it('adds active harness sessions without changing OpenCode sessions', () => {
+    applyHarnessEventToSnapshot(statusEvent('ses_claude', { type: 'busy' }), '/repo');
+    const expected = {
       ses_opencode: { type: 'busy' },
       ses_claude: { type: 'busy' },
-    });
-    expect(listHarnessActiveStatuses('/repo')).toEqual({
-      ses_claude: { type: 'busy' },
-    });
+    };
+    expect(mergeHarnessActiveIntoSessionStatuses({ ses_opencode: { type: 'busy' } }, '/repo'))
+      .toEqual(expected);
+    expect(listHarnessActiveStatuses('/repo')).toEqual({ ses_claude: { type: 'busy' } });
   });
 
-  it('does not invent idle harness entries', () => {
-    applyHarnessEventToSnapshot({
-      type: 'session.status',
-      properties: { sessionID: 'ses_claude', status: { type: 'idle' } },
-    }, '/repo');
+  it('omits idle harness sessions', () => {
+    applyHarnessEventToSnapshot(statusEvent('ses_claude', { type: 'idle' }), '/repo');
     expect(mergeHarnessActiveIntoSessionStatuses({}, '/repo')).toEqual({});
   });
 
-  it('overlays full retry status over upstream idle and absence', () => {
-    applyHarnessEventToSnapshot({
-      type: 'session.status',
-      properties: { sessionID: 'ses_retry', status: {
-        type: 'retry', attempt: 2, message: 'claude-session-limit', next: 9000,
-      } },
-    }, '/repo');
+  it('replaces upstream idle with the full retry payload', () => {
+    const retry = { type: 'retry', attempt: 2, message: 'claude-session-limit', next: 9000 };
+    applyHarnessEventToSnapshot(statusEvent('ses_retry', retry), '/repo');
     expect(mergeHarnessActiveIntoSessionStatuses({
       ses_retry: { type: 'idle', unrelated: true },
       ses_other: { type: 'busy', since: 1 },
     }, '/repo')).toEqual({
-      ses_retry: { type: 'retry', attempt: 2, message: 'claude-session-limit', next: 9000 },
+      ses_retry: retry,
       ses_other: { type: 'busy', since: 1 },
     });
   });

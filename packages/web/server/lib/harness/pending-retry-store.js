@@ -1,9 +1,3 @@
-/**
- * Durable journal for critical Claude session-limit recovery obligations.
- * Mutations synchronously persist a complete next snapshot before publishing it
- * in memory. Only bounded, allowlisted recovery metadata reaches disk.
- */
-
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -83,9 +77,6 @@ const DIRECTORY_READ_FLAGS = fs.constants.O_RDONLY
   | (process.platform === 'win32' ? 0 : (fs.constants.O_NOFOLLOW || 0));
 let lockTokenCounter = 0;
 
-/**
- * @returns {string}
- */
 export function resolvePendingRetryStorePath() {
   const root = process.env.OPENCHAMBER_DATA_DIR
     ? path.resolve(process.env.OPENCHAMBER_DATA_DIR)
@@ -93,10 +84,6 @@ export function resolvePendingRetryStorePath() {
   return path.join(root, 'harness-pending-retries.json');
 }
 
-/**
- * @param {string} message
- * @param {unknown} [cause]
- */
 function createUnavailableError(message, cause) {
   const error = new Error(message);
   error.code = RETRY_STORE_UNAVAILABLE;
@@ -104,33 +91,17 @@ function createUnavailableError(message, cause) {
   return error;
 }
 
-/**
- * @param {unknown} value
- * @returns {value is Record<string, unknown>}
- */
 function isObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-/**
- * @param {unknown} value
- * @param {number} maxLength
- * @returns {string | undefined}
- */
 function sanitizeString(value, maxLength) {
   if (typeof value !== 'string') return undefined;
   const sanitized = value.trim().slice(0, maxLength);
   return sanitized || undefined;
 }
 
-/**
- * Authority identifiers are never normalized: changing one can redirect a
- * recovery obligation to a different session or transcript.
- *
- * @param {unknown} value
- * @param {number} maxLength
- * @returns {string | undefined}
- */
+// Never normalize authority identifiers: doing so could redirect recovery.
 function sanitizeAuthorityId(value, maxLength) {
   if (
     typeof value !== 'string'
@@ -144,10 +115,6 @@ function sanitizeAuthorityId(value, maxLength) {
   return value;
 }
 
-/**
- * @param {unknown} value
- * @returns {string | undefined}
- */
 function sanitizeDirectory(value) {
   if (
     typeof value !== 'string'
@@ -161,19 +128,11 @@ function sanitizeDirectory(value) {
   return value;
 }
 
-/**
- * @param {unknown} value
- * @returns {number | undefined}
- */
 function sanitizeNonnegativeInteger(value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
   return Math.min(MAX_SAFE_NUMBER, Math.floor(Math.max(0, value)));
 }
 
-/**
- * @param {unknown} value
- * @returns {Record<string, unknown> | null}
- */
 function sanitizeTarget(value) {
   if (!isObject(value) || value.harnessId !== 'claude-code') return null;
 
@@ -193,21 +152,13 @@ function sanitizeTarget(value) {
   return target;
 }
 
-/**
- * Disk data is an authority boundary. Unknown fields must fail the load rather
- * than be silently stripped while sensitive content remains in the file.
- *
- * @param {unknown} value
- */
+// Unknown persisted fields fail closed instead of leaving sensitive data on disk.
 function hasOnlyPersistedFields(value) {
   if (!isObject(value) || !isObject(value.target)) return false;
   return Object.keys(value).every((field) => PERSISTED_RECORD_FIELDS.has(field))
     && Object.keys(value.target).every((field) => PERSISTED_TARGET_FIELDS.has(field));
 }
 
-/**
- * @param {unknown} value
- */
 function hasExactPersistedEnvelope(value) {
   if (!isObject(value)) return false;
   const fields = Object.keys(value);
@@ -215,12 +166,6 @@ function hasExactPersistedEnvelope(value) {
     && fields.every((field) => PERSISTED_ENVELOPE_FIELDS.has(field));
 }
 
-/**
- * Strip unknown or sensitive fields and bound every persisted value.
- *
- * @param {unknown} raw
- * @returns {Record<string, unknown> | null}
- */
 export function sanitizePendingRetryRecord(raw) {
   if (!isObject(raw)) return null;
 
@@ -290,10 +235,6 @@ export function sanitizePendingRetryRecord(raw) {
   return record;
 }
 
-/**
- * @param {Record<string, unknown>} record
- * @returns {Record<string, unknown>}
- */
 function cloneRecord(record) {
   return {
     ...record,
@@ -301,10 +242,6 @@ function cloneRecord(record) {
   };
 }
 
-/**
- * @param {Record<string, unknown>} candidate
- * @param {Record<string, unknown>} current
- */
 function isNewerDuplicate(candidate, current) {
   if (candidate.generation !== current.generation) {
     return candidate.generation > current.generation;
@@ -312,49 +249,27 @@ function isNewerDuplicate(candidate, current) {
   return candidate.updatedAt > current.updatedAt;
 }
 
-/**
- * @param {unknown} error
- */
-function isUnsupportedChmodError(error) {
-  if (UNSUPPORTED_CHMOD_CODES.has(error?.code)) return true;
-  // Windows does not consistently implement POSIX mode changes. The file is
-  // still created with the requested private mode before this best-effort call.
-  return process.platform === 'win32' && error?.code === 'EPERM';
-}
-
-/**
- * @param {typeof fs} fsImpl
- * @param {string} targetPath
- * @param {number} mode
- */
 function chmodSecureSync(fsImpl, targetPath, mode) {
   try {
     fsImpl.chmodSync(targetPath, mode);
   } catch (error) {
-    if (!isUnsupportedChmodError(error)) throw error;
+    const unsupported = UNSUPPORTED_CHMOD_CODES.has(error?.code)
+      || (process.platform === 'win32' && error?.code === 'EPERM');
+    if (!unsupported) throw error;
   }
 }
 
-/**
- * @param {unknown} error
- */
 function isUnsupportedDirectorySyncError(error) {
   if (UNSUPPORTED_DIRECTORY_SYNC_CODES.has(error?.code)) return true;
   return process.platform === 'win32'
     && (error?.code === 'EACCES' || error?.code === 'EPERM');
 }
 
-/**
- * @param {number} durationMs
- */
 function defaultSleepSync(durationMs) {
   if (durationMs <= 0) return;
   Atomics.wait(LOCK_WAIT_BUFFER, 0, 0, durationMs);
 }
 
-/**
- * @param {number} pid
- */
 function defaultIsProcessAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
@@ -400,10 +315,6 @@ function sanitizeRecordMap(input, maxRecords, options = {}) {
   return next;
 }
 
-/**
- * @param {unknown} error
- * @param {string} message
- */
 function asUnavailable(error, message) {
   if (error?.code === RETRY_STORE_UNAVAILABLE) return error;
   return createUnavailableError(message, error);
@@ -423,7 +334,7 @@ function asUnavailable(error, message) {
  * @param {(pid: number) => boolean} [options.isProcessAlive]
  */
 export function createPendingRetryStore(options = {}) {
-  const configuredFilePath = typeof options.filePath === 'string' && options.filePath.trim()
+  const filePath = typeof options.filePath === 'string' && options.filePath.trim()
     ? path.resolve(options.filePath.trim())
     : resolvePendingRetryStorePath();
   const fsImpl = options.fs || fs;
@@ -447,7 +358,6 @@ export function createPendingRetryStore(options = {}) {
   const isProcessAlive = typeof options.isProcessAlive === 'function'
     ? options.isProcessAlive
     : defaultIsProcessAlive;
-  const filePath = configuredFilePath;
   const directory = path.dirname(filePath);
   const lockPath = `${filePath}.lock`;
   const lockOwnerPath = path.join(lockPath, 'owner.json');
@@ -457,23 +367,11 @@ export function createPendingRetryStore(options = {}) {
   let loaded = false;
   let temporaryCounter = 0;
 
-  function listRecords() {
-    return Array.from(records.values(), cloneRecord);
-  }
-
-  /**
-   * @param {Map<string, Record<string, unknown>>} map
-   */
-  function cloneMapRecords(map) {
+  function cloneRecords(map = records) {
     return Array.from(map.values(), cloneRecord);
   }
 
-  /**
-   * Coherent authority read: the pathname is opened once, then all metadata and
-   * bytes come from that descriptor. Only open-time ENOENT is valid absence.
-   *
-   * @returns {{ records: Map<string, Record<string, unknown>>, exists: boolean }}
-   */
+  // Read metadata and bytes from one descriptor. Only open-time ENOENT is absence.
   function readSnapshot() {
     let fd;
     try {
@@ -539,10 +437,6 @@ export function createPendingRetryStore(options = {}) {
     }
   }
 
-  /**
-   * @param {number} fd
-   * @param {Buffer} bytes
-   */
   function writeAll(fd, bytes) {
     let offset = 0;
     while (offset < bytes.length) {
@@ -573,9 +467,6 @@ export function createPendingRetryStore(options = {}) {
     }
   }
 
-  /**
-   * @param {Map<string, Record<string, unknown>>} snapshot
-   */
   function serializeSnapshot(snapshot) {
     const payload = {
       version: PENDING_RETRY_STORE_VERSION,
@@ -588,14 +479,7 @@ export function createPendingRetryStore(options = {}) {
     return serialized;
   }
 
-  /**
-   * Best-effort compensating restore for a failure after the new snapshot was
-   * renamed into place. The caller still throws because durability was not
-   * proven, but visible disk authority returns to the pre-mutation snapshot.
-   *
-   * @param {Map<string, Record<string, unknown>>} previous
-   * @param {boolean} previousExists
-   */
+  // Restore visible disk authority if durability fails after rename.
   function restorePreviousSnapshot(previous, previousExists) {
     if (!previousExists) {
       try {
@@ -636,11 +520,6 @@ export function createPendingRetryStore(options = {}) {
     }
   }
 
-  /**
-   * @param {Map<string, Record<string, unknown>>} next
-   * @param {Map<string, Record<string, unknown>>} previous
-   * @param {boolean} previousExists
-   */
   function persistSnapshot(next, previous, previousExists) {
     const serialized = serializeSnapshot(next);
 
@@ -853,7 +732,7 @@ export function createPendingRetryStore(options = {}) {
   }
 
   function init() {
-    if (loaded) return { records: listRecords() };
+    if (loaded) return { records: cloneRecords() };
     let next;
     try {
       next = readSnapshot().records;
@@ -862,7 +741,7 @@ export function createPendingRetryStore(options = {}) {
     }
     records = next;
     loaded = true;
-    return { records: listRecords() };
+    return { records: cloneRecords() };
   }
 
   function ensureLoaded() {
@@ -879,7 +758,7 @@ export function createPendingRetryStore(options = {}) {
 
   function list() {
     ensureLoaded();
-    return listRecords();
+    return cloneRecords();
   }
 
   function put(raw, mutationOptions) {
@@ -952,13 +831,6 @@ export function createPendingRetryStore(options = {}) {
           // resurrect it.
           continue;
         }
-        if (
-          latestRecord
-          && (!baselineRecord || !isDeepStrictEqual(latestRecord, baselineRecord))
-          && !isNewerDuplicate(requestedRecord, latestRecord)
-        ) {
-          continue;
-        }
         if (latestRecord && !isNewerDuplicate(requestedRecord, latestRecord)) {
           if (!isDeepStrictEqual(requestedRecord, latestRecord)) continue;
         }
@@ -971,7 +843,7 @@ export function createPendingRetryStore(options = {}) {
       return {
         next,
         persist: true,
-        result: cloneMapRecords(next),
+        result: cloneRecords(next),
       };
     });
   }

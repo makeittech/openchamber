@@ -90,16 +90,16 @@ import { createPushRuntime } from './lib/notifications/push-runtime.js';
 import { createApnsRuntime } from './lib/notifications/apns-runtime.js';
 import { createNotificationTemplateRuntime } from './lib/notifications/template-runtime.js';
 import { createPermissionAutoAcceptRuntime } from './lib/permission-auto-accept/runtime.js';
+import { createHarnessRouter } from './lib/harness/router.js';
+import { getSessionBinding } from './lib/harness/session-bindings.js';
+import { listPendingPermissions as listHarnessPendingPermissions } from './lib/harness/translators/claude-code/permissions.js';
+import { addHarnessEventObserver } from './lib/harness/events/emit.js';
+import { getHarnessRecentMessages, isHarnessSessionWorking } from './lib/harness/turn-snapshot.js';
+import { translateOpenCodeCommandForClaude } from './lib/harness/translators/claude-code/opencode-command.js';
 import {
-  createHarnessRouter,
-  getSessionBinding,
-  listPendingPermissions as listHarnessPendingPermissions,
-  addHarnessEventObserver,
-  getHarnessRecentMessages,
-  isHarnessSessionWorking,
-  translateOpenCodeCommandForClaude,
-  createOpenCodeAgentResolver,
-} from './lib/harness/index.js';
+  buildOpenCodeAgentInheritance,
+  fetchOpenCodeAgents,
+} from './lib/harness/translators/claude-code/opencode-agents.js';
 import { createGracefulShutdownRuntime } from './lib/opencode/shutdown-runtime.js';
 import { createProjectConfigRuntime } from './lib/projects/project-config.js';
 import { createMessengerSyncRouter } from './lib/messenger/messenger-sync.js';
@@ -487,10 +487,10 @@ const harnessRouter = createHarnessRouter({
   // custom subagents). A pre-built harnessRouter is shared with route
   // registration, so the resolver must live here — not only inside
   // registerHarnessRoutes — or agentsMode=opencode silently inherits nothing.
-  resolveOpenCodeAgents: createOpenCodeAgentResolver({
-    buildOpenCodeUrl: (requestPath, prefixOverride) => buildOpenCodeUrl(requestPath, prefixOverride),
-    getOpenCodeAuthHeaders: () => getOpenCodeAuthHeaders(),
-  }),
+  resolveOpenCodeAgents: async ({ directory, agentName }) => buildOpenCodeAgentInheritance(
+    await fetchOpenCodeAgents({ directory, buildOpenCodeUrl, getOpenCodeAuthHeaders }),
+    agentName,
+  ),
 });
 const broadcastUiNotification = (...args) => notificationEmitterRuntime.broadcastUiNotification(...args);
 

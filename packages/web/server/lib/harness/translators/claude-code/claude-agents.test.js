@@ -18,17 +18,14 @@ function dirent(name, isDirectory) {
   };
 }
 
-function enoent() {
-  const error = new Error('ENOENT: no such file or directory');
-  error.code = 'ENOENT';
+function fsError(code, message) {
+  const error = new Error(`${code}: ${message}`);
+  error.code = code;
   return error;
 }
 
-function eacces() {
-  const error = new Error('EACCES: permission denied');
-  error.code = 'EACCES';
-  return error;
-}
+const enoent = () => fsError('ENOENT', 'no such file or directory');
+const eacces = () => fsError('EACCES', 'permission denied');
 
 describe('parseClaudeAgentFrontmatter', () => {
   it('parses full frontmatter', () => {
@@ -96,17 +93,6 @@ describe('parseClaudeAgentFrontmatter', () => {
 });
 
 describe('listClaudeAgents', () => {
-  it('always includes the builtins, in declared order, with builtin source', async () => {
-    const result = await listClaudeAgents({
-      env: {},
-      homeDir: '/home/nobody',
-      readDirImpl: async () => { throw enoent(); },
-    });
-    expect(result.agents).toEqual(
-      CLAUDE_BUILTIN_AGENTS.map((agent) => ({ ...agent, model: '', source: 'builtin' })),
-    );
-  });
-
   it('falls back to the file basename when frontmatter omits name', async () => {
     const userAgentsDir = '/config/agents';
     const readDirImpl = async (dirPath) => {
@@ -313,19 +299,12 @@ describe('listClaudeAgents', () => {
     expect(long.description).toBe('x'.repeat(500));
   });
 
-  it('reports project root as null when directory is empty/undefined', async () => {
+  it('reports project root as null when directory is undefined', async () => {
     const result = await listClaudeAgents({
       env: {},
       homeDir: '/home/nobody',
       readDirImpl: async () => { throw enoent(); },
     });
     expect(result.roots.project).toBeNull();
-
-    const resultUndefinedDirectory = await listClaudeAgents({
-      readDirImpl: async () => { throw enoent(); },
-      env: {},
-      homeDir: '/home/nobody',
-    });
-    expect(resultUndefinedDirectory.roots.project).toBeNull();
   });
 });

@@ -1,49 +1,29 @@
-/**
- * Session / harness capability helpers.
- * Prefer catalog descriptors when loaded; fall back to static registry constants.
- */
-
 import type { CapabilityLevel, HarnessCapability, HarnessId } from '@/types/harness';
 import { isHarnessId } from '@/types/harness';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useHarnessStore } from '@/stores/useHarnessStore';
 
-/** Mirrors packages/web/server/lib/harness/registry.js capability matrices. */
+const FULL_CAPABILITIES: Record<HarnessCapability, CapabilityLevel> = {
+  prompt: 'full',
+  abort: 'full',
+  resume: 'full',
+  'streaming-text': 'full',
+  'streaming-tools': 'full',
+  permissions: 'full',
+  images: 'full',
+  'file-attachments': 'full',
+  shell: 'full',
+  'slash-commands': 'full',
+  mcp: 'full',
+  subagents: 'full',
+  multirun: 'full',
+  goal: 'full',
+  'openchamber-tool': 'full',
+};
+
 export const STATIC_HARNESS_CAPABILITIES: Record<HarnessId, Record<HarnessCapability, CapabilityLevel>> = {
-  opencode: {
-    prompt: 'full',
-    abort: 'full',
-    resume: 'full',
-    'streaming-text': 'full',
-    'streaming-tools': 'full',
-    permissions: 'full',
-    images: 'full',
-    'file-attachments': 'full',
-    shell: 'full',
-    'slash-commands': 'full',
-    mcp: 'full',
-    subagents: 'full',
-    multirun: 'full',
-    goal: 'full',
-    'openchamber-tool': 'full',
-  },
-  'claude-code': {
-    prompt: 'full',
-    abort: 'full',
-    resume: 'full',
-    'streaming-text': 'full',
-    'streaming-tools': 'full',
-    permissions: 'full',
-    images: 'full',
-    'file-attachments': 'full',
-    shell: 'full',
-    'slash-commands': 'full',
-    mcp: 'full',
-    subagents: 'full',
-    multirun: 'full',
-    goal: 'full',
-    'openchamber-tool': 'full',
-  },
+  opencode: { ...FULL_CAPABILITIES },
+  'claude-code': { ...FULL_CAPABILITIES },
 };
 
 export function resolveSessionHarnessId(sessionId?: string | null): HarnessId {
@@ -74,10 +54,6 @@ export function getHarnessCapabilityLevel(
   return STATIC_HARNESS_CAPABILITIES[harnessId]?.[capability] ?? 'none';
 }
 
-/**
- * Whether a session (or draft via last-used/pending target) supports a capability.
- * `none` ⇒ unsupported; `partial` and `full` ⇒ supported for UI gating.
- */
 export function sessionSupports(
   sessionId: string | null | undefined,
   capability: HarnessCapability,

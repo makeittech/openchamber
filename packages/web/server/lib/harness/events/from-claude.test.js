@@ -8,19 +8,82 @@ import {
   resetOpenCodeIdState,
 } from './from-claude.js';
 
+function freshCtx(overrides = {}) {
+  return createClaudeMapperContext({
+    sessionId: 'ses_1',
+    directory: '/proj',
+    userMessageId: 'msg_u',
+    assistantMessageId: 'msg_a',
+    ...overrides,
+  });
+}
+
+function streamText(ctx, text, parentToolUseId) {
+  return mapClaudeMessageToEvents(ctx, {
+    type: 'stream_event',
+    ...(parentToolUseId ? { parent_tool_use_id: parentToolUseId } : {}),
+    event: { type: 'content_block_delta', delta: { type: 'text_delta', text } },
+  });
+}
+
+function useTool(ctx, { id = 'call_1', name = 'Read', input = {}, parentToolUseId } = {}) {
+  return mapClaudeMessageToEvents(ctx, {
+    type: 'assistant',
+    ...(parentToolUseId ? { parent_tool_use_id: parentToolUseId } : {}),
+    message: { content: [{ type: 'tool_use', id, name, input }] },
+  });
+}
+
+function finishTool(ctx, { id = 'call_1', content = 'ok', isError = false } = {}) {
+  return mapClaudeMessageToEvents(ctx, {
+    type: 'user',
+    message: { content: [{ type: 'tool_result', tool_use_id: id, content, is_error: isError }] },
+  });
+}
+
+function hasStatus(events, type) {
+  return events.some((event) => event.type === 'session.status' && event.properties.status.type === type);
+}
+
+function findPart(events, type) {
+  return events.find((event) => event.properties?.part?.type === type)?.properties.part;
+}
+
+function startRetry(ctx, overrides = {}) {
+  return mapClaudeMessageToEvents(ctx, {
+    type: 'system', subtype: 'api_retry', attempt: 1, retry_delay_ms: 100, ...overrides,
+  });
+}
+
+function assistantError(ctx, error, {
+  uuid = 'asst_1', parentToolUseId, content = [{ type: 'text', text: 'error text' }],
+} = {}) {
+  return mapClaudeMessageToEvents(ctx, {
+    type: 'assistant',
+    uuid,
+    ...(parentToolUseId ? { parent_tool_use_id: parentToolUseId } : {}),
+    message: { content },
+    error,
+  });
+}
+
+function rateLimit(ctx, rateLimitInfo) {
+  return mapClaudeMessageToEvents(ctx, { type: 'rate_limit_event', rate_limit_info: rateLimitInfo });
+}
+
+function finishResult(ctx, overrides = {}) {
+  return mapClaudeMessageToEvents(ctx, {
+    type: 'result', subtype: 'error_during_execution', is_error: true, ...overrides,
+  });
+}
+
 describe('from-claude mapper', () => {
   beforeEach(() => {
     resetOpenCodeIdState();
   });
 
   it('emits user message.updated + text part + busy status', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_1',
-      directory: '/tmp/project',
-      userMessageId: 'msg_user',
-      assistantMessageId: 'msg_assistant',
-      modelRef: 'sonnet',
-    });
+    const ctx = freshCtx({ modelRef: 'sonnet' });
     const events = buildUserMessageEvents(ctx, 'hello');
     expect(events.map((e) => e.type)).toEqual([
       'message.updated',
@@ -33,23 +96,17 @@ describe('from-claude mapper', () => {
   });
 
   it('emits file parts for user attachments', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_1',
-      directory: '/tmp/project',
-      userMessageId: 'msg_user',
-      assistantMessageId: 'msg_assistant',
-    });
+    const ctx = freshCtx();
     const events = buildUserMessageEvents(ctx, 'see image', [{
       mime: 'image/png',
       url: 'data:image/png;base64,aa==',
       filename: 'a.png',
     }]);
-    const filePart = events.find((e) => e.properties?.part?.type === 'file');
-    expect(filePart?.properties.part).toMatchObject({
+    expect(findPart(events, 'file')).toMatchObject({
       type: 'file',
       mime: 'image/png',
       filename: 'a.png',
-      messageID: 'msg_user',
+      messageID: 'msg_u',
     });
   });
 
@@ -63,13 +120,7 @@ describe('from-claude mapper', () => {
   });
 
   it('maps stream text deltas to message.part.delta', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_1',
-      directory: '/tmp/project',
-      userMessageId: 'msg_user',
-      assistantMessageId: 'msg_assistant',
-      textPartId: 'prt_text',
-    });
+    const ctx = freshCtx({ textPartId: 'prt_text' });
 
     const first = mapClaudeMessageToEvents(ctx, {
       type: 'stream_event',
@@ -84,7 +135,7 @@ describe('from-claude mapper', () => {
     expect(first.events.some((e) => e.type === 'message.part.delta')).toBe(true);
     const delta = first.events.find((e) => e.type === 'message.part.delta');
     expect(delta.properties).toMatchObject({
-      messageID: 'msg_assistant',
+      messageID: 'msg_a',
       partID: 'prt_text',
       field: 'text',
       delta: 'Hi',
@@ -92,106 +143,48 @@ describe('from-claude mapper', () => {
   });
 
   it('maps tool_use and tool_result to tool parts and preserves tool name', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_1',
-      directory: '/tmp/project',
-      userMessageId: 'msg_user',
-      assistantMessageId: 'msg_assistant',
-    });
-
-    const toolStart = mapClaudeMessageToEvents(ctx, {
-      type: 'assistant',
-      session_id: 'foreign_1',
-      message: {
-        content: [{ type: 'tool_use', id: 'call_1', name: 'Read', input: { path: 'a.ts' } }],
-      },
-    });
+    const ctx = freshCtx();
+    const toolStart = useTool(ctx, { input: { path: 'a.ts' } });
     expect(toolStart.events.some((e) => e.type === 'message.part.updated')).toBe(true);
-    const toolPart = toolStart.events.find((e) => e.properties?.part?.type === 'tool');
-    expect(toolPart.properties.part.tool).toBe('Read');
-    expect(toolPart.properties.part.state.status).toBe('running');
-    const startedAt = toolPart.properties.part.state.time.start;
+    const toolPart = findPart(toolStart.events, 'tool');
+    expect(toolPart.tool).toBe('Read');
+    expect(toolPart.state.status).toBe('running');
+    const startedAt = toolPart.state.time.start;
     expect(typeof startedAt).toBe('number');
 
-    const toolEnd = mapClaudeMessageToEvents(ctx, {
-      type: 'user',
-      session_id: 'foreign_1',
-      message: {
-        content: [{ type: 'tool_result', tool_use_id: 'call_1', content: 'ok' }],
-      },
-    });
-    const completed = toolEnd.events.find((e) => e.properties?.part?.type === 'tool');
-    expect(completed.properties.part.state.status).toBe('completed');
-    expect(completed.properties.part.tool).toBe('Read');
-    expect(completed.properties.part.state.time.start).toBe(startedAt);
-    expect(completed.properties.part.state.time.end).toBeGreaterThanOrEqual(startedAt);
+    const toolEnd = finishTool(ctx);
+    const completed = findPart(toolEnd.events, 'tool');
+    expect(completed.state.status).toBe('completed');
+    expect(completed.tool).toBe('Read');
+    expect(completed.state.time.start).toBe(startedAt);
+    expect(completed.state.time.end).toBeGreaterThanOrEqual(startedAt);
   });
 
   it('interleaves text → tool → text with ascending part ids (tools not below final reply)', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_1',
-      directory: '/tmp/project',
-      userMessageId: 'msg_user',
-      assistantMessageId: 'msg_assistant',
-    });
+    const ctx = freshCtx();
 
-    const intro = mapClaudeMessageToEvents(ctx, {
-      type: 'stream_event',
-      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Checking…' } },
-    });
+    const intro = streamText(ctx, 'Checking…');
     const introDelta = intro.events.find((e) => e.type === 'message.part.delta');
     const introPartId = introDelta.properties.partID;
 
-    const tool = mapClaudeMessageToEvents(ctx, {
-      type: 'assistant',
-      message: {
-        content: [{ type: 'tool_use', id: 'call_1', name: 'Bash', input: { command: 'ls' } }],
-      },
-    });
-    const toolPart = tool.events.find((e) => e.properties?.part?.type === 'tool');
-    const toolPartId = toolPart.properties.part.id;
+    const tool = useTool(ctx, { name: 'Bash', input: { command: 'ls' } });
+    const toolPartId = findPart(tool.events, 'tool').id;
 
-    mapClaudeMessageToEvents(ctx, {
-      type: 'user',
-      message: {
-        content: [{ type: 'tool_result', tool_use_id: 'call_1', content: 'ok' }],
-      },
-    });
-
-    const outro = mapClaudeMessageToEvents(ctx, {
-      type: 'stream_event',
-      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Done.' } },
-    });
+    finishTool(ctx);
+    const outro = streamText(ctx, 'Done.');
     const outroDelta = outro.events.find((e) => e.type === 'message.part.delta');
     const outroPartId = outroDelta.properties.partID;
 
-    // Distinct text segments around the tool.
     expect(outroPartId).not.toBe(introPartId);
-    // Lexicographic / chronological order matches UI Binary.search part ordering.
     expect(introPartId < toolPartId).toBe(true);
     expect(toolPartId < outroPartId).toBe(true);
   });
 
   it('does not emit an empty text part on result when only tools ran', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_1',
-      directory: '/tmp/project',
-      userMessageId: 'msg_user',
-      assistantMessageId: 'msg_assistant',
-    });
+    const ctx = freshCtx();
 
-    mapClaudeMessageToEvents(ctx, {
-      type: 'assistant',
-      message: {
-        content: [{ type: 'tool_use', id: 'call_1', name: 'Read', input: {} }],
-      },
-    });
-    mapClaudeMessageToEvents(ctx, {
-      type: 'user',
-      message: {
-        content: [{ type: 'tool_result', tool_use_id: 'call_1', content: 'ok' }],
-      },
-    });
+    useTool(ctx);
+    finishTool(ctx);
 
     const mapped = mapClaudeMessageToEvents(ctx, {
       type: 'result',
@@ -201,19 +194,11 @@ describe('from-claude mapper', () => {
 
     const textParts = mapped.events.filter((e) => e.properties?.part?.type === 'text');
     expect(textParts).toEqual([]);
-    expect(mapped.events.some((e) => e.type === 'session.status' && e.properties.status.type === 'idle')).toBe(true);
+    expect(hasStatus(mapped.events, 'idle')).toBe(true);
   });
 
   it('maps result to idle status and finalizes assistant message', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_1',
-      directory: '/tmp/project',
-      userMessageId: 'msg_user',
-      assistantMessageId: 'msg_assistant',
-      textPartId: 'prt_text',
-      accumulatedText: 'done',
-      textPartStarted: true,
-    });
+    const ctx = freshCtx({ textPartId: 'prt_text', accumulatedText: 'done', textPartStarted: true });
 
     const mapped = mapClaudeMessageToEvents(ctx, {
       type: 'result',
@@ -223,17 +208,12 @@ describe('from-claude mapper', () => {
       is_error: false,
     });
 
-    expect(mapped.events.some((e) => e.type === 'session.status' && e.properties.status.type === 'idle')).toBe(true);
+    expect(hasStatus(mapped.events, 'idle')).toBe(true);
     expect(mapped.events.some((e) => e.type === 'message.updated' && e.properties.info.finish === 'stop')).toBe(true);
   });
 
   it('suppresses AskUserQuestion tool_use and tool_result blocks', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_1',
-      directory: '/proj',
-      userMessageId: 'msg_u',
-      assistantMessageId: 'msg_a',
-    });
+    const ctx = freshCtx();
 
     const start = mapClaudeMessageToEvents(ctx, {
       type: 'assistant',
@@ -271,60 +251,25 @@ describe('from-claude mapper', () => {
   });
 
   it('ignores unknown message types without throwing', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_1',
-      directory: '/tmp/project',
-      userMessageId: 'msg_user',
-      assistantMessageId: 'msg_assistant',
-    });
+    const ctx = freshCtx();
     expect(mapClaudeMessageToEvents(ctx, { type: 'totally_unknown' }).events).toEqual([]);
     expect(mapClaudeMessageToEvents(ctx, null).events).toEqual([]);
   });
 });
 
-describe('tool arguments survive completion', () => {
-  it('echoes the tool_use input on the completed state', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_1',
-      directory: '/proj',
-      userMessageId: 'msg_u',
-      assistantMessageId: 'msg_a',
-    });
+it('echoes tool_use input on the completed state', () => {
+  const ctx = freshCtx();
+  useTool(ctx, { input: { file_path: '/proj/a.ts' } });
+  const { events } = finishTool(ctx);
 
-    mapClaudeMessageToEvents(ctx, {
-      type: 'assistant',
-      message: {
-        content: [{
-          type: 'tool_use',
-          id: 'call_1',
-          name: 'Read',
-          input: { file_path: '/proj/a.ts' },
-        }],
-      },
-    });
-
-    const { events } = mapClaudeMessageToEvents(ctx, {
-      type: 'user',
-      message: {
-        content: [{ type: 'tool_result', tool_use_id: 'call_1', content: 'ok' }],
-      },
-    });
-
-    const state = events.at(-1).properties.part.state;
-    expect(state.status).toBe('completed');
-    // The UI reducer replaces state wholesale — dropping input blanks the args.
-    expect(state.input).toEqual({ file_path: '/proj/a.ts' });
-  });
+  const state = events.at(-1).properties.part.state;
+  expect(state.status).toBe('completed');
+  expect(state.input).toEqual({ file_path: '/proj/a.ts' });
 });
 
 describe('extended thinking', () => {
   it('maps thinking deltas to a reasoning part', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_1',
-      directory: '/proj',
-      userMessageId: 'msg_u',
-      assistantMessageId: 'msg_a',
-    });
+    const ctx = freshCtx();
 
     const { events } = mapClaudeMessageToEvents(ctx, {
       type: 'stream_event',
@@ -343,21 +288,13 @@ describe('extended thinking', () => {
   });
 
   it('finalizes reasoning before text on result', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_1',
-      directory: '/proj',
-      userMessageId: 'msg_u',
-      assistantMessageId: 'msg_a',
-    });
+    const ctx = freshCtx();
 
     mapClaudeMessageToEvents(ctx, {
       type: 'assistant',
       message: { content: [{ type: 'thinking', thinking: 'hmm' }] },
     });
-    mapClaudeMessageToEvents(ctx, {
-      type: 'stream_event',
-      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'answer' } },
-    });
+    streamText(ctx, 'answer');
 
     const { events } = mapClaudeMessageToEvents(ctx, { type: 'result', subtype: 'success' });
     const finals = events
@@ -367,11 +304,7 @@ describe('extended thinking', () => {
   });
 
   it('maps Claude result usage into assistant.info.tokens for goal budgets', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_1',
-      directory: '/proj',
-      userMessageId: 'msg_u',
-      assistantMessageId: 'msg_a',
+    const ctx = freshCtx({
       textPartId: 'prt_text',
       accumulatedText: 'done',
       textPartStarted: true,
@@ -403,50 +336,30 @@ describe('extended thinking', () => {
   });
 });
 
-describe('divergent full text block', () => {
-  it('rewrites the segment instead of dropping the tail', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_1',
-      directory: '/proj',
-      userMessageId: 'msg_u',
-      assistantMessageId: 'msg_a',
-      textPartId: 'prt_text',
-      accumulatedText: 'strea',
-      textPartStarted: true,
-    });
+it('rewrites a divergent full text block instead of dropping the tail', () => {
+  const ctx = freshCtx({
+    textPartId: 'prt_text',
+    accumulatedText: 'strea',
+    textPartStarted: true,
+  });
 
-    const { events } = mapClaudeMessageToEvents(ctx, {
-      type: 'assistant',
-      message: { content: [{ type: 'text', text: 'completely different answer' }] },
-    });
+  const { events } = mapClaudeMessageToEvents(ctx, {
+    type: 'assistant',
+    message: { content: [{ type: 'text', text: 'completely different answer' }] },
+  });
 
-    expect(events.at(-1).properties.part).toMatchObject({
-      id: 'prt_text',
-      type: 'text',
-      text: 'completely different answer',
-    });
+  expect(events.at(-1).properties.part).toMatchObject({
+    id: 'prt_text',
+    type: 'text',
+    text: 'completely different answer',
   });
 });
 
 describe('abort finalization', () => {
   it('closes running tool parts and the open text segment', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_1',
-      directory: '/proj',
-      userMessageId: 'msg_u',
-      assistantMessageId: 'msg_a',
-    });
-
-    mapClaudeMessageToEvents(ctx, {
-      type: 'stream_event',
-      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'working' } },
-    });
-    mapClaudeMessageToEvents(ctx, {
-      type: 'assistant',
-      message: {
-        content: [{ type: 'tool_use', id: 'call_1', name: 'Bash', input: { command: 'ls' } }],
-      },
-    });
+    const ctx = freshCtx();
+    streamText(ctx, 'working');
+    useTool(ctx, { name: 'Bash', input: { command: 'ls' } });
 
     const events = buildTurnAbortEvents(ctx);
     const parts = events.map((e) => e.properties.part);
@@ -461,21 +374,12 @@ describe('abort finalization', () => {
   });
 
   it('closes a subagent tool part left running by the abort', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_1',
-      directory: '/proj',
-      userMessageId: 'msg_u',
-      assistantMessageId: 'msg_a',
-    });
-
-    // Subagent tools live in ctx.subagentByToolUseId, not ctx.toolParts —
-    // walking only the parent leaves the nested transcript spinning forever.
-    mapClaudeMessageToEvents(ctx, {
-      type: 'assistant',
-      parent_tool_use_id: 'toolu_sub',
-      message: {
-        content: [{ type: 'tool_use', id: 'call_child', name: 'Bash', input: { command: 'sleep 999' } }],
-      },
+    const ctx = freshCtx();
+    useTool(ctx, {
+      id: 'call_child',
+      name: 'Bash',
+      input: { command: 'sleep 999' },
+      parentToolUseId: 'toolu_sub',
     });
 
     const events = buildTurnAbortEvents(ctx);
@@ -493,38 +397,17 @@ describe('abort finalization', () => {
   });
 
   it('leaves already-settled tools alone', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_1',
-      directory: '/proj',
-      userMessageId: 'msg_u',
-      assistantMessageId: 'msg_a',
-    });
-
-    mapClaudeMessageToEvents(ctx, {
-      type: 'assistant',
-      message: { content: [{ type: 'tool_use', id: 'call_1', name: 'Read', input: {} }] },
-    });
-    mapClaudeMessageToEvents(ctx, {
-      type: 'user',
-      message: { content: [{ type: 'tool_result', tool_use_id: 'call_1', content: 'done' }] },
-    });
+    const ctx = freshCtx();
+    useTool(ctx);
+    finishTool(ctx, { content: 'done' });
 
     expect(buildTurnAbortEvents(ctx)).toEqual([]);
   });
 });
 
 describe('from-claude slash / mcp / subagents', () => {
-  beforeEach(() => {
-    resetOpenCodeIdState();
-  });
-
   it('extracts system/init capabilities without emitting transcript events', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_1',
-      directory: '/proj',
-      userMessageId: 'msg_u',
-      assistantMessageId: 'msg_a',
-    });
+    const ctx = freshCtx();
     const { events, capabilities, foreignSessionId } = mapClaudeMessageToEvents(ctx, {
       type: 'system',
       subtype: 'init',
@@ -546,83 +429,20 @@ describe('from-claude slash / mcp / subagents', () => {
   });
 
   it('creates a child session when Claude Agent tool starts', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_parent',
-      directory: '/proj',
-      userMessageId: 'msg_u',
-      assistantMessageId: 'msg_a',
-    });
-    const { events } = mapClaudeMessageToEvents(ctx, {
-      type: 'assistant',
-      message: {
-        content: [{
-          type: 'tool_use',
-          id: 'agent_call_1',
-          name: 'Agent',
-          input: { description: 'Review auth', prompt: 'review auth', subagent_type: 'doc-writer' },
-        }],
-      },
+    const ctx = freshCtx({ sessionId: 'ses_parent' });
+    const { events } = useTool(ctx, {
+      id: 'agent_call_1', name: 'Agent', input: { description: 'Review auth', prompt: 'review auth' },
     });
     const created = events.find((e) => e.type === 'session.created');
     expect(created?.properties.info.parentID).toBe('ses_parent');
     expect(created?.properties.info.title).toBe('Review auth');
-    const tool = events.find((e) => e.properties?.part?.type === 'tool');
-    expect(tool?.properties.part.tool).toBe('task');
-    expect(tool?.properties.part.state.metadata.sessionId).toBe(created?.properties.info.id);
-  });
-
-  it('preserves task child-session metadata when the Agent tool completes', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_parent',
-      directory: '/proj',
-      userMessageId: 'msg_u',
-      assistantMessageId: 'msg_a',
-    });
-    const start = mapClaudeMessageToEvents(ctx, {
-      type: 'assistant',
-      message: {
-        content: [{
-          type: 'tool_use',
-          id: 'agent_call_1',
-          name: 'Agent',
-          input: { description: 'Explore', subagent_type: 'doc-writer' },
-        }],
-      },
-    });
-    const childId = start.events.find((e) => e.type === 'session.created')?.properties.info.id;
-    const done = mapClaudeMessageToEvents(ctx, {
-      type: 'user',
-      message: {
-        content: [{
-          type: 'tool_result',
-          tool_use_id: 'agent_call_1',
-          content: 'done',
-        }],
-      },
-    });
-    const tool = done.events.find((e) => e.properties?.part?.type === 'tool');
-    expect(tool?.properties.part.tool).toBe('task');
-    expect(tool?.properties.part.state.status).toBe('completed');
-    expect(tool?.properties.part.state.metadata.sessionId).toBe(childId);
+    expect(findPart(events, 'tool')?.state.metadata.sessionId).toBe(created?.properties.info.id);
   });
 
   it('routes parent_tool_use_id messages into the child session', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_parent',
-      directory: '/proj',
-      userMessageId: 'msg_u',
-      assistantMessageId: 'msg_a',
-    });
-    const start = mapClaudeMessageToEvents(ctx, {
-      type: 'assistant',
-      message: {
-        content: [{
-          type: 'tool_use',
-          id: 'agent_call_1',
-          name: 'Agent',
-          input: { description: 'Explore' },
-        }],
-      },
+    const ctx = freshCtx({ sessionId: 'ses_parent' });
+    const start = useTool(ctx, {
+      id: 'agent_call_1', name: 'Agent', input: { description: 'Explore' },
     });
     const childId = start.events.find((e) => e.type === 'session.created')?.properties.info.id;
     const nested = mapClaudeMessageToEvents(ctx, {
@@ -632,36 +452,77 @@ describe('from-claude slash / mcp / subagents', () => {
         content: [{ type: 'text', text: 'looking around' }],
       },
     });
-    const textPart = nested.events.find((e) => e.properties?.part?.type === 'text');
-    expect(textPart?.properties.part.sessionID).toBe(childId);
+    expect(findPart(nested.events, 'text')?.sessionID).toBe(childId);
     const delta = nested.events.find((e) => e.type === 'message.part.delta');
     expect(delta?.properties.sessionID).toBe(childId);
     expect(delta?.properties.delta).toBe('looking around');
   });
 });
 
-describe('claude session-limit auto-resume mapper', () => {
-  beforeEach(() => {
-    resetOpenCodeIdState();
+describe('claude Agent/Task tool naming parity', () => {
+  it('maps Agent/Task tool_use parts to the OpenCode task tool id', () => {
+    const ctx = freshCtx({ sessionId: 'ses_parent' });
+    const { events } = useTool(ctx, {
+      id: 'agent_call_2', name: 'Agent', input: { description: 'Triage', prompt: 'triage' },
+    });
+    expect(findPart(events, 'tool')?.tool).toBe('task');
+
+    const taskCtx = freshCtx({ sessionId: 'ses_parent' });
+    const taskEvents = useTool(taskCtx, {
+      id: 'task_call_1', name: 'Task', input: { description: 'Fix', prompt: 'fix' },
+    });
+    expect(findPart(taskEvents.events, 'tool')?.tool).toBe('task');
   });
 
-  function freshCtx(overrides = {}) {
-    return createClaudeMapperContext({
-      sessionId: 'ses_1',
-      directory: '/proj',
-      userMessageId: 'msg_u',
-      assistantMessageId: 'msg_a',
-      ...overrides,
-    });
-  }
+  it('leaves non-subagent tool names untouched', () => {
+    const ctx = freshCtx();
+    const { events } = useTool(ctx, { name: 'Bash', input: { command: 'ls' } });
+    expect(findPart(events, 'tool')?.tool).toBe('Bash');
+  });
 
-  it('initializes latestRateLimitInfo / parentRateLimitError / sdkRetryActive defaults', () => {
-    const ctx = createClaudeMapperContext({
-      sessionId: 'ses_1',
-      directory: '/proj',
-      userMessageId: 'msg_u',
-      assistantMessageId: 'msg_a',
+  it('preserves child session metadata and shows the Agent Task title on completion', () => {
+    const ctx = freshCtx({ sessionId: 'ses_parent' });
+    const start = useTool(ctx, {
+      id: 'agent_call_3', name: 'Task', input: { description: 'Fix bug', prompt: 'fix' },
     });
+    const childId = start.events.find((e) => e.type === 'session.created')?.properties.info.id;
+
+    const { events } = finishTool(ctx, { id: 'agent_call_3', content: 'done' });
+    const part = findPart(events, 'tool');
+    expect(part.tool).toBe('task');
+    expect(part.state.status).toBe('completed');
+    expect(part.state.title).toBe('Agent Task');
+    expect(part.state.metadata).toEqual({ sessionId: childId, title: 'Fix bug' });
+  });
+
+  it('keeps child session metadata when the Agent tool errors', () => {
+    const ctx = freshCtx({ sessionId: 'ses_parent' });
+    useTool(ctx, { id: 'agent_call_4', name: 'Agent', input: { description: 'Risk', prompt: 'r' } });
+
+    const { events } = finishTool(ctx, { id: 'agent_call_4', content: 'boom', isError: true });
+    const part = findPart(events, 'tool');
+    expect(part.state.status).toBe('error');
+    expect(part.state.metadata.sessionId).toMatch(/^ses_claude_sub_/);
+    expect(part.state.metadata.title).toBe('Risk');
+  });
+
+  it('keeps child session metadata on abort closure of a running Agent tool', () => {
+    const ctx = freshCtx({ sessionId: 'ses_parent' });
+    useTool(ctx, { id: 'agent_call_5', name: 'Agent', input: { description: 'Slow', prompt: 's' } });
+
+    const events = buildTurnAbortEvents(ctx);
+    const part = events
+      .map((e) => e.properties.part)
+      .find((p) => p?.type === 'tool' && p.callID === 'agent_call_5');
+    expect(part.state.status).toBe('error');
+    expect(part.state.metadata.sessionId).toMatch(/^ses_claude_sub_/);
+    expect(part.state.metadata.title).toBe('Slow');
+  });
+});
+
+describe('claude session-limit auto-resume mapper', () => {
+  it('initializes latestRateLimitInfo / parentRateLimitError / sdkRetryActive defaults', () => {
+    const ctx = freshCtx();
     expect(ctx.latestRateLimitInfo).toBeNull();
     expect(ctx.parentRateLimitError).toBeNull();
     expect(ctx.sdkRetryActive).toBe(false);
@@ -682,15 +543,12 @@ describe('claude session-limit auto-resume mapper', () => {
         overageResetsAt: resetsAtMs + 60_000,
         overageInUse: true,
         isUsingOverage: false,
-        // unrelated extras filtered out by sanitization
         extraNoise: 'should-not-survive',
       },
       randomField: 'also-noise',
     });
 
-    // No visible events emitted by the rate-limit event itself.
     expect(mapped.events).toEqual([]);
-    // Sanitized metadata keyed by the SDK fields selectRejectedRateLimit consumes.
     expect(ctx.latestRateLimitInfo).toMatchObject({
       status: 'rejected',
       resetsAt: resetsAtMs,
@@ -700,23 +558,14 @@ describe('claude session-limit auto-resume mapper', () => {
       overageInUse: true,
       isUsingOverage: false,
     });
-    // Sanitization: no foreign keys leaked onto ctx.
     expect(ctx.latestRateLimitInfo).not.toHaveProperty('extraNoise');
-    // No scheduling, just remembering — flag not touched.
     expect(ctx.sdkRetryActive).toBe(false);
-    // Return shape surfaces the structured info for downstream consumers.
     expect(mapped.rateLimitInfo).toMatchObject({ status: 'rejected', rateLimitType: 'five_hour' });
-  });
 
-  it('rate_limit_event with missing rate_limit_info stores null on ctx and emits no events', () => {
-    const ctx = freshCtx();
-    const mapped = mapClaudeMessageToEvents(ctx, {
-      type: 'rate_limit_event',
-      uuid: 'rl_2',
-    });
-    expect(ctx.latestRateLimitInfo).toBeNull();
-    expect(mapped.events).toEqual([]);
-    expect(mapped.rateLimitInfo).toBeNull();
+    const emptyCtx = freshCtx();
+    const empty = rateLimit(emptyCtx);
+    expect(emptyCtx.latestRateLimitInfo).toBeNull();
+    expect(empty).toMatchObject({ events: [], rateLimitInfo: null });
   });
 
   it('system api_retry emits canonical retry status and sets sdkRetryActive (no idle)', () => {
@@ -731,7 +580,6 @@ describe('claude session-limit auto-resume mapper', () => {
     const after = Date.now();
 
     expect(ctx.sdkRetryActive).toBe(true);
-    // Exactly one event: the canonical retry status.
     expect(mapped.events).toHaveLength(1);
     const status = mapped.events[0];
     expect(status.type).toBe('session.status');
@@ -741,199 +589,102 @@ describe('claude session-limit auto-resume mapper', () => {
       attempt: 2,
       message: 'api-retry',
     });
-    // `next` is an absolute epoch-ms = Date.now() + retry_delay_ms.
     expect(status.properties.status.next).toBeGreaterThanOrEqual(before + 5_000);
     expect(status.properties.status.next).toBeLessThanOrEqual(after + 5_000);
-    // No idle emitted; no durable retry scheduled from this transient event.
-    expect(mapped.events.some((e) => e.type === 'session.status' && e.properties.status.type === 'idle')).toBe(false);
+    expect(hasStatus(mapped.events, 'idle')).toBe(false);
     expect(mapped.terminal).toBeUndefined();
+
+    const defaultCtx = freshCtx();
+    const defaults = mapClaudeMessageToEvents(defaultCtx, { type: 'system', subtype: 'api_retry' });
+    expect(defaultCtx.sdkRetryActive).toBe(true);
+    expect(defaults.events[0].properties.status.type).toBe('retry');
+    expect(Number.isFinite(defaults.events[0].properties.status.attempt)).toBe(true);
+    expect(Number.isFinite(defaults.events[0].properties.status.next)).toBe(true);
   });
 
-  it('system api_retry without attempt/delay coalesces to finite canonical defaults', () => {
-    const ctx = freshCtx();
-    const mapped = mapClaudeMessageToEvents(ctx, { type: 'system', subtype: 'api_retry' });
-    expect(ctx.sdkRetryActive).toBe(true);
-    expect(mapped.events).toHaveLength(1);
-    expect(mapped.events[0].properties.status.type).toBe('retry');
-    expect(Number.isFinite(mapped.events[0].properties.status.attempt)).toBe(true);
-    expect(Number.isFinite(mapped.events[0].properties.status.next)).toBe(true);
-  });
+  it('transitions retry to busy before the first parent content only', () => {
+    for (const emitContent of [
+      (ctx) => streamText(ctx, 'yes'),
+      (ctx) => mapClaudeMessageToEvents(ctx, {
+        type: 'assistant', message: { content: [{ type: 'text', text: 'hello' }] },
+      }),
+    ]) {
+      const ctx = freshCtx();
+      startRetry(ctx);
+      const mapped = emitContent(ctx);
+      const busyIndex = mapped.events.findIndex((event) => hasStatus([event], 'busy'));
+      const contentIndex = mapped.events.findIndex((event) => (
+        event.properties?.part?.type === 'text' || event.type === 'message.part.delta'
+      ));
+      expect(ctx.sdkRetryActive).toBe(false);
+      expect(contentIndex).toBeGreaterThan(busyIndex);
+      expect(streamText(ctx, 'second').events.some((event) => event.type === 'session.status')).toBe(false);
+    }
 
-  it('stream text delta after api_retry transitions retry -> busy BEFORE content events', () => {
-    const ctx = freshCtx();
-    mapClaudeMessageToEvents(ctx, { type: 'system', subtype: 'api_retry', attempt: 1, retry_delay_ms: 100 });
-    expect(ctx.sdkRetryActive).toBe(true);
-
-    const mapped = mapClaudeMessageToEvents(ctx, {
-      type: 'stream_event',
-      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'yes' } },
-    });
-
-    // Clearing + busy transition before any content arrival.
-    expect(ctx.sdkRetryActive).toBe(false);
-    const statusIdx = mapped.events.findIndex((e) => e.type === 'session.status' && e.properties.status.type === 'busy');
-    const deltaIdx = mapped.events.findIndex((e) => e.type === 'message.part.delta');
-    expect(statusIdx).toBeGreaterThanOrEqual(0);
-    expect(deltaIdx).toBeGreaterThan(statusIdx);
-  });
-
-  it('assistant content after api_retry transitions retry -> busy BEFORE content events', () => {
-    const ctx = freshCtx();
-    mapClaudeMessageToEvents(ctx, { type: 'system', subtype: 'api_retry', attempt: 1, retry_delay_ms: 100 });
-    const mapped = mapClaudeMessageToEvents(ctx, {
-      type: 'assistant',
-      message: { content: [{ type: 'text', text: 'hello' }] },
-    });
-    expect(ctx.sdkRetryActive).toBe(false);
-    const statusIdx = mapped.events.findIndex((e) => e.type === 'session.status' && e.properties.status.type === 'busy');
-    const contentIdx = mapped.events.findIndex(
-      (e) => e.properties?.part?.type === 'text' || e.type === 'message.part.delta',
-    );
-    expect(statusIdx).toBeGreaterThanOrEqual(0);
-    expect(contentIdx).toBeGreaterThan(statusIdx);
-  });
-
-  it('subsequent activity after busy transition does NOT re-emit busy', () => {
-    const ctx = freshCtx();
-    mapClaudeMessageToEvents(ctx, { type: 'system', subtype: 'api_retry', attempt: 1, retry_delay_ms: 100 });
-    mapClaudeMessageToEvents(ctx, {
-      type: 'stream_event',
-      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'first' } },
-    });
-    expect(ctx.sdkRetryActive).toBe(false);
-
-    const second = mapClaudeMessageToEvents(ctx, {
-      type: 'stream_event',
-      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'second' } },
-    });
-    expect(second.events.some((e) => e.type === 'session.status')).toBe(false);
-  });
-
-  it('subagent content after api_retry does NOT emit a parent busy transition', () => {
-    const ctx = freshCtx();
-    mapClaudeMessageToEvents(ctx, { type: 'system', subtype: 'api_retry', attempt: 1, retry_delay_ms: 100 });
-    const mapped = mapClaudeMessageToEvents(ctx, {
+    const nestedCtx = freshCtx();
+    startRetry(nestedCtx);
+    const nested = mapClaudeMessageToEvents(nestedCtx, {
       type: 'assistant',
       parent_tool_use_id: 'agent_call_1',
       message: { content: [{ type: 'text', text: 'subagent activity' }] },
     });
-    // The parent's session.status transitions are unaffected by nested activity.
-    expect(mapped.events.some((e) => e.type === 'session.status')).toBe(false);
+    expect(nested.events.some((event) => event.type === 'session.status')).toBe(false);
+    expect(nestedCtx.sdkRetryActive).toBe(true);
   });
 
-  it('parent assistant rate_limit error records parentRateLimitError and skips idle', () => {
+  it('maps parent and subagent assistant errors without crossing status ownership', () => {
     const ctx = freshCtx();
-    const mapped = mapClaudeMessageToEvents(ctx, {
-      type: 'assistant',
-      uuid: 'asst_1',
-      message: { content: [{ type: 'text', text: "You've hit your session limit..." }] },
-      error: 'rate_limit',
-    });
+    const mapped = assistantError(ctx, 'rate_limit');
     expect(ctx.parentRateLimitError).toEqual({ uuid: 'asst_1' });
-    // No idle emits when correlating a parent rate-limit error.
-    expect(mapped.events.some((e) => e.type === 'session.status' && e.properties.status.type === 'idle')).toBe(false);
-    // Retains the existing error message.updated emission with the APIError.
+    expect(hasStatus(mapped.events, 'idle')).toBe(false);
     const err = mapped.events.find((e) => e.type === 'message.updated' && e.properties.info.error);
-    expect(err).toBeDefined();
     expect(err.properties.info.error.name).toBe('APIError');
-    expect(err.properties.info.error.data.message).toBe('rate_limit');
-    expect(err.properties.info.error.data.isRetryable).toBe(true);
-  });
+    expect(err.properties.info.error.data).toEqual({ message: 'rate_limit', isRetryable: true });
 
-  it('parent non-rate_limit assistant error retains idle emission (regression)', () => {
-    const ctx = freshCtx();
-    const mapped = mapClaudeMessageToEvents(ctx, {
-      type: 'assistant',
-      uuid: 'asst_2',
-      message: { content: [] },
-      error: 'overloaded',
-    });
-    expect(ctx.parentRateLimitError).toBeNull();
-    expect(mapped.events.some((e) => e.type === 'session.status' && e.properties.status.type === 'idle')).toBe(true);
-    const err = mapped.events.find((e) => e.type === 'message.updated' && e.properties.info.error);
-    expect(err).toBeDefined();
-    expect(err.properties.info.error.data.message).toBe('overloaded');
-    expect(err.properties.info.error.data.isRetryable).toBe(true);
-  });
+    const overloadedCtx = freshCtx();
+    const overloaded = assistantError(overloadedCtx, 'overloaded', { content: [] });
+    expect(overloadedCtx.parentRateLimitError).toBeNull();
+    expect(hasStatus(overloaded.events, 'idle')).toBe(true);
+    expect(overloaded.events.find((e) => e.properties?.info?.error).properties.info.error.data)
+      .toEqual({ message: 'overloaded', isRetryable: true });
 
-  it('subagent (nested) rate_limit error does NOT set the parent rate-limit correlation', () => {
-    const ctx = freshCtx();
-    const mapped = mapClaudeMessageToEvents(ctx, {
-      type: 'assistant',
-      parent_tool_use_id: 'agent_call_1',
-      uuid: 'asst_sub',
-      message: { content: [{ type: 'text', text: 'subagent rate-limited branch' }] },
-      error: 'rate_limit',
+    const nestedCtx = freshCtx();
+    const nested = assistantError(nestedCtx, 'rate_limit', {
+      uuid: 'asst_sub', parentToolUseId: 'agent_call_1',
     });
-    expect(ctx.parentRateLimitError).toBeNull();
-    // Subagent errors never emit parent idle.
-    expect(mapped.events.some((e) => e.type === 'session.status' && e.properties.status.type === 'idle')).toBe(false);
-    // Still emits the subagent error message.updated (existing behavior).
-    const err = mapped.events.find((e) => e.type === 'message.updated' && e.properties.info.error);
-    expect(err).toBeDefined();
-    expect(err.properties.info.error.name).toBe('APIError');
-    expect(err.properties.info.error.data.message).toBe('rate_limit');
+    expect(nestedCtx.parentRateLimitError).toBeNull();
+    expect(hasStatus(nested.events, 'idle')).toBe(false);
+    expect(nested.events.find((e) => e.properties?.info?.error).properties.info.error.name).toBe('APIError');
   });
 
   it('returns terminal rate-limit when parent error + rejected window are correlated', () => {
     const ctx = freshCtx();
     const resetsAtMs = Date.now() + 60_000;
-
-    // parent rate-limit error seen first
-    mapClaudeMessageToEvents(ctx, {
-      type: 'assistant',
-      uuid: 'asst_1',
-      message: { content: [{ type: 'text', text: "You've hit your session limit..." }] },
-      error: 'rate_limit',
-    });
-    // structured rate-limit event seen
-    mapClaudeMessageToEvents(ctx, {
-      type: 'rate_limit_event',
-      uuid: 'rl_1',
-      rate_limit_info: { status: 'rejected', resetsAt: resetsAtMs, rateLimitType: 'five_hour' },
-    });
-    // terminal result
-    const terminal = mapClaudeMessageToEvents(ctx, {
-      type: 'result',
-      subtype: 'error_during_execution',
-      is_error: true,
-    });
+    assistantError(ctx, 'rate_limit');
+    rateLimit(ctx, { status: 'rejected', resetsAt: resetsAtMs, rateLimitType: 'five_hour' });
+    const terminal = finishResult(ctx);
 
     expect(terminal.terminal).toMatchObject({
       type: 'rate-limit',
       rateLimitType: 'five_hour',
       assistantUuid: 'asst_1',
     });
-    // resetAt equals the validated absolute epoch-ms from selectRejectedRateLimit.
     expect(terminal.terminal.resetAt).toBe(resetsAtMs);
-    // No idle / session.error emitted when correlating a hard rejected window.
     expect(terminal.events.some((e) => e.type === 'session.status')).toBe(false);
     expect(terminal.events.some((e) => e.type === 'session.error')).toBe(false);
-    // Closure events for open segments/tools and final message.updated still
-    // land so the transcript surfaces the rate-limit error text.
     expect(terminal.events.some((e) => e.type === 'message.part.updated')).toBe(true);
     expect(terminal.events.some(
       (e) => e.type === 'message.updated' && e.properties.info.finish === 'stop',
     )).toBe(true);
-    // rateLimitInfo mirrored on the terminal return.
     expect(terminal.rateLimitInfo).toMatchObject({ status: 'rejected', rateLimitType: 'five_hour' });
   });
 
   it('terminal rate-limit detects an overage rejected window via selectRejectedRateLimit', () => {
     const ctx = freshCtx();
     const overageResetsMs = Date.now() + 90_000;
-    mapClaudeMessageToEvents(ctx, {
-      type: 'assistant', uuid: 'asst_o1',
-      message: { content: [{ type: 'text', text: 'overage' }] },
-      error: 'rate_limit',
-    });
-    mapClaudeMessageToEvents(ctx, {
-      type: 'rate_limit_event', uuid: 'rl_o1',
-      rate_limit_info: { overageStatus: 'rejected', overageResetsAt: overageResetsMs },
-    });
-    const terminal = mapClaudeMessageToEvents(ctx, {
-      type: 'result', subtype: 'error_during_execution', is_error: true,
-    });
+    assistantError(ctx, 'rate_limit', { uuid: 'asst_o1' });
+    rateLimit(ctx, { overageStatus: 'rejected', overageResetsAt: overageResetsMs });
+    const terminal = finishResult(ctx);
     expect(terminal.terminal).toMatchObject({
       type: 'rate-limit',
       rateLimitType: 'overage',
@@ -943,62 +694,35 @@ describe('claude session-limit auto-resume mapper', () => {
     expect(terminal.events.some((e) => e.type === 'session.status')).toBe(false);
   });
 
-  it('does NOT produce terminal when no parent rate-limit error is set (regression)', () => {
-    const ctx = freshCtx();
-    const resetsAtMs = Date.now() + 60_000;
-    mapClaudeMessageToEvents(ctx, {
-      type: 'rate_limit_event', uuid: 'rl_1',
-      rate_limit_info: { status: 'rejected', resetsAt: resetsAtMs, rateLimitType: 'five_hour' },
-    });
-    const mapped = mapClaudeMessageToEvents(ctx, {
-      type: 'result', subtype: 'error_during_execution', is_error: true,
-    });
-    expect(mapped.terminal).toBeUndefined();
-    expect(mapped.events.some((e) => e.type === 'session.status' && e.properties.status.type === 'idle')).toBe(true);
-    expect(mapped.events.some((e) => e.type === 'session.error')).toBe(true);
-  });
-
-  it('does NOT produce terminal when the window is not a hard rejected window (regression)', () => {
-    const ctx = freshCtx();
-    mapClaudeMessageToEvents(ctx, {
-      type: 'assistant', uuid: 'asst_3',
-      message: { content: [{ type: 'text', text: 'warned' }] },
-      error: 'rate_limit',
-    });
-    // allowed_warning is not a hard wait.
-    mapClaudeMessageToEvents(ctx, {
-      type: 'rate_limit_event', uuid: 'rl_ok',
-      rate_limit_info: { status: 'allowed_warning', resetsAt: Date.now() + 60_000, rateLimitType: 'five_hour' },
-    });
-    const mapped = mapClaudeMessageToEvents(ctx, {
-      type: 'result', subtype: 'error_during_execution', is_error: true,
-    });
-    expect(mapped.terminal).toBeUndefined();
-    expect(mapped.events.some((e) => e.type === 'session.status' && e.properties.status.type === 'idle')).toBe(true);
-    expect(mapped.events.some((e) => e.type === 'session.error')).toBe(true);
+  it('does not produce a terminal without both a parent error and rejected window', () => {
+    for (const includeParentError of [false, true]) {
+      const ctx = freshCtx();
+      if (includeParentError) assistantError(ctx, 'rate_limit', { uuid: 'asst_3' });
+      rateLimit(ctx, {
+        status: includeParentError ? 'allowed_warning' : 'rejected',
+        resetsAt: Date.now() + 60_000,
+        rateLimitType: 'five_hour',
+      });
+      const mapped = finishResult(ctx);
+      expect(mapped.terminal).toBeUndefined();
+      expect(hasStatus(mapped.events, 'idle')).toBe(true);
+      expect(mapped.events.some((event) => event.type === 'session.error')).toBe(true);
+    }
   });
 
   it('terminal rate-limit correlation wins regardless of is_error (parent error already on record)', () => {
     const ctx = freshCtx();
     const resetsAtMs = Date.now() + 60_000;
-    mapClaudeMessageToEvents(ctx, {
-      type: 'assistant', uuid: 'asst_1',
-      message: { content: [{ type: 'text', text: 'RL' }] },
-      error: 'rate_limit',
-    });
-    mapClaudeMessageToEvents(ctx, {
-      type: 'rate_limit_event', uuid: 'rl_1',
-      rate_limit_info: { status: 'rejected', resetsAt: resetsAtMs, rateLimitType: 'five_hour' },
-    });
-    // Even a nominally-success result still correlates: no idle, terminal set.
-    const mapped = mapClaudeMessageToEvents(ctx, { type: 'result', subtype: 'success' });
+    assistantError(ctx, 'rate_limit');
+    rateLimit(ctx, { status: 'rejected', resetsAt: resetsAtMs, rateLimitType: 'five_hour' });
+    const mapped = finishResult(ctx, { subtype: 'success', is_error: false });
     expect(mapped.terminal).toMatchObject({ type: 'rate-limit', rateLimitType: 'five_hour', assistantUuid: 'asst_1' });
     expect(mapped.events.some((e) => e.type === 'session.status')).toBe(false);
   });
 
   it('clears sdkRetryActive on a terminal result without emitting busy', () => {
     const ctx = freshCtx();
-    mapClaudeMessageToEvents(ctx, { type: 'system', subtype: 'api_retry', attempt: 1, retry_delay_ms: 100 });
+    startRetry(ctx);
     const mapped = mapClaudeMessageToEvents(ctx, { type: 'result', subtype: 'success' });
     expect(ctx.sdkRetryActive).toBe(false);
     expect(mapped.events.some((e) => e.type === 'session.status' && e.properties.status.type === 'busy')).toBe(false);
@@ -1006,16 +730,10 @@ describe('claude session-limit auto-resume mapper', () => {
 
   it('rateLimitInfo is exposed on every return shape (null until set)', () => {
     const ctx = freshCtx();
-    const before = mapClaudeMessageToEvents(ctx, {
-      type: 'stream_event',
-      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'hi' } },
-    });
+    const before = streamText(ctx, 'hi');
     expect(before.rateLimitInfo).toBeNull();
     const resetsAtMs = Date.now() + 60_000;
-    mapClaudeMessageToEvents(ctx, {
-      type: 'rate_limit_event', uuid: 'rl_x',
-      rate_limit_info: { status: 'rejected', resetsAt: resetsAtMs, rateLimitType: 'five_hour' },
-    });
+    rateLimit(ctx, { status: 'rejected', resetsAt: resetsAtMs, rateLimitType: 'five_hour' });
     const after = mapClaudeMessageToEvents(ctx, { type: 'result', subtype: 'success' });
     expect(after.rateLimitInfo).toMatchObject({ status: 'rejected', rateLimitType: 'five_hour' });
   });

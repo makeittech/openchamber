@@ -12,21 +12,18 @@ import { updateDesktopSettings } from '@/lib/persistence';
 
 export type HarnessSwitchMode = 'duplicate' | 'summarize';
 
-export type HarnessSwitchRequest = {
+type HarnessSwitchRequest = {
   sessionId: string;
   directory: string | null;
   sourceHarnessId: HarnessId;
   target: ExecutionTarget;
 };
 
-export type HarnessSwitchOutcome = 'persisted' | 'pending-handoff' | 'last-used' | 'dialog';
+type HarnessSwitchOutcome = 'persisted' | 'pending-handoff' | 'last-used' | 'dialog';
 
 type HarnessSwitchStore = {
-  /** Request currently awaiting user confirmation (dialog open). */
   pending: HarnessSwitchRequest | null;
-  /** True while the confirmed handoff runs (summarize/create/post). */
   switching: boolean;
-  /** Last failure to surface inside the dialog. */
   error: string | null;
   requestHarnessSwitch: (
     sessionId: string | null | undefined,
@@ -37,19 +34,10 @@ type HarnessSwitchStore = {
   confirmHarnessSwitch: (mode: HarnessSwitchMode, dontShowAgain: boolean) => Promise<void>;
 };
 
-/**
- * Central entry point for every harness switch on a session.
- *
- * - No session / unused session / same harness: persist in place (no popup).
- * - Used session + warn disabled: legacy silent pending handoff (applied on
- *   the next sent message).
- * - Used session + warn enabled: open the switch dialog; on confirm the new
- *   session is created immediately with the chosen transfer mode.
- */
+const idleState = { pending: null, switching: false, error: null };
+
 export const useHarnessSwitchStore = create<HarnessSwitchStore>()((set, get) => ({
-  pending: null,
-  switching: false,
-  error: null,
+  ...idleState,
 
   requestHarnessSwitch: (sessionId, target, options) => {
     const selection = useSelectionStore.getState();
@@ -83,13 +71,17 @@ export const useHarnessSwitchStore = create<HarnessSwitchStore>()((set, get) => 
   },
 
   cancelHarnessSwitch: () => {
-    if (get().switching) return;
-    set({ pending: null, switching: false, error: null });
+    if (get().switching) {
+      return;
+    }
+    set(idleState);
   },
 
   confirmHarnessSwitch: async (mode, dontShowAgain) => {
     const { pending, switching } = get();
-    if (!pending || switching) return;
+    if (!pending || switching) {
+      return;
+    }
     set({ switching: true, error: null });
     try {
       await performHarnessHandoff({
@@ -106,11 +98,10 @@ export const useHarnessSwitchStore = create<HarnessSwitchStore>()((set, get) => 
       });
       return;
     }
-    // Don't-show-again persists only after a successful confirmed switch.
     if (dontShowAgain) {
       setCachedWarnOnHarnessSwitch(false);
       void updateDesktopSettings({ harnessWarnOnSwitch: false });
     }
-    set({ pending: null, switching: false, error: null });
+    set(idleState);
   },
 }));

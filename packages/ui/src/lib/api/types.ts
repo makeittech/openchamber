@@ -1135,6 +1135,310 @@ export interface GitHubAPI {
   repoBranches(owner: string, repo: string): Promise<string[]>;
 }
 
+// ============== Linear Integration Types ==============
+
+export type LinearUserSummary = {
+  id: string | null;
+  name: string | null;
+  displayName: string | null;
+  email?: string | null;
+  avatarUrl?: string | null;
+};
+
+export type LinearOrganizationSummary = {
+  id: string | null;
+  name: string | null;
+  urlKey: string | null;
+};
+
+export type LinearAutomationSettings = {
+  /** Move the issue to the team's first "started" state when a session starts */
+  moveToInProgressOnStart: boolean;
+  /** Move the issue to the team's first "completed" state when a session goes idle (opt-in) */
+  moveToDoneOnComplete: boolean;
+};
+
+export type LinearAuthStatus = {
+  /** OAuth client id/secret are configured on the server */
+  configured: boolean;
+  connected: boolean;
+  /** How the workspace was connected: OAuth app flow or a personal API key */
+  kind?: 'oauth' | 'api_key' | null;
+  user?: LinearUserSummary | null;
+  organization?: LinearOrganizationSummary | null;
+  scope?: string;
+  automation?: LinearAutomationSettings;
+};
+
+export type LinearOAuthStart = {
+  authorizeUrl: string;
+};
+
+export type LinearIssueSummary = {
+  id: string;
+  identifier: string;
+  title: string;
+  url: string;
+  state?: { name: string; type: string } | null;
+  team?: { id: string; key: string; name: string } | null;
+  assignee?: LinearUserSummary | null;
+  labels?: Array<{ name: string; color?: string }>;
+  updatedAt?: string;
+};
+
+export type LinearIssue = LinearIssueSummary & {
+  description?: string;
+  creator?: LinearUserSummary | null;
+  priority?: number | null;
+  estimate?: number | null;
+  createdAt?: string;
+};
+
+export type LinearIssuesListResult = {
+  connected: boolean;
+  issues?: LinearIssueSummary[];
+  hasMore?: boolean;
+  endCursor?: string | null;
+};
+
+export type LinearIssueGetResult = {
+  connected: boolean;
+  issue?: LinearIssue | null;
+};
+
+export type LinearSessionLinkStatus = 'started' | 'completed' | 'error' | 'attention';
+
+export type LinearSessionLink = {
+  id: string;
+  issueId: string;
+  issueIdentifier: string;
+  issueTitle: string;
+  issueUrl: string;
+  sessionId: string;
+  directory: string;
+  sessionTitle: string;
+  sessionUrl: string;
+  createdAt: number;
+  status: LinearSessionLinkStatus;
+  statusUpdatedAt: number | null;
+};
+
+export type LinearAttachSessionInput = {
+  /** Issue identifier (TEAM-123), UUID, or Linear issue URL */
+  issue: string;
+  session: {
+    id: string;
+    directory?: string;
+    title?: string;
+    /** Absolute URL opening the session in OpenChamber */
+    url?: string;
+  };
+};
+
+export type LinearAttachSessionResult = {
+  link: LinearSessionLink;
+  commentPosted: boolean;
+  attachmentPosted: boolean;
+  /** Whether the issue workflow state was moved on session start */
+  stateChanged?: boolean;
+  stateName?: string | null;
+};
+
+export type LinearSessionLinksResult = {
+  links: LinearSessionLink[];
+};
+
+export interface LinearAPI {
+  authStatus(): Promise<LinearAuthStatus>;
+  /** Returns the Linear authorize URL to open in a browser; completion is observed via authStatus polling */
+  authStart(redirectUri?: string): Promise<LinearOAuthStart>;
+  /** Connect with a Linear personal API key instead of the OAuth app flow */
+  authApiKey(apiKey: string): Promise<LinearAuthStatus>;
+  authDisconnect(): Promise<{ removed: boolean }>;
+  updateAutomation(patch: Partial<LinearAutomationSettings>): Promise<{ automation: LinearAutomationSettings }>;
+
+  issuesList(options?: { query?: string; cursor?: string | null }): Promise<LinearIssuesListResult>;
+  issueGet(ref: string): Promise<LinearIssueGetResult>;
+
+  attachSession(input: LinearAttachSessionInput): Promise<LinearAttachSessionResult>;
+  sessionLinks(query: { issueId?: string; sessionId?: string }): Promise<LinearSessionLinksResult>;
+}
+
+// ============== AI Work Queue Types ==============
+
+export type WorkQueueItemSource = 'github' | 'linear';
+export type WorkQueueItemType = 'issue' | 'pr';
+export type WorkQueueItemStatus = 'backlog' | 'todo' | 'in_progress' | 'done';
+export type WorkQueueComplexity = 'easy' | 'medium' | 'hard' | 'huge';
+export type WorkQueuePriority = 'critical' | 'high' | 'medium' | 'low';
+
+export type WorkQueueAlreadySolvedReference = {
+  hash: string;
+  message: string;
+  url: string;
+  date: string;
+};
+
+export type WorkQueueAnalysis = {
+  summary: string;
+  complexity: WorkQueueComplexity;
+  priority: WorkQueuePriority;
+  confidence: number;
+  estimateMinutes: number | null;
+  needsHeadless: boolean;
+  needsBrowser: boolean;
+  needsDocker: boolean;
+  generatedPrompt: string;
+  /** True only when grounded in an actual commit match (see alreadySolvedReference), never a bare model guess. */
+  alreadySolved: boolean;
+  alreadySolvedReference: WorkQueueAlreadySolvedReference | null;
+  /** Id of another open queue item this is likely a duplicate of; '' when none was found. */
+  duplicateOfId: string;
+  duplicateOfTitle: string;
+  duplicateOfUrl: string;
+  duplicateReasoning: string;
+  analyzedAt: number;
+};
+
+export type CursorApiVersion = 'v0' | 'v1';
+
+export type WorkQueueCloudAgent = {
+  agentId: string;
+  runId: string;
+  apiVersion: CursorApiVersion;
+  status: string;
+  url: string;
+  branchName?: string;
+  name?: string;
+  model?: string;
+  createdAt?: number;
+};
+
+/** An automated PR review comment (openchamber-bot); PRs are never AI-analyzed. */
+export type WorkQueueReviewComment = {
+  body: string;
+  url: string;
+  author: string;
+  createdAt: number;
+};
+
+export type WorkQueueCloudAgentDraft = {
+  prompt: string;
+  model: string;
+  repository: string;
+  connected: boolean;
+  apiVersion: CursorApiVersion;
+};
+
+export type WorkQueueBulkAnalysisResult = {
+  total: number;
+  done: number;
+  failed: number;
+};
+
+export type WorkQueueStalenessMatch = {
+  hash: string;
+  date: string;
+  message: string;
+};
+
+/** Advisory only — a match does not prove the issue is resolved. */
+export type WorkQueueStalenessResult = {
+  checked: boolean;
+  stale: boolean;
+  matches: WorkQueueStalenessMatch[];
+  daysOpen: number;
+};
+
+export type WorkQueueItem = {
+  id: string;
+  source: WorkQueueItemSource;
+  sourceId: string;
+  repo: string;
+  team: string;
+  type: WorkQueueItemType;
+  title: string;
+  /** Source description, available right after sync, before any AI analysis. */
+  body: string;
+  url: string;
+  author: string;
+  labels: string[];
+  reviewComments: WorkQueueReviewComment[];
+  createdAt: number;
+  updatedAt: number;
+  status: WorkQueueItemStatus;
+  /** Linear identifier (e.g. "OPE-123"), used to dedup a matching GitHub item. */
+  identifier: string;
+  /** Set on a Linear-sourced item when a referencing GitHub issue/PR was merged into it. */
+  linkedGithubUrl: string;
+  /** Set on a GitHub-sourced item once a Linear issue was auto-created for it (first "take into progress"). */
+  linkedLinearId: string;
+  linkedLinearUrl: string;
+  /** A PR the user manually attached from the AI analysis panel as evidence this item is already done. */
+  attachedPrUrl: string;
+  assignee: string;
+  aiAnalysis: WorkQueueAnalysis | null;
+  aiAnalysisError: string | null;
+  cloudAgent: WorkQueueCloudAgent | null;
+  linkedSessionId: string;
+  finishedAt: number | null;
+  archivedAt: number | null;
+  /** How the card was closed via Finish; null while still open. */
+  closeReason: WorkQueueCloseReason | null;
+};
+
+export type WorkQueueSyncResult = {
+  github: { connected: boolean | null; added: number; updated: number; failedRepos?: string[] };
+  linear: { connected: boolean; added: number; updated: number; failed?: boolean };
+};
+
+/** Mirrors GitHub's own close reasons plus a Linear-style "duplicate" state. */
+export type WorkQueueCloseReason = 'completed' | 'duplicate' | 'not_planned';
+
+export type WorkQueueFinishResult = {
+  prMerged: boolean;
+  issueClosedGitHub: boolean;
+  linearMoved: boolean;
+  archived: boolean;
+};
+
+export type WorkQueueCursorAuthStatus = {
+  connected: boolean;
+  configuredViaEnv: boolean;
+  apiVersion: CursorApiVersion;
+  versionConfiguredViaEnv: boolean;
+};
+
+export interface WorkQueueAPI {
+  itemsList(options?: {
+    status?: WorkQueueItemStatus;
+    repo?: string;
+    assignee?: string;
+    type?: WorkQueueItemType;
+    source?: WorkQueueItemSource;
+  }): Promise<{ items: WorkQueueItem[] }>;
+  itemGet(id: string): Promise<{ item: WorkQueueItem }>;
+  sync(): Promise<WorkQueueSyncResult>;
+  analyze(id: string, directory?: string): Promise<{ item: WorkQueueItem }>;
+  /** Analyzes every not-yet-analyzed issue; PRs are excluded by design. */
+  analyzeBulk(directory?: string): Promise<WorkQueueBulkAnalysisResult>;
+  patch(id: string, patch: { status?: WorkQueueItemStatus; assignee?: string; linkedSessionId?: string; attachedPrUrl?: string }): Promise<{ item: WorkQueueItem; linearSyncWarning?: string; assigneeSyncWarning?: string; linearCreateWarning?: string }>;
+  finish(id: string, options?: { mergePr?: boolean; closeReason?: WorkQueueCloseReason; duplicateOfUrl?: string }): Promise<WorkQueueFinishResult>;
+  /** Advisory freshness check: searches the repo's commit log for a reference to this item. Not persisted. */
+  staleness(id: string, directory: string): Promise<WorkQueueStalenessResult>;
+  /** The prompt/model/repository that would be sent, for review before dispatch. */
+  cloudAgentDraft(id: string): Promise<WorkQueueCloudAgentDraft>;
+  launchCloudAgent(id: string, options?: { prompt?: string; model?: string; repository?: string }): Promise<{ item: WorkQueueItem }>;
+  cloudAgentStatus(id: string): Promise<{ cloudAgent: WorkQueueCloudAgent | null }>;
+
+  reposList(): Promise<{ repos: string[] }>;
+  reposSet(repos: string[]): Promise<{ repos: string[] }>;
+  cursorAuthStatus(): Promise<WorkQueueCursorAuthStatus>;
+  cursorAuthConnect(apiKey: string): Promise<{ connected: boolean }>;
+  cursorAuthDisconnect(): Promise<{ removed: boolean }>;
+  cursorApiVersionSet(apiVersion: CursorApiVersion): Promise<{ apiVersion: CursorApiVersion }>;
+}
+
 export interface RemoteClientRecord {
   id: string;
   label: string;
@@ -1230,6 +1534,8 @@ export interface RuntimeAPIs {
   permissions: PermissionsAPI;
   notifications: NotificationsAPI;
   github?: GitHubAPI;
+  linear?: LinearAPI;
+  workQueue?: WorkQueueAPI;
   push?: PushAPI;
   diagnostics?: DiagnosticsAPI;
   clientAuth?: ClientAuthAPI;

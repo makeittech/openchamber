@@ -76,6 +76,8 @@ describe('getToolDescriptionFallback', () => {
     test('prefers an existing glob description over the pattern', () => {
         expect(getToolDescriptionFallback('glob', 'Electron docs', { pattern: 'packages/electron/README.md' }))
             .toBe('Electron docs');
+    });
+});
 
 describe('formatToolDurationMs', () => {
     test('formats sub-minute durations with one decimal second', () => {

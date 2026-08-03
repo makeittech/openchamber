@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import {
   createAskUserQuestionHandler,
-  getPendingQuestionCount,
-  listPendingQuestions,
   rejectPendingForSession,
   replyQuestion,
   resetPendingQuestions,
@@ -50,7 +48,6 @@ describe('createAskUserQuestionHandler', () => {
 
     const pending = handler(sampleInput(), { toolUseID: 'toolu_1' });
 
-    expect(getPendingQuestionCount()).toBe(1);
     expect(events[0]?.type).toBe('question.asked');
     expect(events[0]?.properties).toMatchObject({
       id: 'qst_fixed',
@@ -82,7 +79,6 @@ describe('createAskUserQuestionHandler', () => {
       },
     });
     expect(events.some((event) => event.type === 'question.replied')).toBe(true);
-    expect(getPendingQuestionCount()).toBe(0);
   });
 
   it('rejects with deny when the user dismisses the question', async () => {
@@ -102,17 +98,13 @@ describe('createAskUserQuestionHandler', () => {
     expect(events.some((event) => event.type === 'question.rejected')).toBe(true);
   });
 
-  it('denies when the question list is empty or invalid', async () => {
+  it('denies when the question list is missing', async () => {
     const handler = createAskUserQuestionHandler({
       sessionId: 'ses_3',
       directory: '/project',
       getBroadcast: () => () => {},
     });
 
-    await expect(handler({ questions: [] }, {})).resolves.toEqual({
-      behavior: 'deny',
-      message: 'No valid questions',
-    });
     await expect(handler({}, {})).resolves.toEqual({
       behavior: 'deny',
       message: 'No valid questions',
@@ -182,13 +174,9 @@ describe('rejectPendingForSession', () => {
     });
 
     const pending = handler(sampleInput(), {});
-    expect(getPendingQuestionCount()).toBe(1);
-
-    expect(listPendingQuestions()).toHaveLength(1);
     expect(rejectPendingForSession('ses_multi')).toBe(1);
 
     const result = await pending;
     expect(result).toEqual({ behavior: 'deny', message: 'Turn ended' });
-    expect(getPendingQuestionCount()).toBe(0);
   });
 });

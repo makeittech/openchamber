@@ -610,6 +610,7 @@ describe("session load performance diagnostics", () => {
 
     expect(nextFrame).toBe(2)
     expect(marks).toEqual(["visible", "visible"])
+  })
 
   test("configure revives a disposed loader so Strict Mode cleanup cannot stick", async () => {
     const { childStores, loader } = createLoader(async ({ sessionID }) => response([createRecord(sessionID, "msg_live")]))

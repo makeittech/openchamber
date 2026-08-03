@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import {
   buildAlwaysPatterns,
   createCanUseTool,
+  createSubagentPermissionRuntime,
   getPendingPermissionCount,
+  rejectPendingForSession,
   replyPermission,
   resetPendingPermissions,
   extractPermissionPatterns,
@@ -294,48 +296,173 @@ describe('createCanUseTool / replyPermission', () => {
       reply: 'once',
     })).toThrow(/not found/);
   });
+});
 
-  it('stamps subagent asks on the child session and applies the subagent policy', async () => {
+describe('createSubagentPermissionRuntime', () => {
+  it('binds subagent starts to their Agent/Task tool_use ids', () => {
+    const runtime = createSubagentPermissionRuntime();
+    runtime.noteAgentToolCall('toolu_a', 'reviewer');
+    runtime.noteAgentToolCall('toolu_b', 'reviewer');
+    runtime.onSubagentStart({ agent_id: 'agent_1', agent_type: 'reviewer' });
+    runtime.onSubagentStart({ agent_id: 'agent_2', agent_type: 'reviewer' });
+
+    expect(runtime.resolveToolUseId('agent_1')).toBe('toolu_a');
+    expect(runtime.resolveToolUseId('agent_2')).toBe('toolu_b');
+    expect(runtime.agentType('agent_1')).toBe('reviewer');
+    expect(runtime.agentType('unknown')).toBe('');
+  });
+
+  it('binds a SubagentStart that raced the parent tool call', () => {
+    const runtime = createSubagentPermissionRuntime();
+    runtime.onSubagentStart({ agent_id: 'agent_1', agent_type: 'writer' });
+    expect(runtime.resolveToolUseId('agent_1')).toBeNull();
+    expect(runtime.agentType('agent_1')).toBe('writer');
+
+    // The parent Agent tool check arrives later; the earlier start binds to it.
+    runtime.noteAgentToolCall('toolu_w', 'writer');
+    expect(runtime.resolveToolUseId('agent_1')).toBe('toolu_w');
+
+    // A second start of the same type must not steal the consumed call.
+    runtime.onSubagentStart({ agent_id: 'agent_2', agent_type: 'writer' });
+    expect(runtime.resolveToolUseId('agent_2')).toBeNull();
+  });
+
+  it('ignores calls without a tool_use id and starts without an agent id', () => {
+    const runtime = createSubagentPermissionRuntime();
+    runtime.noteAgentToolCall('', 'reviewer');
+    runtime.onSubagentStart({ agent_id: '', agent_type: 'reviewer' });
+    runtime.onSubagentStart({});
+    expect(runtime.resolveToolUseId('agent_1')).toBeNull();
+  });
+});
+
+describe('createCanUseTool subagent policy routing', () => {
+  it('applies the spawned subagent policy and stamps asks on the synthetic child session id', async () => {
     const events = [];
+    const runtime = createSubagentPermissionRuntime();
     const canUseTool = createCanUseTool({
       sessionId: 'ses_parent',
-      directory: '/project',
-      getBroadcast: () => (event) => events.push(event),
-      createId: () => 'perm_sub',
-      resolveToolPolicy: () => 'allow',
-      resolveSubagentContext: () => ({
-        resolveToolPolicy: (toolName) => (toolName === 'Bash' ? 'deny' : 'ask'),
-        policySourceLabel: 'doc-writer',
-        sessionId: 'ses_claude_sub_child',
-        parentSessionId: 'ses_parent',
-      }),
+      directory: '/repo',
+      getBroadcast: () => (payload) => events.push(payload),
+      createId: () => 'perm_sub_1',
+      resolveToolPolicy: () => 'ask',
+      policySourceLabel: 'build',
+      subagentRuntime: runtime,
+      subagentPolicies: {
+        reviewer: (toolName) => {
+          if (toolName === 'Bash') return 'allow';
+          if (toolName === 'WebFetch') return 'deny';
+          return 'ask';
+        },
+      },
     });
 
-    await expect(canUseTool('Bash', { command: 'ls' }, {
-      agentID: 'agent_1',
-      toolUseID: 't1',
-      signal: new AbortController().signal,
-    })).resolves.toMatchObject({
-      behavior: 'deny',
-      message: 'Denied by OpenCode agent "doc-writer" permission rules',
-    });
+    runtime.noteAgentToolCall('toolu_agent', 'reviewer');
+    runtime.onSubagentStart({ agent_id: 'agent_1', agent_type: 'reviewer' });
 
-    const pending = canUseTool('WebFetch', { url: 'https://example.com' }, {
+    // Bash is allowed by the subagent's own ruleset, not the parent's ask.
+    await expect(canUseTool('Bash', { command: 'git status' }, { agentID: 'agent_1' }))
+      .resolves.toEqual({ behavior: 'allow', updatedInput: { command: 'git status' } });
+
+    // WebFetch is denied by the subagent's ruleset, labeled with its name.
+    await expect(canUseTool('WebFetch', { url: 'https://example.com' }, { agentID: 'agent_1' }))
+      .resolves.toEqual({
+        behavior: 'deny',
+        message: 'Denied by OpenCode agent "reviewer" permission rules',
+      });
+
+    // An ask inside the subagent is stamped on the child session id with the
+    // real parent in metadata, and replies resolve through that child id.
+    const pending = canUseTool('Edit', { file_path: '/repo/a.ts' }, {
       agentID: 'agent_1',
-      toolUseID: 't2',
-      signal: new AbortController().signal,
+      toolUseID: 'toolu_edit',
     });
     expect(getPendingPermissionCount()).toBe(1);
-    expect(events[0]?.type).toBe('permission.asked');
-    expect(events[0]?.properties.sessionID).toBe('ses_claude_sub_child');
-    expect(events[0]?.properties.metadata.fromSubagent).toBe(true);
-    expect(events[0]?.properties.metadata.parentSessionID).toBe('ses_parent');
+    const asked = events.find((event) => event.type === 'permission.asked').properties;
+    expect(asked.sessionID).toMatch(/^ses_claude_sub_/);
+    expect(asked.sessionID).not.toBe('ses_parent');
+    expect(asked.metadata.fromSubagent).toBe(true);
+    expect(asked.metadata.parentSessionID).toBe('ses_parent');
+    expect(asked.tool).toEqual({ messageID: '', callID: 'toolu_edit' });
+
+    const reply = replyPermission({ sessionId: asked.sessionID, requestId: asked.id, reply: 'once' });
+    expect(reply.ok).toBe(true);
+    await expect(pending).resolves.toMatchObject({ behavior: 'allow' });
+    expect(getPendingPermissionCount()).toBe(0);
+  });
+
+  it('falls back to the parent policy for uncorrelated agent ids', async () => {
+    const events = [];
+    const runtime = createSubagentPermissionRuntime();
+    const canUseTool = createCanUseTool({
+      sessionId: 'ses_parent',
+      directory: '/repo',
+      getBroadcast: () => (payload) => events.push(payload),
+      createId: () => 'perm_sub_2',
+      resolveToolPolicy: (toolName) => (toolName === 'Bash' ? 'allow' : 'ask'),
+      policySourceLabel: 'build',
+      subagentRuntime: runtime,
+      subagentPolicies: { reviewer: () => 'deny' },
+    });
+
+    // Unknown agent id: no subagent policy matched, parent policy decides.
+    await expect(canUseTool('Bash', { command: 'pwd' }, { agentID: 'unknown_agent' }))
+      .resolves.toEqual({ behavior: 'allow', updatedInput: { command: 'pwd' } });
+
+    // The ask is still stamped as a subagent ask (the SDK said it is one).
+    const pending = canUseTool('Edit', { file_path: '/repo/a.ts' }, { agentID: 'unknown_agent' });
+    const asked = events.find((event) => event.type === 'permission.asked').properties;
+    expect(asked.sessionID).toMatch(/^ses_claude_sub_/);
+    expect(asked.metadata.fromSubagent).toBe(true);
+    expect(asked.metadata.parentSessionID).toBe('ses_parent');
+    replyPermission({ sessionId: asked.sessionID, requestId: asked.id, reply: 'reject' });
+    await expect(pending).resolves.toMatchObject({ behavior: 'deny' });
+  });
+
+  it('rejects asks stamped on subagent child ids when the parent session is cleaned up', async () => {
+    const events = [];
+    const runtime = createSubagentPermissionRuntime();
+    const canUseTool = createCanUseTool({
+      sessionId: 'ses_parent',
+      directory: '/repo',
+      getBroadcast: () => (payload) => events.push(payload),
+      createId: () => 'perm_sub_3',
+      subagentRuntime: runtime,
+    });
+
+    runtime.onSubagentStart({ agent_id: 'agent_1', agent_type: 'worker' });
+    const pending = canUseTool('Bash', { command: 'ls' }, { agentID: 'agent_1' });
+    expect(getPendingPermissionCount()).toBe(1);
+    expect(events[0].properties.sessionID).not.toBe('ses_parent');
+
+    // Abort/turn-end cleanup of the parent settles its subagent's asks too.
+    expect(rejectPendingForSession('ses_parent')).toBe(1);
+    await expect(pending).resolves.toMatchObject({ behavior: 'deny' });
+    expect(getPendingPermissionCount()).toBe(0);
+  });
+
+  it('does not let unrelated session cleanup settle a subagent ask', async () => {
+    const events = [];
+    const runtime = createSubagentPermissionRuntime();
+    const canUseTool = createCanUseTool({
+      sessionId: 'ses_other',
+      directory: '/repo',
+      getBroadcast: () => (payload) => events.push(payload),
+      createId: () => 'perm_sub_4',
+      subagentRuntime: runtime,
+    });
+
+    runtime.onSubagentStart({ agent_id: 'agent_2', agent_type: 'worker' });
+    const pending = canUseTool('Bash', { command: 'ls' }, { agentID: 'agent_2' });
+    expect(rejectPendingForSession('ses_unrelated')).toBe(0);
+    expect(getPendingPermissionCount()).toBe(1);
 
     replyPermission({
-      sessionId: 'ses_claude_sub_child',
-      requestId: 'perm_sub',
-      reply: 'once',
+      sessionId: events[0].properties.sessionID,
+      requestId: events[0].properties.id,
+      reply: 'reject',
     });
-    await expect(pending).resolves.toMatchObject({ behavior: 'allow' });
+    await expect(pending).resolves.toMatchObject({ behavior: 'deny' });
+    expect(getPendingPermissionCount()).toBe(0);
   });
 });

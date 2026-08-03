@@ -23,6 +23,7 @@ import {
   unstageFiles,
   applyHunk,
   getDiff,
+  searchCommitsByReference,
   getFileDiff,
 } from './service.js';
 
@@ -108,6 +109,39 @@ describe('resolveBaseRefForLog', () => {
   it('returns undefined when from is a whitespace-only string', async () => {
     const checkRef = async () => true;
     expect(await resolveBaseRefForLog('   ', checkRef)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// searchCommitsByReference
+// ---------------------------------------------------------------------------
+
+describe('searchCommitsByReference', () => {
+  it('finds commits mentioning the reference and ignores unrelated ones', async () => {
+    if (!canRunGit()) return;
+    const { tmpDir, git } = await createTempRepo();
+    await fs.promises.writeFile(path.join(tmpDir, 'a.txt'), 'a');
+    await git.add('a.txt');
+    await git.commit('Unrelated change');
+    await fs.promises.writeFile(path.join(tmpDir, 'b.txt'), 'b');
+    await git.add('b.txt');
+    await git.commit('Fix acme/repo#42 crash on startup');
+
+    const matches = await searchCommitsByReference(tmpDir, 'acme/repo#42');
+    expect(matches).toHaveLength(1);
+    expect(matches[0].message).toContain('acme/repo#42');
+    expect(matches[0].hash).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it('returns an empty array when nothing matches or the reference is empty', async () => {
+    if (!canRunGit()) return;
+    const { tmpDir, git } = await createTempRepo();
+    await fs.promises.writeFile(path.join(tmpDir, 'a.txt'), 'a');
+    await git.add('a.txt');
+    await git.commit('Unrelated change');
+
+    expect(await searchCommitsByReference(tmpDir, 'OPE-999')).toEqual([]);
+    expect(await searchCommitsByReference(tmpDir, '')).toEqual([]);
   });
 });
 

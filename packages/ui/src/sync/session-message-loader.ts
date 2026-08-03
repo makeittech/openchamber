@@ -245,7 +245,7 @@ export class SessionMessageLoader {
     }
     if (options?.force) this.bumpGeneration(entry)
     const kind: SessionMessageLoadKind = options?.reason === "prefetch" ? "prefetch" : "initial"
-    return this.startLoad(normalized, entry, store, kind, async (isCurrent, performance, resolveStore) => {
+    return this.startLoad(normalized, entry, store, kind, async (isCurrent, resolveStore, performance) => {
       const liveStore = resolveStore()
       await this.loadInitial(normalized, entry, liveStore, isCurrent, performance)
       if (!isCurrent()) return
@@ -279,13 +279,6 @@ export class SessionMessageLoader {
           }, EMPTY_HYDRATION_RETRY_MS)
         }
       }
-      if (!isMobileSurfaceRuntime() && isCurrent()) {
-        queueMicrotask(() => {
-          if (isCurrent() && entry.snapshot.cursor && !entry.snapshot.complete) {
-            void this.loadOlder(normalized)
-          }
-        })
-      }
     })
   }
 
@@ -301,7 +294,7 @@ export class SessionMessageLoader {
     if (entry.snapshot.complete || !entry.snapshot.cursor) return Promise.resolve()
     const store = this.childStores.ensureChild(normalized.directory, { bootstrap: false })
     const cursor = entry.snapshot.cursor
-    return this.startLoad(normalized, entry, store, "older", async (isCurrent, performance, resolveStore) => {
+    return this.startLoad(normalized, entry, store, "older", async (isCurrent, resolveStore, performance) => {
       const page = await this.fetchPage(normalized, HISTORY_MESSAGE_PAGE_SIZE, cursor, "older", performance)
       if (!isCurrent()) return
       const committed = this.commitPage(normalized, entry, resolveStore(), page, "prepend", isCurrent)
@@ -376,7 +369,7 @@ export class SessionMessageLoader {
     }
     const store = this.childStores.ensureChild(normalized.directory, { bootstrap: false })
     this.bumpGeneration(entry)
-    return this.startLoad(normalized, entry, store, "refresh", async (isCurrent, performance, resolveStore) => {
+    return this.startLoad(normalized, entry, store, "refresh", async (isCurrent, resolveStore, performance) => {
       const previousCoverage = entry.snapshot.resolved
         ? { cursor: entry.snapshot.cursor, complete: entry.snapshot.complete }
         : null
@@ -554,8 +547,8 @@ export class SessionMessageLoader {
     kind: SessionMessageLoadKind,
     run: (
       isCurrent: () => boolean,
-      performance: LoadPerformanceDetails,
       resolveStore: () => { getState: () => DirectoryStore; setState: DirectoryStoreSetter },
+      performance: LoadPerformanceDetails,
     ) => Promise<void>,
   ): Promise<void> {
     const generation = entry.snapshot.generation
@@ -575,12 +568,12 @@ export class SessionMessageLoader {
       && entry.snapshot.generation === generation
       && Boolean(this.childStores.getChild(target.directory))
     )
-    const performance = { retryCount: 0, recordCount: 0 }
     const resolveStore = () => this.childStores.ensureChild(target.directory, { bootstrap: false })
+    const performance = { retryCount: 0, recordCount: 0 }
     this.patchEntry(entry, { status: "loading", loadingKind: kind, error: null })
     let loadPromise: Promise<void>
     try {
-      loadPromise = run(isCurrent, performance, resolveStore)
+      loadPromise = run(isCurrent, resolveStore, performance)
     } catch (error) {
       loadPromise = Promise.reject(error)
     }

@@ -1,32 +1,22 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 
-let harnessClaudeAgentsCalls: Array<string | undefined> = [];
-let harnessClaudeAgentsImpl: (directory?: string) => Promise<unknown> = async () => ({
-  agents: [],
-  roots: { user: null, project: null },
-});
+let agentCalls: Array<string | undefined> = [];
+let bindingCalls: string[] = [];
+let loadAgents: (directory?: string) => Promise<unknown>;
+let loadBinding: (sessionId: string) => Promise<unknown>;
 
-class FakeHarnessClientError extends Error {
-  readonly code: string;
-  constructor(message: string, code: string) {
-    super(message);
-    this.code = code;
-  }
-}
-
-let harnessSessionBindingCalls: string[] = [];
-let harnessSessionBindingImpl: (sessionId: string) => Promise<unknown> = async () => null;
+const actualClient = await import('@/lib/harness/client');
 
 mock.module('@/lib/harness/client', () => ({
+  ...actualClient,
   harnessClaudeAgents: async (directory?: string) => {
-    harnessClaudeAgentsCalls.push(directory);
-    return harnessClaudeAgentsImpl(directory);
+    agentCalls.push(directory);
+    return loadAgents(directory);
   },
   harnessSessionBinding: async (sessionId: string) => {
-    harnessSessionBindingCalls.push(sessionId);
-    return harnessSessionBindingImpl(sessionId);
+    bindingCalls.push(sessionId);
+    return loadBinding(sessionId);
   },
-  HarnessClientError: FakeHarnessClientError,
 }));
 
 const { useClaudeAgentsStore } = await import('./useClaudeAgentsStore');
@@ -37,176 +27,114 @@ const agent = (name: string) => ({
   model: '',
   source: 'project' as const,
 });
+const agentsResult = (...names: string[]) => ({
+  agents: names.map(agent),
+  roots: { user: null, project: null },
+});
+const namesFor = (directory: string) =>
+  useClaudeAgentsStore.getState().getAgents(directory).map(({ name }) => name);
 
 beforeEach(() => {
-  harnessClaudeAgentsCalls = [];
-  harnessClaudeAgentsImpl = async () => ({ agents: [], roots: { user: null, project: null } });
-  harnessSessionBindingCalls = [];
-  harnessSessionBindingImpl = async () => null;
+  agentCalls = [];
+  bindingCalls = [];
+  loadAgents = async () => agentsResult();
+  loadBinding = async () => null;
   useClaudeAgentsStore.getState().reset();
 });
 
 describe('useClaudeAgentsStore.load', () => {
-  test('stores the fetched agents per directory and forwards the directory', async () => {
-    harnessClaudeAgentsImpl = async () => ({
-      agents: [agent('reviewer')],
-      roots: { user: null, project: '/repo/.claude/agents' },
-    });
-
+  test('loads agents per directory and returns one stable empty list', async () => {
+    loadAgents = async () => agentsResult('reviewer');
     await useClaudeAgentsStore.getState().load('/repo');
 
-    expect(harnessClaudeAgentsCalls).toEqual(['/repo']);
-    expect(useClaudeAgentsStore.getState().getAgents('/repo').map((a) => a.name)).toEqual(['reviewer']);
-    // A different directory has its own scope and is still empty.
-    expect(useClaudeAgentsStore.getState().getAgents('/other')).toEqual([]);
+    expect(agentCalls).toEqual(['/repo']);
+    expect(namesFor('/repo')).toEqual(['reviewer']);
+    const firstEmpty = useClaudeAgentsStore.getState().getAgents('/other');
+    expect(firstEmpty).toBe(useClaudeAgentsStore.getState().getAgents('/missing'));
   });
 
-  test('returns a referentially stable empty list for unknown directories', () => {
-    const first = useClaudeAgentsStore.getState().getAgents('/nope');
-    const second = useClaudeAgentsStore.getState().getAgents('/also-nope');
-    // React selectors depend on this; a fresh [] each call would re-render forever.
-    expect(first).toBe(second);
-  });
-
-  test('a fetch failure keeps the previously loaded agents instead of clearing them', async () => {
-    harnessClaudeAgentsImpl = async () => ({
-      agents: [agent('reviewer')],
-      roots: { user: null, project: '/repo/.claude/agents' },
-    });
+  test('failure preserves previous agents and is retried', async () => {
+    loadAgents = async () => agentsResult('reviewer');
     await useClaudeAgentsStore.getState().load('/repo');
 
-    harnessClaudeAgentsImpl = async () => {
-      throw new FakeHarnessClientError('offline', 'HARNESS_NETWORK');
-    };
+    loadAgents = async () => { throw new Error('offline'); };
     await useClaudeAgentsStore.getState().load('/repo', { force: true });
+    expect(namesFor('/repo')).toEqual(['reviewer']);
+    expect(useClaudeAgentsStore.getState().byDirectory['/repo']?.error).toBe('offline');
 
-    // Failure must not masquerade as "this project has no agents".
-    expect(useClaudeAgentsStore.getState().getAgents('/repo').map((a) => a.name)).toEqual(['reviewer']);
+    loadAgents = async () => agentsResult('planner');
+    await useClaudeAgentsStore.getState().load('/repo');
+    expect(agentCalls).toHaveLength(3);
+    expect(namesFor('/repo')).toEqual(['planner']);
   });
 
-  test('a failed load is retried on the next call instead of being cached as fresh', async () => {
-    harnessClaudeAgentsImpl = async () => {
-      throw new FakeHarnessClientError('offline', 'HARNESS_NETWORK');
-    };
-    await useClaudeAgentsStore.getState().load('/repo');
-    expect(harnessClaudeAgentsCalls.length).toBe(1);
-
-    harnessClaudeAgentsImpl = async () => ({
-      agents: [agent('reviewer')],
-      roots: { user: null, project: null },
-    });
-    await useClaudeAgentsStore.getState().load('/repo');
-
-    expect(harnessClaudeAgentsCalls.length).toBe(2);
-    expect(useClaudeAgentsStore.getState().getAgents('/repo').map((a) => a.name)).toEqual(['reviewer']);
-  });
-
-  test('a fresh successful load is not refetched, but force bypasses the window', async () => {
-    harnessClaudeAgentsImpl = async () => ({ agents: [agent('reviewer')], roots: { user: null, project: null } });
-
+  test('fresh loads are cached unless forced', async () => {
+    loadAgents = async () => agentsResult('reviewer');
     await useClaudeAgentsStore.getState().load('/repo');
     await useClaudeAgentsStore.getState().load('/repo');
-    expect(harnessClaudeAgentsCalls.length).toBe(1);
-
     await useClaudeAgentsStore.getState().load('/repo', { force: true });
-    expect(harnessClaudeAgentsCalls.length).toBe(2);
+    expect(agentCalls).toHaveLength(2);
   });
 
-  test('concurrent loads for the same directory share one request', async () => {
-    let resolveFetch: ((value: unknown) => void) | undefined;
-    harnessClaudeAgentsImpl = () => new Promise((resolve) => { resolveFetch = resolve; });
+  test('concurrent loads for one directory share a request', async () => {
+    let resolveLoad: ((value: unknown) => void) | undefined;
+    loadAgents = () => new Promise((resolve) => { resolveLoad = resolve; });
 
     const first = useClaudeAgentsStore.getState().load('/repo');
     const second = useClaudeAgentsStore.getState().load('/repo');
-    resolveFetch?.({ agents: [agent('reviewer')], roots: { user: null, project: null } });
+    resolveLoad?.(agentsResult('reviewer'));
     await Promise.all([first, second]);
 
-    expect(harnessClaudeAgentsCalls.length).toBe(1);
+    expect(agentCalls).toHaveLength(1);
   });
 });
 
 describe('useClaudeAgentsStore selection', () => {
-  test('selection is scoped per session', () => {
+  test('selection is session-scoped and blank selection clears its key', () => {
     const store = useClaudeAgentsStore.getState();
     store.select('ses_a', 'Explore');
     store.select('ses_b', 'Plan');
-
     expect(useClaudeAgentsStore.getState().getSelected('ses_a')).toBe('Explore');
     expect(useClaudeAgentsStore.getState().getSelected('ses_b')).toBe('Plan');
-    expect(useClaudeAgentsStore.getState().getSelected('ses_missing')).toBe('');
-  });
 
-  test('selecting a blank name clears the session back to Claude default', () => {
-    useClaudeAgentsStore.getState().select('ses_a', 'Explore');
-    useClaudeAgentsStore.getState().select('ses_a', '   ');
-
+    store.select('ses_a', '   ');
     expect(useClaudeAgentsStore.getState().getSelected('ses_a')).toBe('');
-    // The key is removed, not left as an empty string.
-    expect(Object.keys(useClaudeAgentsStore.getState().selectedBySessionId)).toEqual([]);
+    expect(Object.keys(useClaudeAgentsStore.getState().selectedBySessionId)).toEqual(['ses_b']);
   });
 
-  test('re-selecting the same name does not produce a new state object', () => {
+  test('reselecting the same agent preserves the selection map', () => {
     useClaudeAgentsStore.getState().select('ses_a', 'Explore');
     const before = useClaudeAgentsStore.getState().selectedBySessionId;
     useClaudeAgentsStore.getState().select('ses_a', 'Explore');
-
     expect(useClaudeAgentsStore.getState().selectedBySessionId).toBe(before);
   });
 
-  test('hydrateSelection restores the agent the server recorded for the session', async () => {
-    harnessSessionBindingImpl = async () => ({
-      sessionId: 'ses_a',
-      harnessId: 'claude-code',
-      claudeAgentName: 'Explore',
-    });
-
-    await useClaudeAgentsStore.getState().hydrateSelection('ses_a');
-
-    expect(useClaudeAgentsStore.getState().getSelected('ses_a')).toBe('Explore');
-    expect(harnessSessionBindingCalls).toEqual(['ses_a']);
-  });
-
-  test('hydrateSelection never overwrites a pick made in this tab', async () => {
-    useClaudeAgentsStore.getState().select('ses_a', 'Plan');
-    harnessSessionBindingImpl = async () => ({
-      sessionId: 'ses_a',
-      harnessId: 'claude-code',
-      claudeAgentName: 'Explore',
-    });
-
-    await useClaudeAgentsStore.getState().hydrateSelection('ses_a');
-
-    // The live pick is the newer authority; the binding is only a fallback.
-    expect(useClaudeAgentsStore.getState().getSelected('ses_a')).toBe('Plan');
-    expect(harnessSessionBindingCalls).toEqual([]);
-  });
-
-  test('hydrateSelection runs at most once per session', async () => {
-    harnessSessionBindingImpl = async () => null;
-
-    await useClaudeAgentsStore.getState().hydrateSelection('ses_a');
-    await useClaudeAgentsStore.getState().hydrateSelection('ses_a');
-
-    expect(harnessSessionBindingCalls).toEqual(['ses_a']);
-  });
-
-  test('a missing binding or a failed lookup leaves the selection untouched', async () => {
-    harnessSessionBindingImpl = async () => null;
-    await useClaudeAgentsStore.getState().hydrateSelection('ses_missing');
-    expect(useClaudeAgentsStore.getState().getSelected('ses_missing')).toBe('');
-
-    // A binding with no recorded Claude agent is not evidence of "default".
-    harnessSessionBindingImpl = async () => ({ sessionId: 'ses_b', harnessId: 'claude-code' });
-    await useClaudeAgentsStore.getState().hydrateSelection('ses_b');
-    expect(useClaudeAgentsStore.getState().getSelected('ses_b')).toBe('');
-    expect(Object.keys(useClaudeAgentsStore.getState().selectedBySessionId)).toEqual([]);
-  });
-
-  test('an empty session id is ignored rather than creating a bogus entry', () => {
+  test('empty session ids are ignored', () => {
     useClaudeAgentsStore.getState().select('', 'Explore');
     useClaudeAgentsStore.getState().select(null, 'Explore');
-
     expect(useClaudeAgentsStore.getState().selectedBySessionId).toEqual({});
     expect(useClaudeAgentsStore.getState().getSelected(null)).toBe('');
+  });
+
+  test('hydration restores a binding once', async () => {
+    loadBinding = async () => ({ claudeAgentName: 'Explore' });
+    await useClaudeAgentsStore.getState().hydrateSelection('ses_a');
+    await useClaudeAgentsStore.getState().hydrateSelection('ses_a');
+    expect(useClaudeAgentsStore.getState().getSelected('ses_a')).toBe('Explore');
+    expect(bindingCalls).toEqual(['ses_a']);
+  });
+
+  test('hydration never overwrites a live selection', async () => {
+    useClaudeAgentsStore.getState().select('ses_a', 'Plan');
+    loadBinding = async () => ({ claudeAgentName: 'Explore' });
+    await useClaudeAgentsStore.getState().hydrateSelection('ses_a');
+    expect(useClaudeAgentsStore.getState().getSelected('ses_a')).toBe('Plan');
+    expect(bindingCalls).toEqual([]);
+  });
+
+  test('a missing binding leaves the selection empty', async () => {
+    await useClaudeAgentsStore.getState().hydrateSelection('ses_a');
+    expect(useClaudeAgentsStore.getState().getSelected('ses_a')).toBe('');
+    expect(useClaudeAgentsStore.getState().selectedBySessionId).toEqual({});
   });
 });

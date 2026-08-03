@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   buildClaudeAgentDefinitions,
   buildOpenCodeAgentInheritance,
+  claudeDisallowedToolNames,
   claudePermissionModeFromEditAction,
   createOpenCodeAgentResolver,
   createOpenCodeToolPolicy,
@@ -21,14 +22,10 @@ const jsonResponse = (payload, status = 200) => ({
 
 describe('matchesPermissionPattern', () => {
   it('matches anything for wildcard-ish patterns, even an empty candidate', () => {
-    expect(matchesPermissionPattern('*', '')).toBe(true);
-    expect(matchesPermissionPattern('**', '')).toBe(true);
-    expect(matchesPermissionPattern('', '')).toBe(true);
-    expect(matchesPermissionPattern('   ', '')).toBe(true);
-    expect(matchesPermissionPattern('*', 'anything at all')).toBe(true);
-    expect(matchesPermissionPattern('**', 'anything at all')).toBe(true);
-    expect(matchesPermissionPattern('', 'anything at all')).toBe(true);
-    expect(matchesPermissionPattern('   ', 'anything at all')).toBe(true);
+    for (const pattern of ['*', '**', '', '   ']) {
+      expect(matchesPermissionPattern(pattern, '')).toBe(true);
+      expect(matchesPermissionPattern(pattern, 'anything at all')).toBe(true);
+    }
   });
 
   it('fails closed when a concrete pattern has no candidate to check', () => {
@@ -55,21 +52,14 @@ describe('matchesPermissionPattern', () => {
 
 describe('resolveToolPermissionTarget', () => {
   it('maps known Claude tool names to their OpenCode permission key', () => {
-    expect(resolveToolPermissionTarget('Bash', {}).key).toBe('bash');
-    expect(resolveToolPermissionTarget('BashOutput', {}).key).toBe('bash');
-    expect(resolveToolPermissionTarget('Edit', {}).key).toBe('edit');
-    expect(resolveToolPermissionTarget('Write', {}).key).toBe('edit');
-    expect(resolveToolPermissionTarget('MultiEdit', {}).key).toBe('edit');
-    expect(resolveToolPermissionTarget('NotebookEdit', {}).key).toBe('edit');
-    expect(resolveToolPermissionTarget('Read', {}).key).toBe('read');
-    expect(resolveToolPermissionTarget('Glob', {}).key).toBe('glob');
-    expect(resolveToolPermissionTarget('Grep', {}).key).toBe('grep');
-    expect(resolveToolPermissionTarget('WebFetch', {}).key).toBe('webfetch');
-    expect(resolveToolPermissionTarget('WebSearch', {}).key).toBe('websearch');
-    expect(resolveToolPermissionTarget('Task', {}).key).toBe('task');
-    expect(resolveToolPermissionTarget('Agent', {}).key).toBe('task');
-    expect(resolveToolPermissionTarget('TodoWrite', {}).key).toBe('todowrite');
-    expect(resolveToolPermissionTarget('Skill', {}).key).toBe('skill');
+    const cases = {
+      Bash: 'bash', BashOutput: 'bash', Edit: 'edit', Write: 'edit', MultiEdit: 'edit',
+      NotebookEdit: 'edit', Read: 'read', Glob: 'glob', Grep: 'grep', WebFetch: 'webfetch',
+      WebSearch: 'websearch', Task: 'task', Agent: 'task', TodoWrite: 'todowrite', Skill: 'skill',
+    };
+    for (const [tool, permission] of Object.entries(cases)) {
+      expect(resolveToolPermissionTarget(tool, {}).key).toBe(permission);
+    }
   });
 
   it('falls back to the lowercased tool name for an unknown tool', () => {
@@ -97,10 +87,9 @@ describe('resolveToolPermissionTarget', () => {
 
 describe('normalizePermissionRuleset', () => {
   it('returns an empty array for non-array input', () => {
-    expect(normalizePermissionRuleset(null)).toEqual([]);
-    expect(normalizePermissionRuleset(undefined)).toEqual([]);
-    expect(normalizePermissionRuleset('bash')).toEqual([]);
-    expect(normalizePermissionRuleset({ permission: 'bash', action: 'allow' })).toEqual([]);
+    for (const value of [null, undefined, 'bash', { permission: 'bash', action: 'allow' }]) {
+      expect(normalizePermissionRuleset(value)).toEqual([]);
+    }
   });
 
   it('drops entries missing a permission or with an unknown action', () => {
@@ -207,9 +196,10 @@ describe('createOpenCodeToolPolicy', () => {
 
 describe('claudePermissionModeFromEditAction', () => {
   it('maps an inherited edit decision onto an allowlisted Claude permission mode', () => {
-    expect(claudePermissionModeFromEditAction('allow')).toBe('acceptEdits');
-    expect(claudePermissionModeFromEditAction('deny')).toBe('plan');
-    expect(claudePermissionModeFromEditAction('ask')).toBe('default');
+    const cases = { allow: 'acceptEdits', deny: 'plan', ask: 'default' };
+    for (const [action, mode] of Object.entries(cases)) {
+      expect(claudePermissionModeFromEditAction(action)).toBe(mode);
+    }
   });
 
   it('derives the mode from the agent ruleset, not from a client-supplied value', () => {
@@ -227,6 +217,33 @@ describe('claudePermissionModeFromEditAction', () => {
   });
 });
 
+describe('claudeDisallowedToolNames', () => {
+  it('maps blanket deny rules to the Claude tool names of each permission key', () => {
+    expect(claudeDisallowedToolNames([
+      { permission: 'bash', pattern: '*', action: 'deny' },
+      { permission: 'edit', pattern: '**', action: 'deny' },
+    ])).toEqual([
+      'Bash', 'BashOutput', 'KillShell', 'KillBash',
+      'Edit', 'MultiEdit', 'Write', 'NotebookEdit',
+    ]);
+  });
+
+  it('ignores concrete-pattern denies, allow rules, and unknown permission keys', () => {
+    expect(claudeDisallowedToolNames([
+      { permission: 'bash', pattern: 'git *', action: 'deny' },
+      { permission: 'bash', pattern: '*', action: 'allow' },
+      { permission: 'weird', pattern: '*', action: 'deny' },
+    ])).toEqual([]);
+  });
+
+  it('dedupes tool names across duplicate rules', () => {
+    expect(claudeDisallowedToolNames([
+      { permission: 'bash', pattern: '*', action: 'deny' },
+      { permission: 'bash', pattern: '**', action: 'deny' },
+    ])).toHaveLength(4);
+  });
+});
+
 describe('buildClaudeAgentDefinitions', () => {
   it('returns an empty object for non-array input', () => {
     expect(buildClaudeAgentDefinitions(null)).toEqual({});
@@ -240,8 +257,6 @@ describe('buildClaudeAgentDefinitions', () => {
     // registered as a Claude subagent with a one-line config prompt.
     expect(buildClaudeAgentDefinitions([
       { name: 'build', builtIn: true, mode: 'subagent', prompt: 'You build things.' },
-    ])).toEqual({});
-    expect(buildClaudeAgentDefinitions([
       { name: 'explore', native: true, mode: 'subagent', prompt: 'Web search: load a skill.' },
     ])).toEqual({});
   });
@@ -316,21 +331,6 @@ describe('buildClaudeAgentDefinitions', () => {
     expect(result['other-model'].model).toBeUndefined();
   });
 
-  it('maps blanket permission denies onto Claude disallowedTools', () => {
-    const result = buildClaudeAgentDefinitions([
-      {
-        name: 'doc-writer',
-        mode: 'subagent',
-        prompt: 'Write docs.',
-        permission: [
-          { permission: 'bash', pattern: '*', action: 'deny' },
-          { permission: 'edit', pattern: '*', action: 'allow' },
-        ],
-      },
-    ]);
-    expect(result['doc-writer'].disallowedTools).toEqual(['Bash', 'BashOutput', 'KillShell', 'KillBash']);
-  });
-
   it('enforces the 50-definition cap', () => {
     const agents = Array.from({ length: 60 }, (_, i) => ({
       name: `agent-${i}`,
@@ -339,6 +339,29 @@ describe('buildClaudeAgentDefinitions', () => {
     }));
     const result = buildClaudeAgentDefinitions(agents);
     expect(Object.keys(result).length).toBe(50);
+  });
+
+  it('converts blanket deny permission rules into SDK disallowedTools', () => {
+    const result = buildClaudeAgentDefinitions([
+      {
+        name: 'restricted',
+        mode: 'subagent',
+        prompt: 'Prompt',
+        permission: [
+          { permission: 'bash', pattern: '*', action: 'deny' },
+          { permission: 'read', pattern: '*', action: 'allow' },
+          { permission: 'edit', pattern: '*.env', action: 'deny' },
+        ],
+      },
+      {
+        name: 'permissive',
+        mode: 'subagent',
+        prompt: 'Prompt',
+        permission: [{ permission: '*', pattern: '*', action: 'allow' }],
+      },
+    ]);
+    expect(result.restricted.disallowedTools).toEqual(['Bash', 'BashOutput', 'KillShell', 'KillBash']);
+    expect(result.permissive.disallowedTools).toBeUndefined();
   });
 });
 
@@ -435,10 +458,23 @@ describe('buildOpenCodeAgentInheritance', () => {
     expect(Object.keys(result.agentDefinitions).sort()).toEqual(['reviewer', 'writer']);
   });
 
-  it('exposes per-subagent policies keyed by lowercased name', () => {
+  it('exposes a lowercased-name policy map for every OpenCode subagent', () => {
     const result = buildOpenCodeAgentInheritance(agents, 'reviewer');
-    expect(result.subagentPolicies.reviewer('Bash', { command: 'ls' })).toBe('allow');
-    expect(result.subagentPolicies.writer('Bash', { command: 'ls' })).toBe('ask');
+    expect(Object.keys(result.subagentPolicies).sort()).toEqual(['reviewer', 'writer']);
+    expect(result.subagentPolicies.reviewer('Bash', { command: 'git status' })).toBe('allow');
+    expect(result.subagentPolicies.reviewer('Read', { file_path: '/a' })).toBe('ask');
+    // A subagent without rules asks for everything, never allows.
+    expect(result.subagentPolicies.writer('Bash', { command: 'git status' })).toBe('ask');
+    expect(result.subagentPolicies.writer('Read', { file_path: '/a' })).toBe('ask');
+  });
+
+  it('does not leak primary/built-in agents into subagentPolicies', () => {
+    const result = buildOpenCodeAgentInheritance([
+      { name: 'build', mode: 'primary', native: true, prompt: 'x' },
+      { name: 'explore', mode: 'all', prompt: 'y', permission: [{ permission: '*', pattern: '*', action: 'deny' }] },
+    ], 'build');
+    expect(Object.keys(result.subagentPolicies)).toEqual(['explore']);
+    expect(result.subagentPolicies.explore('Bash', { command: 'git status' })).toBe('deny');
   });
 });
 

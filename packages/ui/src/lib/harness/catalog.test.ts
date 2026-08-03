@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { parseHarnessCatalog } from './catalog';
+import { STATIC_HARNESS_CAPABILITIES } from './capabilities';
 
 describe('parseHarnessCatalog model fields', () => {
   test('preserves Claude model limits, modalities, and capability flags', () => {
@@ -9,23 +10,7 @@ describe('parseHarnessCatalog model fields', () => {
         displayName: 'Claude Code',
         shortName: 'Claude',
         auth: { mode: 'subscription-cli' },
-        capabilities: {
-          prompt: 'full',
-          abort: 'full',
-          resume: 'full',
-          'streaming-text': 'full',
-          'streaming-tools': 'full',
-          permissions: 'full',
-          images: 'full',
-          'file-attachments': 'full',
-          shell: 'full',
-          'slash-commands': 'partial',
-          mcp: 'partial',
-          subagents: 'partial',
-          multirun: 'full',
-          goal: 'full',
-          'openchamber-tool': 'full',
-        },
+        capabilities: STATIC_HARNESS_CAPABILITIES['claude-code'],
         install: {
           binaryNames: ['claude'],
           docsUrl: 'https://docs.anthropic.com/en/docs/claude-code',

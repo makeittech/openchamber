@@ -9,7 +9,9 @@ import { useI18n } from '@/lib/i18n';
 import { clampPercent, formatQuotaResetLabel, formatQuotaValueLabel, formatWindowLabel, QUOTA_PROVIDERS, resolveUsageTone } from '@/lib/quota';
 import { getDisplayModelName } from '@/lib/quota/model-families';
 import { cn } from '@/lib/utils';
+import { resolveActiveModelLimits } from '@/lib/harness/active-model-limits';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { useHarnessStore } from '@/stores/useHarnessStore';
 import { useQuotaAutoRefresh, useQuotaStore } from '@/stores/useQuotaStore';
 import type { QuotaProviderId, UsageWindow } from '@/types';
 import { useUIStore, type TimeFormatPreference } from '@/stores/useUIStore';
@@ -397,6 +399,14 @@ export const MobileSessionMetadataButton = React.memo(function MobileSessionMeta
       [currentSessionId],
     ),
   );
+  const sessionTarget = useSelectionStore((state) => (
+    currentSessionId ? state.sessionTargets.get(currentSessionId) ?? null : null
+  ));
+  const pendingHandoffTarget = useSelectionStore((state) => (
+    currentSessionId ? state.pendingHandoffTargets.get(currentSessionId) ?? null : null
+  ));
+  const lastUsedTarget = useSelectionStore((state) => state.lastUsedTarget);
+  const claudeCatalog = useHarnessStore((state) => state.catalogsById['claude-code']);
   const quotaResults = useQuotaStore((state) => state.results);
   const loadQuotaSettings = useQuotaStore((state) => state.loadSettings);
   const fetchAllQuotas = useQuotaStore((state) => state.fetchAllQuotas);
@@ -448,9 +458,30 @@ export const MobileSessionMetadataButton = React.memo(function MobileSessionMeta
   const provider = modelRef ? providers.find((entry) => entry.id === modelRef.providerID) : undefined;
   const liveModel = provider?.models.find((model) => model.id === modelRef?.modelID);
   const metadata = modelRef ? getModelMetadata(modelRef.providerID, modelRef.modelID) : undefined;
-  const contextLimit = getNumericLimit((liveModel as { limit?: unknown } | undefined)?.limit, 'context')
+  const openCodeContextLimit = getNumericLimit((liveModel as { limit?: unknown } | undefined)?.limit, 'context')
     ?? metadata?.limit?.context
     ?? 0;
+  const openCodeOutputLimit = getNumericLimit((liveModel as { limit?: unknown } | undefined)?.limit, 'output')
+    ?? metadata?.limit?.output
+    ?? 0;
+  const activeModelLimits = React.useMemo(() => resolveActiveModelLimits({
+    sessionId: currentSessionId,
+    sessionTarget,
+    pendingHandoffTarget,
+    lastUsedTarget,
+    claudeCatalog,
+    openCodeContext: openCodeContextLimit,
+    openCodeOutput: openCodeOutputLimit,
+  }), [
+    claudeCatalog,
+    currentSessionId,
+    lastUsedTarget,
+    openCodeContextLimit,
+    openCodeOutputLimit,
+    pendingHandoffTarget,
+    sessionTarget,
+  ]);
+  const contextLimit = activeModelLimits.context;
   const totalTokens = React.useMemo(() => {
     for (let i = activeSessionMessages.length - 1; i >= 0; i -= 1) {
       const message = activeSessionMessages[i] as typeof activeSessionMessages[number] & {

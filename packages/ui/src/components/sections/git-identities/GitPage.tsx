@@ -20,6 +20,8 @@ import { useGitIdentitiesStore, type GitIdentityProfile, type DiscoveredGitCrede
 import { useShallow } from 'zustand/react/shallow';
 import { GitSettings } from '@/components/sections/openchamber/GitSettings';
 import { GitHubSettings } from '@/components/sections/openchamber/GitHubSettings';
+import { LinearSettings } from '@/components/sections/openchamber/LinearSettings';
+import { CursorSettings } from '@/components/sections/openchamber/CursorSettings';
 import { GitIdentityEditorDialog } from './GitIdentityEditorDialog';
 import { Icon } from "@/components/icon/Icon";
 import type { IconName } from "@/components/icon/icons";
@@ -122,6 +124,10 @@ export const GitPage: React.FC = () => {
         showSaveStatus
       >
         <GitHubSettings />
+
+        <LinearSettings />
+
+        <CursorSettings />
 
         <SettingsSection
           title={t('settings.gitIdentities.page.section.title')}

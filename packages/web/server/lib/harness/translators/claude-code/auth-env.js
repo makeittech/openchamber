@@ -24,17 +24,3 @@ export function buildClaudeCodeChildEnv(baseEnv = process.env) {
   }
   return env;
 }
-
-/**
- * True when the given env still contains an API-priority Anthropic credential.
- * Used to reject misconfiguration before spawn (defense in depth).
- *
- * @param {NodeJS.ProcessEnv | Record<string, string | undefined>} [env]
- * @returns {boolean}
- */
-export function hasApiPriorityCredential(env = process.env) {
-  return API_PRIORITY_ENV_KEYS.some((key) => {
-    const value = env[key];
-    return typeof value === 'string' && value.trim().length > 0;
-  });
-}

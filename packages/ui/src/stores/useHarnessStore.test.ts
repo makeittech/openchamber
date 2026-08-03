@@ -1,19 +1,17 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { HARNESS_CAPABILITIES } from '@/types/harness';
 
 const originalFetch = globalThis.fetch;
 
 mock.module('@/stores/useProjectsStore', () => ({
   useProjectsStore: {
-    getState: () => ({
-      getActiveProject: () => ({ path: '/workspace/project' }),
-    }),
+    getState: () => ({ getActiveProject: () => ({ path: '/workspace/project' }) }),
   },
 }));
 
 mock.module('@/lib/opencode/client', () => ({
   opencodeClient: {
     getDirectory: () => '/fallback/project',
-    // Required when other suites later import stores that call setDirectory at module init.
     setDirectory: () => undefined,
     sendMessage: async () => 'msg',
     shellSession: async () => undefined,
@@ -27,78 +25,35 @@ mock.module('@/lib/runtime-fetch', () => ({
 
 const { useHarnessStore } = await import('./useHarnessStore');
 
-const opencodeCatalog = {
-  engine: {
-    id: 'opencode',
-    displayName: 'OpenCode',
-    shortName: 'OpenCode',
-    auth: { mode: 'opencode-providers' },
-    capabilities: {
-      prompt: 'full',
-      abort: 'full',
-      resume: 'full',
-      'streaming-text': 'full',
-      'streaming-tools': 'full',
-      permissions: 'full',
-      images: 'full',
-      'file-attachments': 'full',
-      shell: 'full',
-      'slash-commands': 'full',
-      mcp: 'full',
-      subagents: 'full',
-      multirun: 'full',
-      goal: 'full',
-      'openchamber-tool': 'full',
-    },
-    install: { binaryNames: [], docsUrl: 'https://example.com/opencode' },
+const capabilities = Object.fromEntries(HARNESS_CAPABILITIES.map((name) => [name, 'full']));
+const catalog = (id: 'opencode' | 'claude-code') => ({
+  descriptor: {
+    id,
+    displayName: id === 'opencode' ? 'OpenCode' : 'Claude Code',
+    shortName: id === 'opencode' ? 'OpenCode' : 'Claude',
+    auth: { mode: id === 'opencode' ? 'opencode-providers' : 'subscription-cli' },
+    capabilities,
+    install: { binaryNames: id === 'opencode' ? [] : ['claude'], docsUrl: `https://example.com/${id}` },
   },
-  status: 'ready',
-  sections: [],
-};
+  status: id === 'opencode' ? 'ready' : 'needs-login',
+  ...(id === 'claude-code' ? { version: '1.2.3' } : {}),
+  sections: id === 'claude-code'
+    ? [{ id: 'models', name: 'Models', kind: 'models', models: [{ id: 'sonnet', name: 'Sonnet' }] }]
+    : [],
+});
 
-const claudeCatalog = {
-  engine: {
-    id: 'claude-code',
-    displayName: 'Claude Code',
-    shortName: 'Claude',
-    auth: { mode: 'subscription-cli' },
-    capabilities: {
-      prompt: 'full',
-      abort: 'full',
-      resume: 'full',
-      'streaming-text': 'full',
-      'streaming-tools': 'full',
-      permissions: 'full',
-      images: 'full',
-      'file-attachments': 'full',
-      shell: 'partial',
-      'slash-commands': 'partial',
-      mcp: 'partial',
-      subagents: 'partial',
-      multirun: 'full',
-      goal: 'full',
-      'openchamber-tool': 'full',
-    },
-    install: { binaryNames: ['claude'], docsUrl: 'https://example.com/claude' },
-  },
-  status: 'needs-login',
-  version: '1.2.3',
-  sections: [{ id: 'models', name: 'Models', kind: 'models', models: [{ id: 'sonnet', name: 'Sonnet' }] }],
-};
-
+const opencodeCatalog = catalog('opencode');
+const claudeCatalog = catalog('claude-code');
+const catalogResponse = () => jsonResponse({ catalogs: [opencodeCatalog, claudeCatalog] });
 const jsonResponse = (body: unknown, status = 200): Response =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
+  Response.json(body, { status });
 
-let fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> = async () =>
-  jsonResponse({ engines: [opencodeCatalog, claudeCatalog] });
+let fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> = async () => catalogResponse();
 
 beforeEach(() => {
   useHarnessStore.getState().resetForRuntimeSwitch();
-  fetchImpl = async () => jsonResponse({ engines: [opencodeCatalog, claudeCatalog] });
-  globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => fetchImpl(input, init)) as typeof fetch;
+  fetchImpl = async () => catalogResponse();
+  globalThis.fetch = mock((input: RequestInfo | URL, init?: RequestInit) => fetchImpl(input, init)) as typeof fetch;
 });
 
 afterAll(() => {
@@ -106,9 +61,8 @@ afterAll(() => {
 });
 
 describe('useHarnessStore', () => {
-  test('refresh loads catalogs on success', async () => {
-    const ok = await useHarnessStore.getState().refresh({ force: true });
-    expect(ok).toBe(true);
+  test('refresh loads the catalog', async () => {
+    expect(await useHarnessStore.getState().refresh({ force: true })).toBe(true);
     const state = useHarnessStore.getState();
     expect(state.loadState).toBe('ready');
     expect(state.error).toBeNull();
@@ -117,73 +71,63 @@ describe('useHarnessStore', () => {
     expect(state.catalogsById['claude-code']?.version).toBe('1.2.3');
   });
 
-  test('fetch failure does not clear prior catalogs to fake ready empty', async () => {
+  test('failure preserves a previous catalog but errors on the first load', async () => {
     expect(await useHarnessStore.getState().refresh({ force: true })).toBe(true);
-    expect(useHarnessStore.getState().catalogs).toHaveLength(2);
-
     fetchImpl = async () => jsonResponse({ error: 'boom' }, 503);
-    const ok = await useHarnessStore.getState().refresh({ force: true });
-    expect(ok).toBe(false);
 
-    const state = useHarnessStore.getState();
-    expect(state.catalogs).toHaveLength(2);
-    expect(state.catalogsById.opencode?.status).toBe('ready');
-    expect(state.error).toBe('boom');
+    expect(await useHarnessStore.getState().refresh({ force: true })).toBe(false);
+    let state = useHarnessStore.getState();
     expect(state.loadState).toBe('ready');
+    expect(state.error).toBe('boom');
+    expect(state.catalogs).toHaveLength(2);
+
+    useHarnessStore.getState().resetForRuntimeSwitch();
+    expect(await useHarnessStore.getState().refresh({ force: true })).toBe(false);
+    state = useHarnessStore.getState();
+    expect(state.loadState).toBe('error');
+    expect(state.error).toBe('boom');
+    expect(state.catalogs).toEqual([]);
   });
 
-  test('first-load failure is error with empty catalogs, not ready empty', async () => {
-    fetchImpl = async () => jsonResponse({ error: 'missing' }, 404);
-    const ok = await useHarnessStore.getState().refresh({ force: true });
-    expect(ok).toBe(false);
-
+  test('malformed success is a failure, not an authoritative empty catalog', async () => {
+    fetchImpl = async () => jsonResponse({ catalogs: [{ bad: true }] });
+    expect(await useHarnessStore.getState().refresh({ force: true })).toBe(false);
     const state = useHarnessStore.getState();
     expect(state.catalogs).toEqual([]);
     expect(state.loadState).toBe('error');
-    expect(state.error).toBeTruthy();
+    expect(state.error).toBe('Invalid harness catalog response');
   });
 
-  test('malformed success body is failure, not ready empty', async () => {
-    fetchImpl = async () => jsonResponse({ engines: [{ bad: true }] });
-    const ok = await useHarnessStore.getState().refresh({ force: true });
-    expect(ok).toBe(false);
-    const state = useHarnessStore.getState();
-    expect(state.catalogs).toEqual([]);
-    expect(state.loadState).toBe('error');
-  });
-
-  test('detect updates one engine without clearing others on failure', async () => {
+  test('detect updates only its catalog and preserves both catalogs on failure', async () => {
     expect(await useHarnessStore.getState().refresh({ force: true })).toBe(true);
-
-    fetchImpl = async (input) => {
-      const url = String(input);
-      if (url.includes('/detect')) {
-        return jsonResponse({
-          ...claudeCatalog,
-          status: 'ready',
-          version: '9.9.9',
-        });
-      }
-      return jsonResponse({ engines: [opencodeCatalog, claudeCatalog] });
-    };
+    fetchImpl = async (input) => String(input).includes('/detect')
+      ? jsonResponse({ ...claudeCatalog, status: 'ready', version: '9.9.9' })
+      : catalogResponse();
 
     expect(await useHarnessStore.getState().detect('claude-code')).toBe(true);
     expect(useHarnessStore.getState().catalogsById['claude-code']?.status).toBe('ready');
     expect(useHarnessStore.getState().catalogsById['claude-code']?.version).toBe('9.9.9');
     expect(useHarnessStore.getState().catalogsById.opencode?.status).toBe('ready');
 
-    fetchImpl = async (input) => {
-      const url = String(input);
-      if (url.includes('/detect')) {
-        return jsonResponse({ error: 'detect failed' }, 500);
-      }
-      return jsonResponse({ engines: [opencodeCatalog, claudeCatalog] });
-    };
-
+    fetchImpl = async () => jsonResponse({ error: 'detect failed' }, 500);
     expect(await useHarnessStore.getState().detect('claude-code')).toBe(false);
+    expect(useHarnessStore.getState().error).toBe('detect failed');
+    expect(useHarnessStore.getState().catalogs).toHaveLength(2);
+  });
+
+  test('runtime reset rejects an in-flight catalog load', async () => {
+    let resolveResponse: ((response: Response) => void) | undefined;
+    fetchImpl = () => new Promise((resolve) => { resolveResponse = resolve; });
+    const refresh = useHarnessStore.getState().refresh({ force: true });
+
+    useHarnessStore.getState().resetForRuntimeSwitch();
+    resolveResponse?.(catalogResponse());
+
+    expect(await refresh).toBe(false);
     const state = useHarnessStore.getState();
-    expect(state.catalogsById['claude-code']?.status).toBe('ready');
-    expect(state.catalogsById.opencode?.status).toBe('ready');
-    expect(state.error).toBe('detect failed');
+    expect(state.catalogs).toEqual([]);
+    expect(state.loadState).toBe('idle');
+    expect(state.error).toBeNull();
+    expect(state.scopeKey).toBeNull();
   });
 });

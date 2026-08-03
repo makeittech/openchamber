@@ -8,142 +8,111 @@ import {
   probeClaudeLogin,
 } from './detect.js';
 
+const detect = (options = {}) => detectClaudeCode({
+  findClaudeBinary: () => '/usr/bin/claude',
+  probeSdk: async () => ({ available: true }),
+  probeLogin: () => ({ loggedIn: true }),
+  ...options,
+});
+
 describe('harness detect', () => {
-  it('reports missing-cli when claude binary is absent', async () => {
-    const result = await detectClaudeCode({
-      findClaudeBinary: () => null,
-      probeSdk: async () => ({ available: true }),
-      probeLogin: () => ({ loggedIn: true }),
+  const cases = [
+    {
+      name: 'reports a missing CLI',
+      options: { findClaudeBinary: () => null },
+      status: 'missing-cli',
+      sections: 0,
+      detail: /not found/i,
+    },
+    {
+      name: 'reports SDK load failures without a ready catalog',
+      options: { probeSdk: async () => ({ available: false, error: 'import failed' }) },
+      status: 'error',
+      sections: 0,
+    },
+    {
+      name: 'requires login when credentials are absent',
+      options: { probeLogin: () => ({ loggedIn: false, detail: 'no-credentials-file' }) },
+      status: 'needs-login',
+      sections: 1,
+    },
+    {
+      name: 'requires subscription login for API-key auth',
+      options: { probeLogin: () => ({ loggedIn: false, detail: 'api-key-only', authMethod: 'api_key' }) },
+      status: 'needs-login',
+      sections: 1,
+      detail: /subscription/i,
+    },
+    { name: 'is ready when every probe succeeds', options: {}, status: 'ready', sections: 1 },
+  ];
+
+  for (const testCase of cases) {
+    it(testCase.name, async () => {
+      const result = await detect(testCase.options);
+      expect(result.status).toBe(testCase.status);
+      expect(result.sections).toHaveLength(testCase.sections);
+      if (testCase.sections) expect(result.sections[0].models.length).toBeGreaterThan(0);
+      if (testCase.detail) expect(result.statusDetail).toMatch(testCase.detail);
     });
+  }
 
-    expect(result.status).toBe('missing-cli');
-    expect(result.sections).toEqual([]);
-    expect(result.statusDetail).toMatch(/not found/i);
-  });
-
-  it('does not return ready with empty sections on SDK failure', async () => {
-    const result = await detectClaudeCode({
-      findClaudeBinary: () => '/usr/bin/claude',
-      probeSdk: async () => ({ available: false, error: 'import failed' }),
-      probeLogin: () => ({ loggedIn: true }),
-    });
-
-    expect(result.status).toBe('error');
-    expect(result.sections).toEqual([]);
-    expect(result.status).not.toBe('ready');
-  });
-
-  it('reports needs-login when credentials are absent', async () => {
-    const result = await detectClaudeCode({
-      findClaudeBinary: () => '/usr/bin/claude',
-      probeSdk: async () => ({ available: true }),
-      probeLogin: () => ({ loggedIn: false, detail: 'no-credentials-file' }),
-    });
-
-    expect(result.status).toBe('needs-login');
-    expect(result.sections[0]?.models?.length).toBeGreaterThan(0);
-  });
-
-  it('reports needs-login for API-key-only auth status', async () => {
-    const result = await detectClaudeCode({
-      findClaudeBinary: () => '/usr/bin/claude',
-      probeSdk: async () => ({ available: true }),
-      probeLogin: () => ({ loggedIn: false, detail: 'api-key-only', authMethod: 'api_key' }),
-    });
-
-    expect(result.status).toBe('needs-login');
-    expect(result.statusDetail).toMatch(/subscription/i);
-  });
-
-  it('returns ready only when binary, SDK, and login succeed', async () => {
-    const result = await detectClaudeCode({
-      findClaudeBinary: () => '/usr/bin/claude',
-      probeSdk: async () => ({ available: true }),
-      probeLogin: () => ({ loggedIn: true }),
-    });
-
-    expect(result.status).toBe('ready');
-    expect(result.sections[0]?.models?.length).toBeGreaterThan(0);
-  });
-
-  it('detects OpenCode ready/error without empty-ready masquerade', () => {
+  it('reports OpenCode lifecycle state and rejects unknown harnesses', async () => {
     expect(detectOpenCode({ openCodeReady: true }).status).toBe('ready');
     expect(detectOpenCode({ openCodeReady: false }).status).toBe('error');
-  });
-
-  it('returns null for unknown harness ids', async () => {
     expect(await detectHarness('nope')).toBeNull();
   });
 });
 
-describe('interpretClaudeAuthStatus', () => {
-  it('rejects logged-out and API-key-only payloads', () => {
-    expect(interpretClaudeAuthStatus({ loggedIn: false, authMethod: 'none' })).toEqual({
-      loggedIn: false,
-      detail: 'auth-status-logged-out',
-      authMethod: 'none',
+describe('Claude login probes', () => {
+  const authCases = [
+    [{ loggedIn: false, authMethod: 'none' }, false, 'auth-status-logged-out'],
+    [{ loggedIn: true, authMethod: 'api_key' }, false, 'api-key-only'],
+    [{ loggedIn: true, authMethod: 'oauth_token' }, true, 'auth-status-oauth'],
+  ];
+  for (const [payload, loggedIn, detail] of authCases) {
+    it(`interprets ${payload.authMethod}`, () => {
+      expect(interpretClaudeAuthStatus(payload)).toMatchObject({ loggedIn, detail });
     });
-    expect(interpretClaudeAuthStatus({ loggedIn: true, authMethod: 'api_key' }).loggedIn).toBe(false);
-    expect(interpretClaudeAuthStatus({ loggedIn: true, authMethod: 'api_key' }).detail).toBe('api-key-only');
-  });
+  }
 
-  it('accepts oauth_token and other oauth-like methods', () => {
-    expect(interpretClaudeAuthStatus({ loggedIn: true, authMethod: 'oauth_token' })).toMatchObject({
-      loggedIn: true,
-      detail: 'auth-status-oauth',
-    });
-  });
-});
-
-describe('probeClaudeAuthStatusCli / probeClaudeLogin', () => {
-  it('parses JSON stdout from claude auth status', () => {
-    const result = probeClaudeAuthStatusCli({
+  it('parses auth status JSON from the CLI', () => {
+    expect(probeClaudeAuthStatusCli({
       binaryPath: '/usr/bin/claude',
       spawnSyncFn: () => ({
-        stdout: JSON.stringify({ loggedIn: true, authMethod: 'oauth_token', apiProvider: 'firstParty' }),
+        stdout: JSON.stringify({ loggedIn: true, authMethod: 'oauth_token' }),
         stderr: '',
         status: 0,
       }),
-    });
-    expect(result?.loggedIn).toBe(true);
-    expect(result?.detail).toBe('auth-status-oauth');
+    })).toMatchObject({ loggedIn: true, detail: 'auth-status-oauth' });
   });
 
-  it('uses credentials / env token when auth status reports logged-out', () => {
-    const result = probeClaudeLogin({
-      probeAuthStatus: () => ({ loggedIn: false, detail: 'auth-status-logged-out' }),
-      hasCredentials: () => true,
-      env: {},
-    });
-    expect(result).toEqual({
-      loggedIn: true,
+  const credentialCases = [
+    {
+      name: 'credentials file after logged-out status',
+      options: { probeAuthStatus: () => ({ loggedIn: false }), hasCredentials: () => true, env: {} },
       detail: 'credentials-oauth-present',
       authMethod: 'oauth_credentials_file',
-    });
-  });
-
-  it('treats CLAUDE_CODE_OAUTH_TOKEN as subscription login', () => {
-    const result = probeClaudeLogin({
-      probeAuthStatus: () => null,
-      env: { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-test' },
-    });
-    expect(result).toEqual({
-      loggedIn: true,
+    },
+    {
+      name: 'environment OAuth token',
+      options: { probeAuthStatus: () => null, env: { CLAUDE_CODE_OAUTH_TOKEN: 'token' } },
       detail: 'env-oauth-token',
       authMethod: 'oauth_token_env',
-    });
-  });
-
-  it('falls back to structured credentials when auth status probe fails', () => {
-    const result = probeClaudeLogin({
-      probeAuthStatus: () => null,
-      hasCredentials: () => true,
-      env: {},
-    });
-    expect(result).toEqual({
-      loggedIn: true,
+    },
+    {
+      name: 'credentials file after unavailable status',
+      options: { probeAuthStatus: () => null, hasCredentials: () => true, env: {} },
       detail: 'credentials-oauth-present',
       authMethod: 'oauth_credentials_file',
+    },
+  ];
+  for (const testCase of credentialCases) {
+    it(`accepts ${testCase.name}`, () => {
+      expect(probeClaudeLogin(testCase.options)).toEqual({
+        loggedIn: true,
+        detail: testCase.detail,
+        authMethod: testCase.authMethod,
+      });
     });
-  });
+  }
 });

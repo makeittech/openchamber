@@ -2,7 +2,6 @@ import { describe, expect, it } from 'bun:test';
 import {
   API_PRIORITY_ENV_KEYS,
   buildClaudeCodeChildEnv,
-  hasApiPriorityCredential,
 } from './auth-env.js';
 
 describe('claude-code auth-env', () => {
@@ -27,10 +26,5 @@ describe('claude-code auth-env', () => {
     const source = { ANTHROPIC_API_KEY: 'sk-secret', PATH: '/bin' };
     buildClaudeCodeChildEnv(source);
     expect(source.ANTHROPIC_API_KEY).toBe('sk-secret');
-  });
-
-  it('detects API-priority credentials without logging values', () => {
-    expect(hasApiPriorityCredential({ ANTHROPIC_API_KEY: 'x' })).toBe(true);
-    expect(hasApiPriorityCredential({ PATH: '/bin' })).toBe(false);
   });
 });

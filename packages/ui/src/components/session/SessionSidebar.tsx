@@ -399,6 +399,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   const notifyOnSubtasks = useUIStore((state) => state.notifyOnSubtasks);
   const showDeletionDialog = useUIStore((state) => state.showDeletionDialog);
   const setShowDeletionDialog = useUIStore((state) => state.setShowDeletionDialog);
+  const setWorkQueueOpen = useUIStore((state) => state.setWorkQueueOpen);
 
   const debouncedSessionSearchQuery = useDebouncedValue(sessionSearchQuery, 120);
   const normalizedSessionSearchQuery = React.useMemo(
@@ -1922,6 +1923,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
         onOpenShortcuts={toggleHelpDialog}
         onOpenAbout={() => setAboutDialogOpen(true)}
         onOpenUpdate={handleOpenUpdateDialog}
+        onOpenWorkQueue={() => setWorkQueueOpen(true)}
         showRuntimeButtons={!isVSCode}
         showUpdateButton={showSidebarUpdateButton}
       />
