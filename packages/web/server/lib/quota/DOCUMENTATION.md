@@ -16,7 +16,7 @@ These provider IDs are currently dispatchable via `fetchQuotaForProvider(provide
 
 | Provider ID | Display name | Module | Auth aliases/keys |
 | --- | --- | --- | --- |
-| `claude` | Claude | `providers/claude.js` | `anthropic`, `claude` |
+| `claude` | Claude subscription | `providers/claude.js` (OAuth/credential/refresh logic lives in `@openchamber/quota-core`, shared with the VS Code extension — see `packages/quota-core/DOCUMENTATION.md`) | Prefer Claude Code CLI credentials / OpenCode OAuth over inference-only `CLAUDE_CODE_OAUTH_TOKEN` setup tokens. Usage calls require `User-Agent: claude-code/...`. Env / inference-only tokens skip `/api/oauth/usage` and read unified rate-limit headers from a tiny cached Messages probe. Any usage-endpoint 401/403/429 also falls back to that probe so Services/Settings keep showing 5h and 7d windows. |
 | `codex` | Codex | `providers/codex.js` | `openai`, `codex`, `chatgpt` |
 | `cursor` | Cursor | `providers/cursor.js` | Environment/token files, OpenChamber-managed credentials, or explicit one-time Cursor import |
 | `crof` | CrofAI | `providers/crof.js` | `crof` (API key under `key` or `token`) |

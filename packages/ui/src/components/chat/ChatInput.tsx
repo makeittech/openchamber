@@ -7,6 +7,11 @@ import { createMessageQueueTarget, getMessageQueueKey, useMessageQueueStore, typ
 import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
+import { sessionSupports, sessionSupportsSteerDelivery } from '@/lib/harness/capabilities';
+import { resolveComposerAttachmentModel } from '@/lib/harness/composer-attachment-model';
+import { resolveActiveHarnessTarget } from '@/lib/harness/resolve-execution-target';
+import { useClaudeNativeAgentsActive } from '@/lib/harness/use-claude-agents-mode';
+import { useHarnessStore } from '@/stores/useHarnessStore';
 import { useInputStore } from '@/sync/input-store';
 import {
     ACCEPTED_ATTACHMENT_EXTENSIONS,
@@ -42,6 +47,7 @@ import type { SkillAutocompleteHandle } from './SkillAutocomplete';
 import type { SnippetAutocompleteHandle } from './SnippetAutocomplete';
 import { cn } from "@/lib/utils";
 import { ModelControls } from './ModelControls';
+import { resolveComposerSendAgentName } from './model-controls/composerAgents';
 import { parseAgentMentions } from '@/lib/messages/agentMentions';
 import { StatusRow } from './StatusRow';
 import { PendingChangesBar } from './PendingChangesBar';
@@ -50,6 +56,13 @@ import { MobileAgentButton } from './MobileAgentButton';
 import { MobileModelButton } from './MobileModelButton';
 import { useCurrentSessionActivity } from '@/hooks/useSessionActivity';
 import { toast } from '@/components/ui';
+import { HarnessClientError } from '@/lib/harness/client';
+import {
+    setCachedWarnOnHarnessSwitch,
+    setCachedClaudeAgentsMode,
+    withHarnessSettingsDefaults,
+} from '@/lib/harness/settings';
+import { runtimeFetch } from '@/lib/runtime-fetch';
 // useMessageStore removed — messages now come from sync system
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { useTabletLayout } from '@/lib/device';
@@ -68,6 +81,7 @@ import { useGitStore, useIsGitRepo } from '@/stores/useGitStore';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useSkillsStore } from '@/stores/useSkillsStore';
 import { useCommandsStore } from '@/stores/useCommandsStore';
+import { useClaudeSessionCapabilitiesStore, selectClaudeSlashCommands } from '@/stores/useClaudeSessionCapabilitiesStore';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { usePermissionStore } from '@/stores/permissionStore';
@@ -159,6 +173,13 @@ const MAX_MOBILE_COMPOSER_LINES = 16;
  */
 const MOBILE_COMPOSER_BOUND_GAP_PX = 4;
 const EMPTY_QUEUE: QueuedMessage[] = [];
+/** Harness errors raised while translating an OpenCode command for Claude. */
+const COMMAND_TRANSLATION_ERROR_CODES = new Set([
+    'COMMAND_NOT_FOUND',
+    'COMMAND_LOOKUP_FAILED',
+    'COMMAND_UNAVAILABLE',
+    'COMMAND_INVALID',
+]);
 const COMPACT_CHAT_PLACEHOLDER_MAX_WIDTH = 560;
 const renameFileForAttachmentCitation = (file: File, filename: string): File => {
     if (file.name === filename) {
@@ -345,8 +366,50 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     const currentModelMetadata = currentProviderId && currentModelId
         ? getModelMetadata(currentProviderId, currentModelId)
         : undefined;
+    const sessionTarget = useSelectionStore((state) => (
+        currentSessionId ? state.sessionTargets.get(currentSessionId) ?? null : null
+    ));
+    const pendingHandoffTarget = useSelectionStore((state) => (
+        currentSessionId ? state.pendingHandoffTargets.get(currentSessionId) ?? null : null
+    ));
+    const lastUsedTarget = useSelectionStore((state) => state.lastUsedTarget);
+    const claudeNativeAgentsActive = useClaudeNativeAgentsActive(
+        resolveActiveHarnessTarget({
+            sessionId: currentSessionId,
+            sessionTarget,
+            pendingHandoffTarget,
+            lastUsedTarget,
+        })?.harnessId,
+    );
+    const claudeCatalog = useHarnessStore((state) => state.catalogsById['claude-code']);
+    const composerAttachmentModel = React.useMemo(() => resolveComposerAttachmentModel({
+        sessionId: currentSessionId,
+        sessionTarget,
+        pendingHandoffTarget,
+        lastUsedTarget,
+        openCodeProviderId: currentProviderId,
+        openCodeModelId: currentModelId,
+        openCodeMetadata: currentModelMetadata,
+        claudeCatalog,
+    }), [
+        claudeCatalog,
+        currentModelId,
+        currentModelMetadata,
+        currentProviderId,
+        currentSessionId,
+        lastUsedTarget,
+        pendingHandoffTarget,
+        sessionTarget,
+    ]);
     const currentVariant = useConfigStore((state) => state.currentVariant);
     const currentAgentName = useConfigStore((state) => state.currentAgentName);
+    const sessionAgentName = useSelectionStore((state) => (
+        currentSessionId ? state.sessionAgentSelections.get(currentSessionId) ?? null : null
+    ));
+    const composerSendAgentName = resolveComposerSendAgentName({
+        sessionAgentName,
+        currentAgentName,
+    });
     const setAgent = useConfigStore((state) => state.setAgent);
     const getVisibleAgents = useConfigStore((state) => state.getVisibleAgents);
     const agents = getVisibleAgents();
@@ -360,6 +423,8 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     const isExpandedInput = useUIStore((state) => state.isExpandedInput);
     const setExpandedInput = useUIStore((state) => state.setExpandedInput);
     const setTimelineDialogOpen = useUIStore((state) => state.setTimelineDialogOpen);
+    const setSettingsDialogOpen = useUIStore((state) => state.setSettingsDialogOpen);
+    const setSettingsPage = useUIStore((state) => state.setSettingsPage);
     const { git: runtimeGit, vscode: vscodeApi } = useRuntimeAPIs();
     const cycleAgentShortcutOverride = useUIStore((state) => state.shortcutOverrides.cycle_agent);
     const cycleAgentShortcut = React.useMemo(() => (
@@ -382,14 +447,14 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         content: '',
     });
     const attachmentCompatibilityRef = React.useRef({
-        modelKey: `${currentProviderId ?? ''}/${currentModelId ?? ''}`,
-        modalitySignature: currentModelMetadata?.modalities?.input?.slice().sort().join(',') ?? null,
+        modelKey: composerAttachmentModel.modelKey,
+        modalitySignature: composerAttachmentModel.inputModalities?.slice().sort().join(',') ?? null,
         attachmentIds: new Set<string>(),
     });
 
     React.useEffect(() => {
-        const modelKey = `${currentProviderId ?? ''}/${currentModelId ?? ''}`;
-        const inputModalities = currentModelMetadata?.modalities?.input;
+        const modelKey = composerAttachmentModel.modelKey;
+        const inputModalities = composerAttachmentModel.inputModalities;
         const modalitySignature = inputModalities?.slice().sort().join(',') ?? null;
         const previous = attachmentCompatibilityRef.current;
         const modelChanged = previous.modelKey !== modelKey;
@@ -423,11 +488,11 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
             : filenames.join(', ');
 
         toast.warning(t('chat.chatInput.toast.unsupportedAttachmentModalities', {
-            model: currentModelMetadata.name ?? currentModelId ?? '',
+            model: composerAttachmentModel.modelName,
             modalities: unsupportedModalities.map((modality) => modalityLabels[modality]).join(', '),
             files: fileSummary,
         }), { id: `attachment-modalities:${modelKey}` });
-    }, [attachedFiles, currentModelId, currentModelMetadata, currentProviderId, t]);
+    }, [attachedFiles, composerAttachmentModel, t]);
 
     const handleShowAttachmentPreview = React.useCallback((content: ToolPopupContent) => {
         if (!content.image) return;
@@ -526,6 +591,9 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     // matching /tokens in the composer, the same way confirmed @files are.
     const availableCommands = useCommandsStore((s) => s.commands);
     const availableSkills = useSkillsStore((s) => s.skills);
+    const claudeSlashCommands = useClaudeSessionCapabilitiesStore((s) => (
+      selectClaudeSlashCommands(s, currentSessionId)
+    ));
     const knownSlashNames = React.useMemo(() => {
         const names = new Set<string>([
             'init', 'review', 'undo', 'redo', 'timeline', 'compact', 'summary', 'workspace-review', 'plan-feature', 'craft-goal', 'schedule-task', 'catch-up', 'debug', 'weigh', 'explore',
@@ -533,8 +601,9 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         if (!isMobile && !isVSCodeRuntime()) names.add('handoff-review');
         for (const command of availableCommands) names.add(command.name.toLowerCase());
         for (const skill of availableSkills) names.add(skill.name.toLowerCase());
+        for (const command of claudeSlashCommands) names.add(command.toLowerCase());
         return names;
-    }, [availableCommands, availableSkills, isMobile]);
+    }, [availableCommands, availableSkills, claudeSlashCommands, isMobile]);
 
     const availableSnippets = useSnippetsStore((s) => s.snippets);
     const knownSnippetTriggers = React.useMemo(() => {
@@ -642,6 +711,39 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     // Issue linking state
     const [issuePickerOpen, setIssuePickerOpen] = React.useState(false);
     const [prPickerOpen, setPrPickerOpen] = React.useState(false);
+
+    React.useEffect(() => {
+        let cancelled = false;
+        void (async () => {
+            try {
+                const response = await runtimeFetch('/api/config/settings', {
+                    method: 'GET',
+                    headers: { Accept: 'application/json' },
+                });
+                if (!response.ok || cancelled) return;
+                const data = await response.json().catch(() => null) as Record<string, unknown> | null;
+                if (!data || cancelled) return;
+                const resolved = withHarnessSettingsDefaults({
+                    harnessWarnOnSwitch:
+                        typeof data.harnessWarnOnSwitch === 'boolean'
+                            ? data.harnessWarnOnSwitch
+                            : undefined,
+                    harnessClaudeCodeAgentsMode:
+                        data.harnessClaudeCodeAgentsMode === 'claude'
+                        || data.harnessClaudeCodeAgentsMode === 'opencode'
+                            ? data.harnessClaudeCodeAgentsMode
+                            : undefined,
+                });
+                setCachedWarnOnHarnessSwitch(resolved.harnessWarnOnSwitch);
+                setCachedClaudeAgentsMode(resolved.harnessClaudeCodeAgentsMode);
+            } catch {
+                // keep cached default
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
     const [linkedIssue, setLinkedIssue] = React.useState<{ 
         number: number; 
         title: string; 
@@ -796,7 +898,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     }, [newSessionDraftOpen, isMobile]);
 
     // Session activity for queue availability and controls
-    const { phase: sessionPhase } = useCurrentSessionActivity();
+    const { phase: sessionPhase, canAbort: sessionCanAbort } = useCurrentSessionActivity();
     const autoReviewRunning = useAutoReviewStore(React.useCallback((state) => {
         if (!currentSessionId) return false;
         const run = state.runsByOriginalSessionID[currentSessionId];
@@ -843,7 +945,11 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     const hasQueuedMessages = queuedMessages.length > 0;
     const canSend = hasContent || hasQueuedMessages;
 
-    const canAbort = sessionPhase !== 'idle';
+    // Prefer activity-derived canAbort (keeps Stop available during Claude
+    // permission waits while status remains busy). Fall back to phase for
+    // older callers that only expose phase.
+    const canAbort = sessionCanAbort || sessionPhase !== 'idle';
+    const supportsSteer = sessionSupportsSteerDelivery(currentSessionId);
 
     const getCurrentInputSnapshot = React.useCallback(() => {
         const currentMessage = composerRef.current?.getValue() ?? message;
@@ -870,7 +976,9 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         const inputSnapshot = getCurrentInputSnapshot();
         if (!inputSnapshot.hasContent || !currentSessionId || !messageQueueTarget) return;
 
-        const drafts = inlineDraftTarget ? consumeDrafts(inlineDraftTarget) : [];
+        const drafts = inlineDraftTarget
+            ? useInlineCommentDraftStore.getState().getDrafts(inlineDraftTarget)
+            : [];
 
         let messageToQueue = inputSnapshot.message.replace(/^\n+|\n+$/g, '');
         if (drafts.length > 0) {
@@ -878,16 +986,28 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         }
         const attachmentsToQueue = sanitizeAttachmentsForSend(attachedFiles);
 
-        addToQueue(messageQueueTarget, {
+        const enqueueResult = addToQueue(messageQueueTarget, {
             content: messageToQueue,
             attachments: attachmentsToQueue.length > 0 ? attachmentsToQueue : undefined,
             sendConfig: currentProviderId && currentModelId ? {
                 providerID: currentProviderId,
                 modelID: currentModelId,
-                agent: currentAgentName ?? undefined,
+                // Match the agent chip (session selection before directory-scoped current).
+                agent: composerSendAgentName,
                 variant: currentVariant ?? undefined,
             } : undefined,
         });
+
+        if (!enqueueResult.ok) {
+            toast.error(t(enqueueResult.reason === 'queue-full'
+                ? 'chat.chatInput.toast.queueFull'
+                : 'chat.chatInput.toast.queueTargetsFull'));
+            return;
+        }
+
+        if (inlineDraftTarget && drafts.length > 0) {
+            consumeDrafts(inlineDraftTarget);
+        }
 
         // Clear input and attachments
         // Note: confirmedMentionsRef is NOT cleared here because queued messages
@@ -901,7 +1021,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         if (!isMobile) {
             composerRef.current?.focus();
         }
-    }, [getCurrentInputSnapshot, currentSessionId, messageQueueTarget, inlineDraftTarget, attachedFiles, sanitizeAttachmentsForSend, addToQueue, clearAttachedFiles, isMobile, consumeDrafts, currentProviderId, currentModelId, currentAgentName, currentVariant]);
+    }, [getCurrentInputSnapshot, currentSessionId, messageQueueTarget, inlineDraftTarget, attachedFiles, sanitizeAttachmentsForSend, addToQueue, clearAttachedFiles, isMobile, consumeDrafts, currentProviderId, currentModelId, composerSendAgentName, currentVariant, t]);
 
     const handleQueuedMessageEdit = React.useCallback((content: string) => {
         setMessage(content);
@@ -911,9 +1031,18 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     }, []);
 
     const handleQueuedMessageSend = React.useCallback((messageId: string) => {
-        // Force-sending from the queue during a busy session counts as steer
-        void handleSubmitRef.current({ queuedOnly: true, queuedMessageId: messageId, delivery: 'steer' });
-    }, []);
+        // Force-sending from the queue during a busy OpenCode session steers
+        // into the turn. Claude rejects concurrent prompts — leave the item
+        // queued for idle auto-send (reorder still works via chips).
+        if (!supportsSteer && sessionPhase !== 'idle') {
+            return;
+        }
+        void handleSubmitRef.current({
+            queuedOnly: true,
+            queuedMessageId: messageId,
+            delivery: supportsSteer ? 'steer' : undefined,
+        });
+    }, [sessionPhase, supportsSteer]);
 
     const handleOpenAgentPanel = React.useCallback(() => {
         setMobileControlsPanel('agent');
@@ -934,7 +1063,9 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     const handleSubmit = async (options?: SubmitOptions) => {
         const queuedOnly = options?.queuedOnly ?? false;
         const queuedMessageId = options?.queuedMessageId;
-        const delivery = options?.delivery === 'steer' && sessionPhase !== 'idle' ? 'steer' : undefined;
+        const wantsSteer = options?.delivery === 'steer' && sessionPhase !== 'idle';
+        // Claude has no steer path — concurrent prompts 409 TURN_IN_PROGRESS.
+        const delivery = wantsSteer && supportsSteer ? 'steer' : undefined;
         const inputSnapshot = options?.presetText != null
             ? {
                 message: options.presetText,
@@ -951,6 +1082,10 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
 
         if (queuedOnly) {
             if (queuedMessagesToSend.length === 0 || !currentSessionId) return;
+            // Claude cannot accept a second prompt while busy; keep queued.
+            if (!supportsSteer && sessionPhase !== 'idle') {
+                return;
+            }
         } else if ((!inputSnapshot.hasContent && !hasQueuedMessages) || (!currentSessionId && !newSessionDraftOpen)) {
             return;
         }
@@ -958,11 +1093,26 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         const capturedSendConfig = queuedOnly ? queuedMessagesToSend[0]?.sendConfig : undefined;
         const providerIdToSend = capturedSendConfig?.providerID ?? currentProviderId;
         const modelIdToSend = capturedSendConfig?.modelID ?? currentModelId;
-        const agentNameToSend = capturedSendConfig?.agent ?? currentAgentName;
+        // Prefer session agent selection so the turn matches the composer chip
+        // even when directory-scoped currentAgentName was reset to a default.
+        const agentNameToSend = capturedSendConfig?.agent ?? composerSendAgentName;
         const variantToSend = capturedSendConfig?.variant ?? currentVariant;
 
         if (!providerIdToSend || !modelIdToSend) {
             console.warn('Cannot send message: provider or model not selected');
+            return;
+        }
+
+        // Claude has no steer path — while a turn is active, enqueue so the
+        // OpenChamber queue (reorder + idle auto-send) owns follow-ups.
+        if (
+            currentSessionId
+            && !queuedOnly
+            && inputSnapshot.hasContent
+            && (sessionPhase !== 'idle' || autoReviewRunning)
+            && !supportsSteer
+        ) {
+            handleQueueMessage();
             return;
         }
 
@@ -1094,6 +1244,23 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 return;
             }
             if (commandName === 'compact' && currentSessionId) {
+                const compactTarget = pendingHandoffTarget ?? sessionTarget ?? lastUsedTarget;
+                if (compactTarget?.harnessId === 'claude-code') {
+                    // Claude-native /compact via harness prompt (not OpenCode summarize).
+                    await sendMessage(
+                        '/compact',
+                        providerIdToSend,
+                        modelIdToSend,
+                        agentNameToSend,
+                        [],
+                        agentMentionName,
+                        [],
+                        variantToSend,
+                        inputMode,
+                        sendMessageOptions,
+                    );
+                    return;
+                }
                 try {
                     await sessionActions.waitForConnectionOrThrow();
                     const compactDirectory = useSessionUIStore.getState().getDirectoryForSession(currentSessionId) || currentDirectory || undefined;
@@ -1112,6 +1279,14 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 hasDraft: newSessionDraftOpen,
             });
             if (command && commandIsAvailable) {
+                if (command.name === 'craft-goal' && !sessionSupports(currentSessionId, 'goal')) {
+                    toast.error(t('chat.harness.capability.goalUnsupported'));
+                    return;
+                }
+                if (command.name === 'schedule-task' && !sessionSupports(currentSessionId, 'openchamber-tool')) {
+                    toast.error(t('chat.harness.capability.openchamberToolUnsupported'));
+                    return;
+                }
                 const variables = buildCommandVariables(command, argument);
                 try {
                     await sessionActions.waitForConnectionOrThrow();
@@ -1238,6 +1413,66 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 return;
             }
 
+            if (error instanceof HarnessClientError) {
+                // Concurrent Claude prompt — restore into the OpenChamber queue
+                // instead of surfacing TURN_IN_PROGRESS as a hard send failure.
+                if (error.code === 'TURN_IN_PROGRESS' && currentSessionId && messageQueueTarget) {
+                    if (primaryText.trim() || allAttachments.length > 0) {
+                        const enqueueResult = addToQueue(messageQueueTarget, {
+                            content: primaryText,
+                            attachments: allAttachments.length > 0 ? allAttachments : undefined,
+                            sendConfig: providerIdToSend && modelIdToSend ? {
+                                providerID: providerIdToSend,
+                                modelID: modelIdToSend,
+                                agent: agentNameToSend ?? undefined,
+                                variant: variantToSend ?? undefined,
+                            } : undefined,
+                        });
+                        if (!enqueueResult.ok) {
+                            setMessage(primaryText);
+                            if (allAttachments.length > 0) {
+                                useInputStore.getState().setAttachedFiles(allAttachments);
+                            }
+                            toast.error(t(enqueueResult.reason === 'queue-full'
+                                ? 'chat.chatInput.toast.queueFull'
+                                : 'chat.chatInput.toast.queueTargetsFull'));
+                        }
+                    }
+                    return;
+                }
+                // OpenCode command translation failed (missing command, OpenCode
+                // unreachable, empty template). That is not a harness setup
+                // problem, so it gets no "Manage Harnesses" action.
+                if (COMMAND_TRANSLATION_ERROR_CODES.has(error.code)) {
+                    if (allAttachments.length > 0) {
+                        useInputStore.getState().setAttachedFiles(allAttachments);
+                    }
+                    toast.error(
+                        t('chat.harness.commandTranslationFailed'),
+                        rawMessage ? { description: rawMessage } : undefined,
+                    );
+                    return;
+                }
+                const harnessMessage = error.code === 'CLAUDE_NOT_READY'
+                    || error.code === 'CLAUDE_MISSING_CLI'
+                    || error.code === 'CLAUDE_NEEDS_LOGIN'
+                    ? t('chat.harness.notReady')
+                    : (rawMessage || t('chat.chatInput.toast.messageSendFailed'));
+                if (allAttachments.length > 0) {
+                    useInputStore.getState().setAttachedFiles(allAttachments);
+                }
+                toast.error(harnessMessage, {
+                    action: {
+                        label: t('chat.harness.manageHarnesses'),
+                        onClick: () => {
+                            setSettingsPage('harness');
+                            setSettingsDialogOpen(true);
+                        },
+                    },
+                });
+                return;
+            }
+
             if (isSoftNetworkError) {
                 if (allAttachments.length > 0) {
                     useInputStore.getState().setAttachedFiles(allAttachments);
@@ -1264,14 +1499,15 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     const handlePrimaryAction = React.useCallback(() => {
         const inputSnapshot = getCurrentInputSnapshot();
         const canQueue = inputMode === 'normal' && inputSnapshot.hasContent && currentSessionId && (sessionPhase !== 'idle' || autoReviewRunning);
-        if (followUpBehavior === 'queue' && canQueue) {
+        // Claude never steers; always queue while busy.
+        if (canQueue && (!supportsSteer || followUpBehavior === 'queue')) {
             handleQueueMessage();
-        } else if (followUpBehavior === 'steer' && canQueue) {
+        } else if (followUpBehavior === 'steer' && canQueue && supportsSteer) {
             void handleSubmitRef.current({ delivery: 'steer' });
         } else {
             void handleSubmitRef.current();
         }
-    }, [inputMode, getCurrentInputSnapshot, currentSessionId, sessionPhase, autoReviewRunning, followUpBehavior, handleQueueMessage]);
+    }, [inputMode, getCurrentInputSnapshot, currentSessionId, sessionPhase, autoReviewRunning, followUpBehavior, handleQueueMessage, supportsSteer]);
 
     // Draft welcome presets: submit immediately.
     const submitPresetPrompt = React.useCallback((text: string, type: 'command' | 'skill') => {
@@ -1469,10 +1705,10 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
             const isCtrlEnter = e.ctrlKey || e.metaKey;
 
             // Queueing / steering only works when there's an existing busy
-            // session (or an active auto-review run).
+            // session (or an active auto-review run). Claude always queues.
             const canQueue = inputMode === 'normal' && hasContent && currentSessionId && (sessionPhase !== 'idle' || autoReviewRunning);
 
-            if (followUpBehavior === 'queue') {
+            if (!supportsSteer || followUpBehavior === 'queue') {
                 if (isCtrlEnter || !canQueue) {
                     handleSubmit();
                 } else {
@@ -1524,6 +1760,11 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     }, [abortCurrentOperation, clearAbortPrompt, currentSessionId, startAbortIndicator]);
 
     const handleCycleAgent = React.useCallback((direction: 1 | -1 = 1) => {
+        // With Claude's own agents selected the OpenCode agent does not travel
+        // with the turn, so cycling it would silently change something the
+        // composer no longer displays.
+        if (claudeNativeAgentsActive) return;
+
         const nextAgentName = getCycledPrimaryAgentName(agents, currentAgentName, direction);
         if (!nextAgentName) return;
 
@@ -1532,7 +1773,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         if (currentSessionId) {
             saveSessionAgentSelection(currentSessionId, nextAgentName);
         }
-    }, [agents, currentAgentName, currentSessionId, setAgent, saveSessionAgentSelection]);
+    }, [agents, claudeNativeAgentsActive, currentAgentName, currentSessionId, setAgent, saveSessionAgentSelection]);
 
     // Height the dictation transcript needs (null when idle). Its overlay sits
     // absolutely over the composer, so the composer must be able to grow for

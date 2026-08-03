@@ -61,6 +61,7 @@ Use this doc when you ask an agent to change tool/header/description behavior.
 - `ToolPart` defers expanded content after a user toggle, preventing large tool input/output payloads from mounting during the initial chat render.
 - Running bash output falls back to `state.metadata.output` until canonical `state.output` arrives. Its fixed-height output viewport follows new output until the user scrolls up, then resumes following when the user returns to the bottom. Live output appends or replaces rewritten snapshots as plain text without worker highlighting; finalized output bypasses the throttle and receives the normal one-time highlighted rendering.
 - Thinking/Justification duration is hidden in `sorted` mode (handled in `ReasoningPart.tsx` + `JustificationBlock.tsx`).
+- Tool live duration (`formatToolDuration.ts`) is unbounded and switches to `Xm Ys` / `Xh Ym` after one minute so long shell tasks do not appear stuck at `300.0s`.
 
 ## "I want to change description for Perplexity" (example recipe)
 

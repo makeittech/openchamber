@@ -9,10 +9,14 @@ import { Icon } from "@/components/icon/Icon";
 import { useI18n } from '@/lib/i18n';
 import { useUIStore } from '@/stores/useUIStore';
 import { isVSCodeRuntime } from '@/lib/desktop';
+import { getHarnessCapabilityLevel } from '@/lib/harness/capabilities';
+import { useSelectionStore } from '@/sync/selection-store';
+import { isHarnessId } from '@/types/harness';
+import { useClaudeSessionCapabilitiesStore, selectClaudeSlashCommands } from '@/stores/useClaudeSessionCapabilitiesStore';
 import { useMobileAutocompleteMaxHeight } from './useMobileAutocompleteMaxHeight';
 import { commandMatchesSearch, mergeCommandAutocompleteItems } from './commandAutocompleteItems';
 
-type CommandSource = 'openchamber' | 'opencode' | 'skill';
+type CommandSource = 'openchamber' | 'opencode' | 'skill' | 'claude';
 
 export interface CommandInfo {
   id: string;
@@ -25,12 +29,16 @@ export interface CommandInfo {
   isBuiltIn?: boolean;
   isOpenChamber?: boolean;
   isSkill?: boolean;
+  isClaude?: boolean;
   scope?: string;
 }
 
 export interface CommandAutocompleteHandle {
   handleKeyDown: (key: string) => void;
 }
+
+/** Stable empty reference so the capabilities selector cannot loop on identity. */
+const EMPTY_SKILL_NAMES: readonly string[] = [];
 
 const BASE_BADGE_CLASS = "text-[10px] leading-none uppercase font-bold tracking-tight px-1.5 py-1 rounded border flex-shrink-0";
 const TYPE_BADGE_CLASS = cn(
@@ -72,6 +80,24 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
   const canStartSessionCommand = hasSession || hasNewSessionDraft;
   const isMobile = useUIStore((state) => state.isMobile);
   const canUseReviewHandoffFlow = hasSession && !isMobile && !isVSCodeRuntime();
+  const sessionTarget = useSelectionStore((state) => (
+    currentSessionId ? state.sessionTargets.get(currentSessionId) ?? null : null
+  ));
+  const lastUsedTarget = useSelectionStore((state) => state.lastUsedTarget);
+  const goalHarnessId = sessionTarget?.harnessId ?? lastUsedTarget?.harnessId ?? 'opencode';
+  const activeHarnessId = isHarnessId(goalHarnessId) ? goalHarnessId : 'opencode';
+  const isClaudeEngine = activeHarnessId === 'claude-code';
+  const canUseGoalCommand = canStartSessionCommand
+    && getHarnessCapabilityLevel(activeHarnessId, 'goal') !== 'none';
+  const canUseOpenChamberToolCommand = canStartSessionCommand
+    && getHarnessCapabilityLevel(activeHarnessId, 'openchamber-tool') !== 'none';
+  const claudeSlashCommands = useClaudeSessionCapabilitiesStore((s) => (
+    selectClaudeSlashCommands(s, currentSessionId)
+  ));
+  const claudeNativeSkills = useClaudeSessionCapabilitiesStore((s) => (
+    (currentSessionId ? s.bySessionId[currentSessionId]?.skills : undefined) ?? EMPTY_SKILL_NAMES
+  ));
+  const refreshClaudeCapabilities = useClaudeSessionCapabilitiesStore((s) => s.refresh);
 
   const [commands, setCommands] = React.useState<CommandInfo[]>([]);
   const [loading, setLoading] = React.useState(false);
@@ -111,12 +137,95 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
     // Force refresh to get latest project context when mounting
     void refreshCommands();
     void refreshSkills();
-  }, [refreshCommands, refreshSkills]);
+    if (isClaudeEngine && currentSessionId) {
+      void refreshClaudeCapabilities(currentSessionId);
+    }
+  }, [refreshCommands, refreshSkills, refreshClaudeCapabilities, isClaudeEngine, currentSessionId]);
 
   React.useEffect(() => {
     const loadCommands = async () => {
       setLoading(true);
       try {
+        if (isClaudeEngine) {
+          // Claude sessions: Claude-native slash + OpenChamber helpers that still
+          // apply (timeline) + OpenCode commands the harness translates. Undo/redo
+          // are OpenCode-store reverts and are not offered here (Claude rewind is
+          // a non-goal; session-actions refuses them).
+          const claudeCommands: CommandInfo[] = claudeSlashCommands.map((name, index) => ({
+            id: `claude:slash:${name}:${index}`,
+            name,
+            source: 'claude' as const,
+            description: t('chat.commandAutocomplete.command.claudeNativeDescription', { name }),
+            isClaude: true,
+            isBuiltIn: true,
+          }));
+          const localHelpers: CommandInfo[] = hasSession
+            ? [
+                { id: 'openchamber:timeline', name: 'timeline', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.timelineDescription'), isBuiltIn: true },
+              ]
+            : [];
+          // A Claude-native command or skill of the same name wins in
+          // routeMessage, so it must win in the menu too — otherwise the row
+          // would describe a translation that never happens.
+          const takenNames = new Set(
+            [...claudeCommands, ...localHelpers]
+              .map((cmd) => cmd.name.toLowerCase())
+              .concat(claudeNativeSkills.map((name) => name.toLowerCase())),
+          );
+          const translatedCommands: CommandInfo[] = commandsWithMetadata
+            .filter((cmd) => !takenNames.has(cmd.name.toLowerCase()))
+            .map((cmd, index) => ({
+              id: `opencode:${cmd.scope ?? 'global'}:${cmd.name}:${index}`,
+              name: cmd.name,
+              source: 'opencode' as const,
+              description: cmd.description,
+              agent: cmd.agent ?? undefined,
+              model: cmd.model ?? undefined,
+              isSkill: cmd.source === 'skill',
+              scope: cmd.scope,
+            }));
+          const translatedNames = new Set(translatedCommands.map((cmd) => cmd.name.toLowerCase()));
+          // OpenCode-owned skills: Claude discovers `.claude/skills` itself, so
+          // only the ones it cannot see are worth translating.
+          const translatedSkills: CommandInfo[] = skills
+            .filter((skill) => (
+              skill.source !== 'claude'
+              && !takenNames.has(skill.name.toLowerCase())
+              && !translatedNames.has(skill.name.toLowerCase())
+            ))
+            .map((skill, index) => ({
+              id: `skill:${skill.scope}:${skill.source ?? 'opencode'}:${skill.name}:${index}`,
+              name: skill.name,
+              source: 'skill' as const,
+              description: skill.description,
+              isSkill: true,
+              scope: skill.scope,
+            }));
+          // Prefer Claude compact over OpenChamber's OpenCode summarize.
+          const allCommands = [
+            ...claudeCommands,
+            ...localHelpers,
+            ...translatedCommands,
+            ...translatedSkills,
+          ];
+          const filtered = (searchQuery
+            ? allCommands.filter((cmd) => (
+              fuzzyMatch(cmd.name, searchQuery)
+              || (cmd.description && fuzzyMatch(cmd.description, searchQuery))
+            ))
+            : allCommands
+          );
+          filtered.sort((a, b) => {
+            const aStartsWith = a.name.toLowerCase().startsWith(searchQuery.toLowerCase());
+            const bStartsWith = b.name.toLowerCase().startsWith(searchQuery.toLowerCase());
+            if (aStartsWith && !bStartsWith) return -1;
+            if (!aStartsWith && bStartsWith) return 1;
+            return a.name.localeCompare(b.name);
+          });
+          setCommands(filtered);
+          return;
+        }
+
         const skillNames = new Set(skills.map((skill) => skill.name));
         const customCommands: CommandInfo[] = commandsWithMetadata.map((cmd, index) => ({
           id: `opencode:${cmd.scope ?? 'global'}:${cmd.name}:${cmd.agent ?? ''}:${cmd.model ?? ''}:${index}`,
@@ -168,11 +277,11 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
             ? [{ id: 'openchamber:plan-feature', name: 'plan-feature', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.featurePlanDescription'), isOpenChamber: true }]
             : []
           ),
-          ...(canStartSessionCommand
+          ...(canUseGoalCommand
             ? [{ id: 'openchamber:craft-goal', name: 'craft-goal', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.craftGoalDescription'), isOpenChamber: true }]
             : []
           ),
-          ...(canStartSessionCommand
+          ...(canUseOpenChamberToolCommand
             ? [{ id: 'openchamber:schedule-task', name: 'schedule-task', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.scheduleTaskDescription'), isOpenChamber: true }]
             : []
           ),
@@ -242,11 +351,11 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
             ? [{ id: 'openchamber:plan-feature', name: 'plan-feature', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.featurePlanDescription'), isOpenChamber: true }]
             : []
           ),
-          ...(canStartSessionCommand
+          ...(canUseGoalCommand
             ? [{ id: 'openchamber:craft-goal', name: 'craft-goal', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.craftGoalDescription'), isOpenChamber: true }]
             : []
           ),
-          ...(canStartSessionCommand
+          ...(canUseOpenChamberToolCommand
             ? [{ id: 'openchamber:schedule-task', name: 'schedule-task', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.scheduleTaskDescription'), isOpenChamber: true }]
             : []
           ),
@@ -267,22 +376,34 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
             : []
           ),
         ];
-
         const filtered = (searchQuery
           ? builtInCommands.filter(cmd =>
               fuzzyMatch(cmd.name, searchQuery) ||
               (cmd.description && fuzzyMatch(cmd.description, searchQuery))
             )
           : builtInCommands).filter(cmd => allowInitCommand || cmd.name !== 'init');
-
         setCommands(filtered);
       } finally {
         setLoading(false);
       }
     };
 
-    loadCommands();
-  }, [searchQuery, hasMessagesInCurrentSession, hasSession, canStartSessionCommand, canUseReviewHandoffFlow, commandsWithMetadata, skills, t]);
+    void loadCommands();
+  }, [
+    searchQuery,
+    hasMessagesInCurrentSession,
+    hasSession,
+    canStartSessionCommand,
+    canUseReviewHandoffFlow,
+    canUseGoalCommand,
+    canUseOpenChamberToolCommand,
+    commandsWithMetadata,
+    skills,
+    t,
+    isClaudeEngine,
+    claudeSlashCommands,
+    claudeNativeSkills,
+  ]);
 
   React.useEffect(() => {
     setSelectedIndex(0);
@@ -452,7 +573,11 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
                           {t('chat.commandAutocomplete.badge.command')}
                         </span>
                       )}
-                      {isOpenChamberBadge ? (
+                      {command.isClaude ? (
+                        <span className={NEUTRAL_BADGE_CLASS}>
+                          {t('chat.commandAutocomplete.badge.claude')}
+                        </span>
+                      ) : isOpenChamberBadge ? (
                         <span className={NEUTRAL_BADGE_CLASS}>
                           OpenChamber
                         </span>

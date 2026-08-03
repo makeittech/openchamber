@@ -25,6 +25,11 @@ import { useDirectoryStore } from "@/stores/useDirectoryStore"
 import { useSessionFoldersStore } from "@/stores/useSessionFoldersStore"
 import { useCommandsStore } from "@/stores/useCommandsStore"
 import { useSkillsStore } from "@/stores/useSkillsStore"
+import { useClaudeAgentsStore } from "@/stores/useClaudeAgentsStore"
+import {
+  CLAUDE_BUILTIN_SLASH_COMMANDS,
+  useClaudeSessionCapabilitiesStore,
+} from "@/stores/useClaudeSessionCapabilitiesStore"
 import { getDeferredSafeStorage } from "@/stores/utils/safeStorage"
 import { markPendingUserSendAnimation } from "@/lib/userSendAnimation"
 import { normalizePath } from "@/lib/pathNormalization"
@@ -73,8 +78,45 @@ import { getRuntimeKey } from "@/lib/runtime-switch"
 import { clearLastActiveSession, persistLastActiveSession } from "./last-session-cache"
 import { persistWorktreeTopology, readPersistedWorktreeTopology } from "./worktree-topology-cache"
 import { rememberRuntimeLiveStatus } from "./runtime-live-memory"
+import { HarnessClientError, harnessPrompt, type HarnessOpenCodeCommand } from "@/lib/harness/client"
+import { resolveClaudeAgentsSendOptions } from "@/lib/harness/claude-agents-mode"
+import { getCachedClaudeAgentsMode } from "@/lib/harness/settings"
+import {
+  persistSessionExecutionTarget,
+  resolveExecutionTarget,
+} from "@/lib/harness/resolve-execution-target"
+import {
+  clearPendingHandoffTarget,
+  createHarnessHandoffSession,
+  getPendingHandoffTarget,
+} from "@/lib/harness/session-handoff"
+import { useHarnessStore } from "@/stores/useHarnessStore"
+import type { ExecutionTarget } from "@/types/harness"
 
 export type { AttachedFile }
+
+const CLAUDE_NOT_READY_MESSAGE =
+  "Claude Code is not ready. Open Settings → Engines to install, log in, or re-detect."
+
+/**
+ * Split "/name rest" into the command name and its arguments.
+ *
+ * The name ends at the first run of ANY whitespace, not just a space: users
+ * routinely put the argument on its own line (`/pr-review\n<url>`), and
+ * splitting on `" "` alone swallowed the whole message into the name, so the
+ * command matched nothing and was sent to the model as literal text.
+ *
+ * The composer has its own parser for OpenChamber magic-prompt commands
+ * (`components/chat/composer/submit/slashCommands.ts`) — which is why those
+ * kept working across newlines while OpenCode/Claude commands did not. It is
+ * not reused here to keep the sync layer independent of composer internals;
+ * match its whitespace behavior when changing either one.
+ */
+function parseSlashCommand(content: string): { name: string; args: string } | null {
+  const match = /^\/(\S+)\s*([\s\S]*)$/.exec(content)
+  if (!match) return null
+  return { name: match[1], args: match[2].trim() }
+}
 
 type GoalCommand = { name: string; template?: string }
 
@@ -115,14 +157,60 @@ export function routeMessage(params: {
   providerID: string
   modelID: string
   agent?: string
+  /** Native Claude agent for the main thread when agents mode is `claude`. */
+  claudeAgent?: string
   agentMentionName?: string
   variant?: string
   inputMode?: "normal" | "shell"
   files?: Array<{ type: "file"; mime: string; url: string; filename: string }>
   additionalParts?: Array<{ text: string; synthetic?: boolean; files?: Array<{ type: "file"; mime: string; url: string; filename: string }> }>
   delivery?: 'steer'
+  seedFromSessionId?: string
+  /** When set, skip resolve and use this target (handoff to a freshly created session). */
+  executionTarget?: ExecutionTarget
 }): Promise<void> {
   const requestDirectory = params.directory ?? undefined
+  let target = params.executionTarget && params.executionTarget.harnessId
+    ? params.executionTarget
+    : resolveExecutionTarget({
+      sessionId: params.sessionId,
+      providerID: params.providerID,
+      modelID: params.modelID,
+      agent: params.agent,
+      variant: params.variant,
+    })
+
+  // Claude agents mode decides whether OpenCode agents own permissionMode +
+  // system-prompt append, or Claude Code runs with native prompts/permissions.
+  let systemPromptAppend: string | undefined
+  let inheritedAgent: string | undefined
+  let claudeAgent: string | undefined
+  let agentsMode = getCachedClaudeAgentsMode()
+  if (target.harnessId === "claude-code") {
+    const resolved = resolveClaudeAgentsSendOptions({
+      target,
+      agentsMode,
+      agentName: params.agent,
+      // Session-scoped, not global-mutable: falling back to the store reads
+      // *this session's* Claude agent, so a queued follow-up still sends the
+      // agent the session was configured with rather than a global default.
+      claudeAgentName: params.claudeAgent
+        ?? useClaudeAgentsStore.getState().getSelected(params.sessionId),
+    })
+    target = resolved.target
+    agentsMode = resolved.agentsMode
+    systemPromptAppend = resolved.systemPromptAppend
+    inheritedAgent = resolved.agent
+    claudeAgent = resolved.claudeAgent
+  }
+
+  if (params.sessionId) {
+    persistSessionExecutionTarget(params.sessionId, target)
+  }
+
+  // Shell mode uses OpenCode session.shell on the shared session id. It is
+  // session infrastructure, not an engine prompt path — available for every
+  // sticky harness (including Claude Code).
   if (params.inputMode === "shell") {
     return opencodeClient.shellSession({
       sessionId: params.sessionId,
@@ -133,10 +221,117 @@ export function routeMessage(params: {
     }).then(() => undefined)
   }
 
+  if (target.harnessId === "claude-code") {
+    // Claude-native slash/skills go through harnessPrompt as literal prompt text.
+    // OpenCode/OpenChamber commands are not Claude-native, so they are translated:
+    // the server resolves the command template from OpenCode and expands it into
+    // prompt text for this turn (see harness/translators/claude-code).
+    let openCodeCommand: HarnessOpenCodeCommand | undefined
+    const claudeSlashInput = parseSlashCommand(params.content)
+    if (claudeSlashInput) {
+      const cmdName = claudeSlashInput.name
+      const claudeSlash = new Set(
+        useClaudeSessionCapabilitiesStore.getState().getSlashCommands(params.sessionId)
+          .map((name) => name.toLowerCase()),
+      )
+      for (const name of CLAUDE_BUILTIN_SLASH_COMMANDS) {
+        claudeSlash.add(name.toLowerCase())
+      }
+      const claudeSkills = useClaudeSessionCapabilitiesStore.getState()
+        .getCapabilities(params.sessionId)
+        ?.skills
+        ?.map((name) => name.toLowerCase()) ?? []
+      for (const name of claudeSkills) claudeSlash.add(name)
+
+      if (!claudeSlash.has(cmdName.toLowerCase())) {
+        const dirState = getDirectoryState(requestDirectory)
+        const syncCommands = dirState?.command ?? []
+        const storeCommands = useCommandsStore.getState().commands
+        const isOpenCodeCommand = syncCommands.find((c) => c.name === cmdName)
+          || storeCommands.find((c) => c.name === cmdName)
+          || useSkillsStore.getState().skills.some((s) => s.name === cmdName)
+        if (isOpenCodeCommand) {
+          openCodeCommand = { name: cmdName, arguments: claudeSlashInput.args }
+        }
+      }
+      // Claude-native /command (or unknown token) continues as a harness prompt.
+    }
+
+    const claudeCatalog = useHarnessStore.getState().getCatalog("claude-code")
+    if (!claudeCatalog || claudeCatalog.status !== "ready") {
+      return Promise.reject(new HarnessClientError(CLAUDE_NOT_READY_MESSAGE, "CLAUDE_NOT_READY", 503, claudeCatalog?.status))
+    }
+
+    const directory = requestDirectory?.trim()
+    if (!directory) {
+      return Promise.reject(new HarnessClientError("directory is required for Claude Code", "PROMPT_INVALID", 400))
+    }
+
+    const providerID = "claude-code"
+    const modelID = target.modelRef
+    // Goal intro / other <system-reminder> synthetics are OpenCode-oriented.
+    // Folding them into Claude harness text makes them visible as the user
+    // message and confuses the turn. Goal metadata + server continuations
+    // still drive the loop; handoff seed context is kept.
+    const seedParts = (params.additionalParts ?? [])
+      .filter((part) => (
+        part.synthetic
+        && typeof part.text === "string"
+        && part.text.trim().length > 0
+        && !part.text.includes("<system-reminder>")
+      ))
+      .map((part) => part.text.trim())
+    // Queued follow-ups arrive as non-synthetic additionalParts. Claude has no
+    // multi-prompt steer, so fold them into one harness turn text (same order
+    // as OpenCode additional parts) rather than dropping them.
+    const queuedParts = (params.additionalParts ?? [])
+      .filter((part) => !part.synthetic && typeof part.text === "string" && part.text.trim().length > 0)
+      .map((part) => part.text.trim())
+    const harnessSections = [...seedParts, params.content, ...queuedParts]
+      .map((text) => text.trim())
+      .filter((text) => text.length > 0)
+    const harnessText = harnessSections.join("\n\n")
+    // A translated command owns the turn text: the server prepends the expanded
+    // template and appends whatever is sent here, so the literal "/name args"
+    // line is dropped and only the surrounding sections travel.
+    const promptText = openCodeCommand
+      ? [...seedParts, ...queuedParts].map((text) => text.trim()).filter(Boolean).join("\n\n")
+      : harnessText
+
+    // Normal prompt — optimistic insert; transport is /api/harness/prompt (not OpenCode SDK).
+    return optimisticSend({
+      sessionId: params.sessionId,
+      content: harnessText,
+      providerID,
+      modelID,
+      agent: params.agent,
+      directory: requestDirectory,
+      files: params.files,
+      send: (messageID) => harnessPrompt({
+        sessionId: params.sessionId,
+        directory,
+        target,
+        text: promptText,
+        files: params.files?.map((file) => ({
+          mime: file.mime,
+          url: file.url,
+          filename: file.filename,
+        })),
+        messageId: messageID,
+        seedFromSessionId: params.seedFromSessionId,
+        agentsMode,
+        agent: inheritedAgent,
+        claudeAgent,
+        systemPromptAppend,
+        ...(openCodeCommand ? { command: openCodeCommand } : {}),
+      }).then(() => {}),
+    })
+  }
+
   // Slash commands — fire and forget, SSE delivers messages and status
-  if (params.content.startsWith("/")) {
-    const [head, ...tail] = params.content.split(" ")
-    const cmdName = head.slice(1)
+  const slashInput = parseSlashCommand(params.content)
+  if (slashInput) {
+    const cmdName = slashInput.name
 
     const dirState = getDirectoryState(requestDirectory)
     const syncCommands = dirState?.command ?? []
@@ -165,7 +360,7 @@ export function routeMessage(params: {
           providerID: params.providerID,
           modelID: params.modelID,
           command: cmdName,
-          arguments: tail.join(" "),
+          arguments: slashInput.args,
           agent: params.agent,
           variant: params.variant,
           files: params.files,
@@ -1187,6 +1382,119 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     const configAgentName = useConfigStore.getState().currentAgentName
     const effectiveAgent = trimmedAgent || sessionAgentSelection || configAgentName || undefined
 
+    const currentSessionDirectory = targetSessionId
+      ? normalizePath(options?.directory ?? get().getDirectoryForSession(targetSessionId))
+      : null
+
+    // Cross-engine handoff: used session with a pending target → new session + seed.
+    const pendingHandoff = targetSessionId ? getPendingHandoffTarget(targetSessionId) : null
+    const stickyTarget = targetSessionId
+      ? useSelectionStore.getState().getSessionTarget(targetSessionId)
+      : null
+    const sourceHarnessId = stickyTarget?.harnessId ?? "opencode"
+    if (
+      targetSessionId
+      && pendingHandoff
+      && pendingHandoff.harnessId !== sourceHarnessId
+    ) {
+      const sourceSessionId = targetSessionId
+      const sourceSession = getDirectoryState(currentSessionDirectory ?? undefined)?.session?.find(
+        (session) => session.id === sourceSessionId,
+      )
+      const globalSource = useGlobalSessionsStore.getState().activeSessions.find(
+        (session) => session.id === sourceSessionId,
+      ) ?? useGlobalSessionsStore.getState().archivedSessions.find(
+        (session) => session.id === sourceSessionId,
+      )
+      const handoffTitleCandidate = sourceSession?.title ?? globalSource?.title
+      const handoffTitle = typeof handoffTitleCandidate === "string" && handoffTitleCandidate.trim()
+        ? handoffTitleCandidate.trim()
+        : undefined
+      const handoff = await createHarnessHandoffSession({
+        sourceSessionId,
+        directory: currentSessionDirectory,
+        sourceHarnessId,
+        createSession: (title, directoryOverride) => get().createSession(title, directoryOverride),
+        title: handoffTitle,
+      })
+
+      clearPendingHandoffTarget(sourceSessionId)
+      persistSessionExecutionTarget(handoff.sessionId, pendingHandoff)
+
+      const createdDirectory = normalizePath(handoff.directory ?? currentSessionDirectory)
+      const handoffProviderID = pendingHandoff.harnessId === "claude-code"
+        ? "claude-code"
+        : pendingHandoff.providerId
+      const handoffModelID = pendingHandoff.harnessId === "claude-code"
+        ? pendingHandoff.modelRef
+        : pendingHandoff.modelId
+
+      useSelectionStore.getState().saveSessionModelSelection(handoff.sessionId, handoffProviderID, handoffModelID)
+      if (effectiveAgent && pendingHandoff.harnessId === "opencode") {
+        useSelectionStore.getState().saveSessionAgentSelection(handoff.sessionId, effectiveAgent)
+        useSelectionStore.getState().saveAgentModelForSession(handoff.sessionId, effectiveAgent, handoffProviderID, handoffModelID)
+        useSelectionStore.getState().saveAgentModelVariantForSession(
+          handoff.sessionId,
+          effectiveAgent,
+          handoffProviderID,
+          handoffModelID,
+          variant,
+        )
+      }
+
+      // Continue in the same window: switch UI to the destination session.
+      get().setCurrentSession(handoff.sessionId, createdDirectory)
+
+      notifyMessageSent(handoff.sessionId)
+      markPendingUserSendAnimation(handoff.sessionId)
+
+      const files = attachments?.map((a) => ({
+        type: "file" as const,
+        mime: a.mimeType,
+        url: a.dataUrl,
+        filename: a.filename,
+      }))
+
+      const handoffAdditionalParts = [
+        ...(handoff.seed.text ? [{ text: handoff.seed.text, synthetic: true as const }] : []),
+        ...(additionalParts ?? []).map((p) => ({
+          text: p.text,
+          synthetic: p.synthetic,
+          files: p.attachments?.map((a) => ({
+            type: "file" as const,
+            mime: a.mimeType,
+            url: a.dataUrl,
+            filename: a.filename,
+          })),
+        })),
+      ]
+
+      await routeMessage({
+        sessionId: handoff.sessionId,
+        directory: createdDirectory,
+        content,
+        providerID: handoffProviderID,
+        modelID: handoffModelID,
+        // The agent name travels for every harness: a Claude destination uses
+        // it to inherit that OpenCode agent's prompt and permission ruleset
+        // (see lib/harness/claude-agents-mode.ts). Dropping it here left the
+        // first turn after a handoff asking for every tool.
+        agent: effectiveAgent,
+        agentMentionName,
+        // `variant` stays OpenCode-only — it selects an OpenCode model variant,
+        // which has no meaning for a Claude target.
+        variant: pendingHandoff.harnessId === "opencode" ? variant : undefined,
+        inputMode,
+        files,
+        delivery: options?.delivery,
+        seedFromSessionId: sourceSessionId,
+        executionTarget: pendingHandoff,
+        additionalParts: handoffAdditionalParts.length > 0 ? handoffAdditionalParts : undefined,
+      })
+      applyArmedGoal(handoff.sessionId, createdDirectory)
+      return
+    }
+
     if (targetSessionId) {
       useSelectionStore.getState().saveSessionModelSelection(targetSessionId, providerID, modelID)
     }
@@ -1214,9 +1522,6 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       }
     }
 
-    const currentSessionDirectory = targetSessionId
-      ? normalizePath(options?.directory ?? get().getDirectoryForSession(targetSessionId))
-      : null
     if (targetSessionId) {
       notifyMessageSent(targetSessionId)
     }
@@ -1364,7 +1669,11 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       : "[No text]"
 
     // revertToMessage handles the redo stack push internally
-    await get().revertToMessage(sessionId, targetMessage.id)
+    try {
+      await get().revertToMessage(sessionId, targetMessage.id)
+    } catch {
+      return
+    }
 
     const { toast } = await import("sonner")
     const { useI18nStore, formatMessage } = await import("@/lib/i18n/store")
@@ -1377,8 +1686,12 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   // ---------------------------------------------------------------------------
   handleSlashRedo: async (sessionId, options) => {
     if (options?.fullUnrevert) {
-      const { unrevertSession } = await import("./session-actions")
-      await unrevertSession(sessionId)
+      try {
+        const { unrevertSession } = await import("./session-actions")
+        await unrevertSession(sessionId)
+      } catch {
+        return
+      }
       const { toast } = await import("sonner")
       const { useI18nStore, formatMessage } = await import("@/lib/i18n/store")
       const { dictionary } = useI18nStore.getState()
@@ -1397,7 +1710,11 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     const targetMessage = userMessages.find((m) => m.id > revertToId)
 
     if (targetMessage) {
-      await get().revertToMessage(sessionId, targetMessage.id, { skipRedoPush: true })
+      try {
+        await get().revertToMessage(sessionId, targetMessage.id, { skipRedoPush: true })
+      } catch {
+        return
+      }
       const { toast } = await import("sonner")
       const { useI18nStore, formatMessage } = await import("@/lib/i18n/store")
       const { dictionary } = useI18nStore.getState()
@@ -1405,7 +1722,11 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       return
     }
 
-    await unrevertSessionAction(sessionId)
+    try {
+      await unrevertSessionAction(sessionId)
+    } catch {
+      return
+    }
     const { toast } = await import("sonner")
     const { useI18nStore, formatMessage } = await import("@/lib/i18n/store")
     const { dictionary } = useI18nStore.getState()

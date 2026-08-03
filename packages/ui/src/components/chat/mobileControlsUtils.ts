@@ -1,7 +1,7 @@
 import type { Agent } from '@opencode-ai/sdk/v2';
 import { getProviderModelDisplayName, type DisplayProvider } from '@/lib/modelDisplay';
 
-export type MobileControlsPanel = 'model' | 'agent' | 'variant' | null;
+export type MobileControlsPanel = 'model' | 'agent' | 'variant' | 'effort' | null;
 
 export const isPrimaryMode = (mode?: string) => mode === 'primary' || mode === 'all' || mode === undefined || mode === null;
 

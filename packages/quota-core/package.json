@@ -1,0 +1,18 @@
+{
+  "name": "@openchamber/quota-core",
+  "version": "1.16.3",
+  "description": "Dependency-free Claude subscription OAuth / usage-quota core shared by the OpenChamber web server and VS Code extension",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js"
+    }
+  },
+  "scripts": {
+    "test": "bun test"
+  }
+}

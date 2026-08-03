@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+# Quick control for the local OpenChamber worktree service.
+# Defaults: bind 192.168.1.200:8888, start enabled via systemd --user.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CLI_JS="$ROOT/packages/web/bin/cli.js"
+NODE_BIN="${OPENCHAMBER_NODE_BIN:-$(command -v node)}"
+# Prefer dedicated SVC overrides so a global OPENCHAMBER_HOST=0.0.0.0
+# (common for LAN serve) does not steal this helper's Tailscale bind.
+HOST="${OPENCHAMBER_SVC_HOST:-192.168.1.200}"
+PORT="${OPENCHAMBER_SVC_PORT:-8888}"
+UNIT="openchamber.service"
+PASS_FILE="${OPENCHAMBER_UI_PASSWORD_FILE:-$HOME/.config/openchamber/ui-password}"
+ENV_HINT_FILE="$HOME/.config/openchamber/oc-svc.env"
+
+# systemd --user needs a session bus even in non-login shells.
+if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
+  export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+fi
+if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -S "$XDG_RUNTIME_DIR/bus" ]]; then
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+fi
+export XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
+
+usage() {
+  cat <<USAGE
+Usage: $(basename "$0") <command>
+
+Commands:
+  enable     Install systemd user unit and start (default on boot/login)
+  disable    Stop and remove startup integration
+  start      Start the service
+  stop       Stop the service / running instance
+  restart    Restart the service
+  rebuild    bun install (if needed), build web, then restart
+  status     Show service + instance status
+  logs       Follow service / OpenChamber logs
+  url        Print the LAN URL
+  help       Show this help
+
+Env overrides:
+  OPENCHAMBER_SVC_HOST (default: 192.168.1.200)
+  OPENCHAMBER_SVC_PORT (default: 8888)
+  OPENCHAMBER_UI_PASSWORD or OPENCHAMBER_UI_PASSWORD_FILE
+USAGE
+}
+
+need_cli() {
+  if [[ ! -f "$CLI_JS" ]]; then
+    echo "Missing CLI entrypoint: $CLI_JS" >&2
+    exit 1
+  fi
+  if [[ -z "$NODE_BIN" || ! -x "$NODE_BIN" ]]; then
+    echo "node is required" >&2
+    exit 1
+  fi
+}
+
+oc() {
+  need_cli
+  "$NODE_BIN" "$CLI_JS" "$@"
+}
+
+ensure_password() {
+  if [[ -n "${OPENCHAMBER_UI_PASSWORD:-}" ]]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$PASS_FILE")"
+  if [[ -f "$PASS_FILE" ]]; then
+    OPENCHAMBER_UI_PASSWORD="$(<"$PASS_FILE")"
+    export OPENCHAMBER_UI_PASSWORD
+    return 0
+  fi
+  OPENCHAMBER_UI_PASSWORD="$(openssl rand -base64 18 | tr -d '/+=' | head -c 20)"
+  umask 077
+  printf '%s\n' "$OPENCHAMBER_UI_PASSWORD" > "$PASS_FILE"
+  export OPENCHAMBER_UI_PASSWORD
+  echo "Generated UI password -> $PASS_FILE"
+}
+
+write_env_hint() {
+  mkdir -p "$(dirname "$ENV_HINT_FILE")"
+  umask 077
+  cat > "$ENV_HINT_FILE" <<ENV
+OPENCHAMBER_HOST=$HOST
+OPENCHAMBER_PORT=$PORT
+OPENCHAMBER_UI_PASSWORD_FILE=$PASS_FILE
+ENV
+}
+
+cmd_enable() {
+  ensure_password
+  write_env_hint
+  oc startup enable --port "$PORT" --host "$HOST" --ui-password "$OPENCHAMBER_UI_PASSWORD"
+  echo "URL: http://$HOST:$PORT"
+}
+
+cmd_disable() {
+  oc startup disable
+}
+
+cmd_start() {
+  if systemctl --user is-enabled "$UNIT" >/dev/null 2>&1 || [[ -f "$HOME/.config/systemd/user/$UNIT" ]]; then
+    systemctl --user start "$UNIT"
+  else
+    ensure_password
+    oc serve --port "$PORT" --host "$HOST" --ui-password "$OPENCHAMBER_UI_PASSWORD"
+  fi
+  echo "URL: http://$HOST:$PORT"
+}
+
+cmd_stop() {
+  if systemctl --user is-active --quiet "$UNIT" 2>/dev/null; then
+    systemctl --user stop "$UNIT"
+  fi
+  oc stop --port "$PORT" || true
+}
+
+cmd_restart() {
+  if systemctl --user is-enabled "$UNIT" >/dev/null 2>&1 || [[ -f "$HOME/.config/systemd/user/$UNIT" ]]; then
+    systemctl --user restart "$UNIT"
+  else
+    cmd_stop
+    cmd_start
+  fi
+  echo "URL: http://$HOST:$PORT"
+}
+
+cmd_rebuild() {
+  cd "$ROOT"
+  if [[ ! -d node_modules ]]; then
+    bun install
+  fi
+  bun run build:web
+  cmd_restart
+}
+
+cmd_status() {
+  echo "== systemd =="
+  systemctl --user status "$UNIT" --no-pager -l 2>/dev/null || echo "(no unit / inactive)"
+  echo
+  echo "== openchamber =="
+  oc status --port "$PORT" || true
+  echo
+  echo "URL: http://$HOST:$PORT"
+}
+
+cmd_logs() {
+  if systemctl --user is-active --quiet "$UNIT" 2>/dev/null || [[ -f "$HOME/.config/systemd/user/$UNIT" ]]; then
+    journalctl --user -u "$UNIT" -f -n 100
+  else
+    oc logs --port "$PORT"
+  fi
+}
+
+cmd_url() {
+  echo "http://$HOST:$PORT"
+}
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+  case "$cmd" in
+    enable) cmd_enable "$@" ;;
+    disable) cmd_disable "$@" ;;
+    start) cmd_start "$@" ;;
+    stop) cmd_stop "$@" ;;
+    restart) cmd_restart "$@" ;;
+    rebuild) cmd_rebuild "$@" ;;
+    status) cmd_status "$@" ;;
+    logs) cmd_logs "$@" ;;
+    url) cmd_url "$@" ;;
+    help|-h|--help) usage ;;
+    *)
+      echo "Unknown command: $cmd" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

@@ -6,8 +6,11 @@ import { useSessionGoalArmStore } from '@/stores/useSessionGoalArmStore';
 import { SESSION_GOAL_OBJECTIVE_CHAR_LIMIT } from '@/lib/sessionGoalMetadata';
 import { SessionGoalDialog } from '@/components/chat/SessionGoalDialog';
 import { isVSCodeRuntime } from '@/lib/desktop';
+import { getHarnessCapabilityLevel } from '@/lib/harness/capabilities';
+import { useSelectionStore } from '@/sync/selection-store';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
+import { isHarnessId } from '@/types/harness';
 
 interface SessionGoalButtonProps {
   sessionId: string | null;
@@ -37,12 +40,49 @@ export const SessionGoalButton: React.FC<SessionGoalButtonProps> = React.memo(({
   const armed = useSessionGoalArmStore((state) => state.armed);
   const setArmed = useSessionGoalArmStore((state) => state.setArmed);
   const [dialogOpen, setDialogOpen] = React.useState(false);
+  const sessionTarget = useSelectionStore((state) => (
+    sessionId ? state.sessionTargets.get(sessionId) ?? null : null
+  ));
+  const pendingHandoff = useSelectionStore((state) => (
+    sessionId ? state.pendingHandoffTargets.get(sessionId) ?? null : null
+  ));
+  const lastUsedTarget = useSelectionStore((state) => state.lastUsedTarget);
+  const activeHarnessId = sessionTarget?.harnessId
+    ?? pendingHandoff?.harnessId
+    ?? lastUsedTarget?.harnessId
+    ?? 'opencode';
+  const supportsGoal = getHarnessCapabilityLevel(
+    isHarnessId(activeHarnessId) ? activeHarnessId : 'opencode',
+    'goal',
+  ) !== 'none';
 
   // The goal loop runs in the web server; the VS Code extension only renders
   // goal state. Arming a goal there would create one nothing drives, so the
   // entry point is hidden entirely.
   if (isVSCodeRuntime() || !enabled || (!sessionId && !draftOpen)) {
     return null;
+  }
+
+  if (!supportsGoal) {
+    const unsupportedLabel = t('chat.harness.capability.goalUnsupported');
+    const disabledButton = (
+      <button
+        type="button"
+        className={cn(footerIconButtonClass, 'opacity-50 cursor-not-allowed')}
+        disabled
+        aria-label={unsupportedLabel}
+        aria-disabled="true"
+        title={unsupportedLabel}
+      >
+        <Icon name="target" className={cn(iconSizeClass, 'text-current')} aria-hidden="true" />
+      </button>
+    );
+    return withTooltip ? (
+      <Tooltip>
+        <TooltipTrigger asChild>{disabledButton}</TooltipTrigger>
+        <TooltipContent side="top" sideOffset={6}>{unsupportedLabel}</TooltipContent>
+      </Tooltip>
+    ) : disabledButton;
   }
 
   // A settled goal no longer drives the loop — the button goes back to being

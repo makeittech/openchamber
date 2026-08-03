@@ -3,7 +3,7 @@
  * Replaces the action methods from the old useSessionStore.
  */
 
-import type { OpencodeClient, Session, Message, Part } from "@opencode-ai/sdk/v2/client"
+import type { Event, OpencodeClient, Session, SessionStatus, Message, Part } from "@opencode-ai/sdk/v2/client"
 import { Binary } from "./binary"
 import { useSessionUIStore } from "./session-ui-store"
 import { useInputStore } from "./input-store"
@@ -28,6 +28,10 @@ import { withContextObligatoryMessage, type ContextObligatoryMessage } from "@/l
 import { getImperativeSessionMessageLoader } from "./session-message-loader"
 import { cleanupPersistedSessionState } from "./session-deletion-cleanup"
 import { getRuntimeKey } from "@/lib/runtime-switch"
+import { harnessAbort, harnessPermissionReply, harnessQuestionReply } from "@/lib/harness/client"
+import { isClaudeSubagentSessionId } from "@/lib/harness/claude-subagent"
+import { useSelectionStore } from "./selection-store"
+import { applyGlobalSessionStatusEvent } from "./global-session-status"
 
 const MESSAGE_REFETCH_LIMIT = 100
 const SEND_CONFIRMATION_REFETCH_LIMIT = 30
@@ -1067,14 +1071,20 @@ export async function optimisticSend(input: {
   })
   input.onOptimisticInsert?.()
 
-  // Set busy status
+  // Set busy status (directory child store + global index so Stop / queue
+  // auto-send both observe the optimistic busy edge immediately).
   const current = store.getState()
+  const previousStatus = current.session_status?.[input.sessionId]
+  const optimisticBusy = { type: "busy" as const }
   store.setState({
     session_status: {
       ...current.session_status,
-      [input.sessionId]: { type: "busy" as const },
+      [input.sessionId]: optimisticBusy,
     },
   })
+  if (targetDirectory) {
+    mirrorSessionStatusToGlobal(targetDirectory, input.sessionId, optimisticBusy)
+  }
 
   try {
     await input.send(messageID)
@@ -1119,17 +1129,42 @@ export async function optimisticSend(input: {
       }
     }
 
+    // Preserve a pre-existing busy/retry status (e.g. TURN_IN_PROGRESS while a
+    // Claude turn is still active). Forcing idle here would hide Stop and stall
+    // queued auto-send until another status edge arrives.
+    const restoredStatus: SessionStatus | { type: "idle" } =
+      previousStatus?.type === "busy" || previousStatus?.type === "retry"
+        ? previousStatus
+        : { type: "idle" as const }
+
     store.setState({
       session,
       message,
       part,
       session_status: {
         ...rollbackState.session_status,
-        [input.sessionId]: { type: "idle" as const },
+        [input.sessionId]: restoredStatus,
       },
     })
+    if (targetDirectory) {
+      mirrorSessionStatusToGlobal(targetDirectory, input.sessionId, restoredStatus)
+    }
     throw error
   }
+}
+
+function mirrorSessionStatusToGlobal(
+  directory: string,
+  sessionId: string,
+  status: SessionStatus | { type: "idle" },
+): void {
+  applyGlobalSessionStatusEvent(directory, {
+    type: "session.status",
+    properties: {
+      sessionID: sessionId,
+      status,
+    },
+  } as Event)
 }
 
 async function fetchRecentSendConfirmationRecords(
@@ -1198,6 +1233,27 @@ export async function abortCurrentOperation(sessionId: string): Promise<void> {
   // worktree than the UI's current directory could never be aborted).
   const { directory } = dirStoreForSession(sessionId)
   try {
+    const target = useSelectionStore.getState().getSessionTarget(sessionId)
+    if (target?.harnessId === "claude-code") {
+      await harnessAbort({
+        sessionId,
+        ...(directory ? { directory } : {}),
+      })
+      return
+    }
+
+    // Sticky Claude bindings can outlive local selection (reload / overwrite).
+    // When the local target is missing or unknown, try harness abort first.
+    if (!target || target.harnessId !== "opencode") {
+      const harnessResult = await harnessAbort({
+        sessionId,
+        ...(directory ? { directory } : {}),
+      }).catch(() => null)
+      if (harnessResult?.aborted) {
+        return
+      }
+    }
+
     await sdk().session.abort({ sessionID: sessionId, directory })
   } catch (error) {
     console.error("[session-actions] abort failed", error)
@@ -1207,6 +1263,27 @@ export async function abortCurrentOperation(sessionId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 // Permissions
 // ---------------------------------------------------------------------------
+
+/**
+ * Claude subagent asks are stamped on synthetic child session ids. The sticky
+ * harness target lives on the parent — walk parentID so Allow/Deny still hits
+ * `/api/harness/permission/reply` instead of the OpenCode SDK.
+ */
+function resolveHarnessTargetForPermissionSession(sessionId: string) {
+  const selection = useSelectionStore.getState()
+  const direct = selection.getSessionTarget(sessionId)
+  if (direct?.harnessId === "claude-code") return direct
+  if (!isClaudeSubagentSessionId(sessionId) || !_childStores) return direct
+
+  for (const store of _childStores.children.values()) {
+    const child = store.getState().session.find((session) => session.id === sessionId)
+    const parentId = typeof child?.parentID === "string" ? child.parentID : ""
+    if (!parentId) continue
+    const parentTarget = selection.getSessionTarget(parentId)
+    if (parentTarget?.harnessId === "claude-code") return parentTarget
+  }
+  return direct
+}
 
 export async function respondToPermission(
   sessionId: string,
@@ -1219,10 +1296,25 @@ export async function respondToPermission(
     || resolveDirectoryForBlockingRequest("permission", sessionId, requestId)
     || getSessionDirectory(sessionId)
     || dir()
+
+  const target = resolveHarnessTargetForPermissionSession(sessionId)
+  if (target?.harnessId === "claude-code") {
+    const result = await harnessPermissionReply({
+      sessionId,
+      requestId,
+      reply: response,
+      ...(directory ? { directory } : {}),
+    })
+    if (!result.ok) {
+      throw new Error("Permission reply failed")
+    }
+    return
+  }
   const client = directoryOverride
     ? opencodeClient.getScopedSdkClient(directoryOverride)
     : getRequestReplyClient("permission", sessionId, requestId)
   const result = await client.permission.reply({
+
     requestID: requestId,
     reply: response,
     ...(directory ? { directory } : {}),
@@ -1240,6 +1332,19 @@ export async function dismissPermission(
   const directory = resolveDirectoryForBlockingRequest("permission", sessionId, requestId)
     || getSessionDirectory(sessionId)
     || dir()
+  const target = resolveHarnessTargetForPermissionSession(sessionId)
+  if (target?.harnessId === "claude-code") {
+    const result = await harnessPermissionReply({
+      sessionId,
+      requestId,
+      reply: "reject",
+      ...(directory ? { directory } : {}),
+    })
+    if (!result.ok) {
+      throw new Error("Permission dismissal failed")
+    }
+    return
+  }
   try {
     const result = await getRequestReplyClient("permission", sessionId, requestId).permission.reply({
       requestID: requestId,
@@ -1336,12 +1441,25 @@ export async function respondToQuestion(
   const directory = resolveDirectoryForBlockingRequest("question", sessionId, requestId)
     || getSessionDirectory(sessionId)
     || dir()
+  const target = useSelectionStore.getState().getSessionTarget(sessionId)
   try {
     const normalizedAnswers = answers.length === 0
       ? []
       : Array.isArray(answers[0])
         ? answers as string[][]
         : [answers as string[]]
+    if (target?.harnessId === "claude-code") {
+      const result = await harnessQuestionReply({
+        sessionId,
+        requestId,
+        answers: normalizedAnswers,
+        ...(directory ? { directory } : {}),
+      })
+      if (!result.ok) {
+        throw new Error("Question reply failed")
+      }
+      return
+    }
     const result = await getRequestReplyClient("question", sessionId, requestId).question.reply({
       requestID: requestId,
       answers: normalizedAnswers,
@@ -1366,7 +1484,20 @@ export async function rejectQuestion(
   const directory = resolveDirectoryForBlockingRequest("question", sessionId, requestId)
     || getSessionDirectory(sessionId)
     || dir()
+  const target = useSelectionStore.getState().getSessionTarget(sessionId)
   try {
+    if (target?.harnessId === "claude-code") {
+      const result = await harnessQuestionReply({
+        sessionId,
+        requestId,
+        reject: true,
+        ...(directory ? { directory } : {}),
+      })
+      if (!result.ok) {
+        throw new Error("Question rejection failed")
+      }
+      return
+    }
     const result = await getRequestReplyClient("question", sessionId, requestId).question.reject({
       requestID: requestId,
       ...(directory ? { directory } : {}),
@@ -1462,6 +1593,21 @@ export async function dismissOpenQuestionsForSession(sessionId: string): Promise
  * 5. Set pendingInputText so the reverted message text appears in the input
  */
 export async function revertToMessage(sessionId: string, messageId: string): Promise<void> {
+  const target = useSelectionStore.getState().getSessionTarget(sessionId)
+  if (target?.harnessId === "claude-code") {
+    // OpenCode `session.revert` only rewrites the OpenCode message store. Claude
+    // transcripts live in JSONL + resume via foreignSessionId, so a successful
+    // OC revert is a no-op that leaves model context intact (engines-claude-code
+    // spec: rewind UI is a non-goal). Refuse instead of faking a UI-only undo.
+    const { toast } = await import("sonner")
+    const { useI18nStore, formatMessage } = await import("@/lib/i18n/store")
+    const { dictionary } = useI18nStore.getState()
+    toast.error(formatMessage(dictionary, "chat.revert.toast.unsupportedHarness"))
+    const error = new Error("Revert is not supported on Claude Code sessions")
+    ;(error as Error & { code?: string }).code = "REVERT_UNSUPPORTED_HARNESS"
+    throw error
+  }
+
   const { store, directory } = dirStoreForSession(sessionId)
   const state = store.getState()
 
@@ -1603,6 +1749,17 @@ export async function refetchSessionMessages(sessionId: string): Promise<void> {
  * Restore all previously reverted messages. Aborts if busy, merges result.
  */
 export async function unrevertSession(sessionId: string): Promise<void> {
+  const target = useSelectionStore.getState().getSessionTarget(sessionId)
+  if (target?.harnessId === "claude-code") {
+    const { toast } = await import("sonner")
+    const { useI18nStore, formatMessage } = await import("@/lib/i18n/store")
+    const { dictionary } = useI18nStore.getState()
+    toast.error(formatMessage(dictionary, "chat.revert.toast.unsupportedHarness"))
+    const error = new Error("Revert is not supported on Claude Code sessions")
+    ;(error as Error & { code?: string }).code = "REVERT_UNSUPPORTED_HARNESS"
+    throw error
+  }
+
   const { store, directory } = dirStoreForSession(sessionId)
   const state = store.getState()
   const previousMessageCount = state.message[sessionId]?.length ?? 0

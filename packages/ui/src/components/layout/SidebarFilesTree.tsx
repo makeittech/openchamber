@@ -1141,7 +1141,9 @@ export const SidebarFilesTree: React.FC = () => {
                 title={t('sidebarFilesTree.actions.collapseAllTitle')}
                 aria-label={t('sidebarFilesTree.actions.collapseAllTitle')}
               >
+
 <Icon name="collapse-vertical" className="h-4 w-4" />
+
               </Button>
             </span>
           </TooltipTrigger>

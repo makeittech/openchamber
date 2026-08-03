@@ -7,6 +7,9 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useViewportStore } from '@/sync/viewport-store';
 import { useSessions, useDirectorySync, useSessionMessages, useSessionMessagesResolved } from '@/sync/sync-context';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { useHarnessStore } from '@/stores/useHarnessStore';
+import { resolveActiveModelLimits } from '@/lib/harness/active-model-limits';
+import { useSelectionStore } from '@/sync/selection-store';
 import { resolveGlobalSessionDirectory, useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
 import { ContextUsageDisplay } from '@/components/ui/ContextUsageDisplay';
 import { McpDropdown } from '@/components/mcp/McpDropdown';
@@ -686,6 +689,14 @@ const VSCodeHeader: React.FC<VSCodeHeaderProps> = ({ title, showBack, onBack, on
   }, [loadQuotaSettings]);
 
   const currentModel = getCurrentModel();
+  const sessionTarget = useSelectionStore((state) => (
+    currentSessionId ? state.sessionTargets.get(currentSessionId) ?? null : null
+  ));
+  const pendingHandoffTarget = useSelectionStore((state) => (
+    currentSessionId ? state.pendingHandoffTargets.get(currentSessionId) ?? null : null
+  ));
+  const lastUsedTarget = useSelectionStore((state) => state.lastUsedTarget);
+  const claudeCatalog = useHarnessStore((state) => state.catalogsById['claude-code']);
   const headerMessageSummary = React.useMemo(() => {
     type AssistantTokens = { input: number; output: number; reasoning: number; cache: { read: number; write: number } };
     let latestAssistantModel: ReturnType<typeof getCurrentModel> | undefined;
@@ -719,12 +730,29 @@ const VSCodeHeader: React.FC<VSCodeHeaderProps> = ({ title, showBack, onBack, on
     return { latestAssistantModel, lastTokens, lastMessageId };
   }, [currentSessionMessages, providers]);
   const latestAssistantModel = headerMessageSummary.latestAssistantModel;
-  const modelForLimits = currentModel?.limit ? currentModel : latestAssistantModel;
-  const limit = modelForLimits && typeof modelForLimits.limit === 'object' && modelForLimits.limit !== null
-    ? (modelForLimits.limit as Record<string, unknown>)
+  const modelForOpenCodeLimits = currentModel?.limit ? currentModel : latestAssistantModel;
+  const openCodeLimit = modelForOpenCodeLimits && typeof modelForOpenCodeLimits.limit === 'object' && modelForOpenCodeLimits.limit !== null
+    ? (modelForOpenCodeLimits.limit as Record<string, unknown>)
     : null;
-  const contextLimit = limit && typeof limit.context === 'number' ? limit.context : 0;
-  const outputLimit = limit && typeof limit.output === 'number' ? limit.output : 0;
+  const activeModelLimits = React.useMemo(() => resolveActiveModelLimits({
+    sessionId: currentSessionId,
+    sessionTarget,
+    pendingHandoffTarget,
+    lastUsedTarget,
+    claudeCatalog,
+    openCodeContext: typeof openCodeLimit?.context === 'number' ? openCodeLimit.context : 0,
+    openCodeOutput: typeof openCodeLimit?.output === 'number' ? openCodeLimit.output : 0,
+  }), [
+    claudeCatalog,
+    currentSessionId,
+    lastUsedTarget,
+    openCodeLimit?.context,
+    openCodeLimit?.output,
+    pendingHandoffTarget,
+    sessionTarget,
+  ]);
+  const contextLimit = activeModelLimits.context;
+  const outputLimit = activeModelLimits.output;
 
   const contextUsage = React.useMemo<SessionContextUsage | null>(() => {
     if (!currentSessionId || !headerMessageSummary.lastTokens) {

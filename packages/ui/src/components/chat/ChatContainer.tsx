@@ -21,6 +21,7 @@ import { ScrollShadow } from '@/components/ui/ScrollShadow';
 import { useChatAutoFollow, type AnimationHandlers, type ContentChangeReason } from '@/hooks/useChatAutoFollow';
 import { useChatTimelineController } from './hooks/useChatTimelineController';
 import { TimelineDialog } from './TimelineDialog';
+import { HarnessSwitchDialog } from '@/components/harness/HarnessSwitchDialog';
 import { useChatTurnNavigation } from './hooks/useChatTurnNavigation';
 import { useChatSurfaceMode } from './useChatSurfaceMode';
 import { useDeviceInfo } from '@/lib/device';
@@ -551,7 +552,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
         ? JSON.stringify([getRuntimeKey(), effectiveSessionDirectory, currentSessionId])
         : null;
     const ensureSessionRenderable = React.useCallback(
-        (sessionId: string) => sync.ensureSessionRenderable(sessionId, false, effectiveSessionDirectory),
+        (sessionId: string, force = false) => sync.ensureSessionRenderable(sessionId, force, effectiveSessionDirectory),
         [effectiveSessionDirectory, sync],
     );
     const loadMoreMessages = React.useCallback(
@@ -587,8 +588,11 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
     const sessionMessageCount = useSessionMessageCount(currentSessionId ?? '', effectiveSessionDirectory);
     const hasRenderableSessionSnapshot = useSessionRenderable(currentSessionId ?? '', effectiveSessionDirectory);
     // Messages from sync system
+    // Always read the selected session transcript while it is open. Gating on
+    // `active` returned an empty list during Command Palette / tab transitions
+    // and left the chat stuck on hydrating skeletons even after messages landed.
     const sessionMessageRecords = useSessionMessageRecords(currentSessionId ?? '', effectiveSessionDirectory, {
-        enabled: active,
+        enabled: Boolean(currentSessionId),
         suspendPartUpdates: Boolean(streamingMessageId),
         suspendPartUpdatesForMessageId: streamingMessageId,
     });
@@ -770,11 +774,16 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
     }, []);
 
     React.useEffect(() => {
-        if (autoOpenDraft && !currentSessionId && !draftOpen) {
-            // Programmatic fallback, not user navigation — must not clear the
-            // persisted last-session pointer the cold-launch restore reads.
-            openNewSessionDraft({ automatic: true });
+
+        if (!autoOpenDraft || currentSessionId || draftOpen) return;
+        // Wait for deep-link `?session=` to apply before opening a draft, otherwise
+        // the draft clears the session id and Claude sessions stay blank.
+        if (typeof window !== 'undefined') {
+            const params = new URLSearchParams(window.location.search);
+            if (params.get('session')) return;
+
         }
+        openNewSessionDraft();
     }, [autoOpenDraft, currentSessionId, draftOpen, openNewSessionDraft]);
 
     const activeTurnChangeRef = React.useRef<(turnId: string | null) => void>(() => {});
@@ -991,10 +1000,18 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
     }, [active, currentSessionId, currentSessionKey, releaseAutoFollow, restoreSnapshot]);
 
     React.useEffect(() => {
-        if (!active || !currentSessionId) return;
-        if (hasRenderableSessionSnapshot) return;
-        void ensureSessionRenderable(currentSessionId);
-    }, [active, currentSessionId, ensureSessionRenderable, hasRenderableSessionSnapshot]);
+        if (!currentSessionId) return;
+        // Hydrate even when ChatView is inactive (command palette / tab switch):
+        // a stale startup load must not leave the selected session blank forever.
+        if (hasRenderableSessionSnapshot && sessionMessageCount > 0) return;
+        const forceEmpty = sessionMessageCount === 0;
+        void ensureSessionRenderable(currentSessionId, forceEmpty);
+        if (typeof window === 'undefined') return;
+        const timer = window.setInterval(() => {
+            void ensureSessionRenderable(currentSessionId, forceEmpty);
+        }, 1_500);
+        return () => window.clearInterval(timer);
+    }, [active, currentSessionId, effectiveSessionDirectory, ensureSessionRenderable, hasRenderableSessionSnapshot, sessionMessageCount]);
 
 	if (!currentSessionId && !draftOpen) {
 		// With auto-open, the draft welcome opens on the next tick (effect below),
@@ -1215,6 +1232,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
                 isLoadingEarlier={timelineController.isLoadingOlder}
                 onLoadEarlier={handleLoadOlderClick}
             />
+            <HarnessSwitchDialog />
         </div>
     );
 };

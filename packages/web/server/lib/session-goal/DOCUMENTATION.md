@@ -130,9 +130,14 @@ before touching the filesystem). Rationale: metadata rides every
      loop blind to the turn cap;
    - continue: persist accounting + `turnsUsed` first (a crash after the
      write just waits for the next idle tick; the reverse could double-send),
-     re-check the tail, then `POST /session/:id/prompt_async` with the
-     continuation prompt using the last assistant message's
-     provider/model/agent — the goal spends the session's own subscription.
+     re-check the tail, then continue:
+     - OpenCode sessions: `POST /session/:id/prompt_async` with the last
+       assistant message's provider/model/agent;
+     - Claude harness sessions (`getHarnessBinding` → `claude-code`): read
+       the last turn from the harness turn snapshot and continue via
+       `promptHarness` / `/api/harness/prompt`. Harness idle/busy events are
+       fed through `addHarnessEventObserver` because they are not on the
+       OpenCode global event hub.
 4. Settling (`complete`/`blocked`/`budgetLimited`) fires the injected
    `emitGoalNotification` so the user hears about it even with the UI closed:
    desktop + UI broadcast + the standard push fanout (web-push with full

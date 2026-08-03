@@ -28,6 +28,12 @@ export function createPermissionAutoAcceptRuntime({
   fetchImpl = fetch,
   retryDelaysMs = RETRY_DELAYS_MS,
   requestTimeoutMs = REQUEST_TIMEOUT_MS,
+  /** @type {(sessionId: string) => boolean} */
+  isHarnessSession = () => false,
+  /** @type {(body: { sessionId: string, requestId: string, reply: string, directory?: string }) => Promise<unknown>} */
+  replyHarnessPermission = null,
+  /** @type {() => Array<{ id: string, sessionID: string, directory?: string }>} */
+  listHarnessPendingPermissions = () => [],
 }) {
   let policy = normalizePolicy();
   let loaded = false;
@@ -148,6 +154,25 @@ export function createPermissionAutoAcceptRuntime({
     if (!permission?.id || !permission?.sessionID) return false;
     await load();
     if (!(await isSessionAutoAccepting(permission.sessionID, directory))) return false;
+
+    // Claude harness permissions live in the canUseTool bridge, not OpenCode.
+    // Never treat OpenCode 404 as success for those — that left canUseTool pending
+    // until fail-closed timeout.
+    if (isHarnessSession(permission.sessionID)) {
+      if (typeof replyHarnessPermission !== 'function') {
+        const error = new Error('Harness permission reply is unavailable');
+        error.status = 503;
+        throw error;
+      }
+      await replyHarnessPermission({
+        sessionId: permission.sessionID,
+        requestId: permission.id,
+        reply: 'once',
+        directory,
+      });
+      return true;
+    }
+
     await request(`/permission/${encodeURIComponent(permission.id)}/reply`, {
       directory,
       method: 'POST',
@@ -167,7 +192,7 @@ export function createPermissionAutoAcceptRuntime({
         try {
           return await replyOnce(permission, directory);
         } catch (error) {
-          if (error?.status === 404) return true;
+          if (error?.status === 404 || error?.statusCode === 404) return true;
         }
       }
       return false;
@@ -201,6 +226,24 @@ export function createPermissionAutoAcceptRuntime({
           pendingById.set(permission.id, { permission, directory: permission.directory ?? directory });
         }
       }
+      try {
+        const harnessPending = listHarnessPendingPermissions();
+        if (Array.isArray(harnessPending)) {
+          for (const permission of harnessPending) {
+            if (!permission?.id) continue;
+            const harnessDirectory = typeof permission.directory === 'string' && permission.directory
+              ? permission.directory
+              : undefined;
+            pendingById.set(permission.id, {
+              permission,
+              directory: harnessDirectory,
+            });
+          }
+        }
+      } catch {
+        // Harness pending list failure must not clear OpenCode reconcile work.
+      }
+
       await Promise.all(Array.from(pendingById.values()).map(({ permission, directory }) =>
         processPermission(permission, directory)));
     })().finally(() => { reconcilePromises.delete(key); });
@@ -218,6 +261,17 @@ export function createPermissionAutoAcceptRuntime({
     }
     if (payload?.type === 'permission.asked') {
       void processPermission(payload.properties, directory);
+    }
+  };
+
+  /** Direct harness/UI-synthetic event path (not OpenCode global hub). */
+  const processHarnessPayload = (payload, directory) => {
+    if (!payload || typeof payload !== 'object') return;
+    if (payload.type === 'permission.asked') {
+      void processPermission(
+        payload.properties,
+        typeof directory === 'string' && directory ? directory : undefined,
+      );
     }
   };
 
@@ -241,6 +295,7 @@ export function createPermissionAutoAcceptRuntime({
     setSessionPolicy,
     isSessionAutoAccepting,
     processPermission,
+    processHarnessPayload,
     reconcilePending,
     start,
   };

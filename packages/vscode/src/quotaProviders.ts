@@ -1,6 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import {
+  CLAUDE_SCOPE_ERROR,
+  CLAUDE_SESSION_EXPIRED_ERROR,
+  classifyClaudeUsageHttpError,
+  ensureClaudeUsageAccessToken,
+  fetchClaudeUsagePayload,
+  fetchClaudeUsageWindowsFromRateLimits,
+  mapClaudeUsageWindows,
+  shouldSkipClaudeUsageEndpoint,
+  type ClaudeUsageAccess,
+} from '@openchamber/quota-core';
 import { fetchOpenCodeGoUsage } from './opencodeGoQuota';
 import { readCredential } from './quotaCredentials';
 
@@ -907,89 +918,114 @@ const fetchGoogleQuota = async (): Promise<ProviderResult> => {
 };
 
 const fetchClaudeQuota = async (): Promise<ProviderResult> => {
-  const auth = readAuthFile();
-  const entry = normalizeAuthEntry(getAuthEntry(auth, ['anthropic', 'claude'])) as Record<string, unknown> | null;
-  const accessToken = (entry?.access as string | undefined) ?? (entry?.token as string | undefined);
-
-  if (!accessToken) {
-    return buildResult({
-      providerId: 'claude',
-      providerName: 'Claude',
-      ok: false,
-      configured: false,
-      error: 'Not configured',
-    });
-  }
-
+  const providerName = 'Claude subscription';
+  let access: ClaudeUsageAccess | null = null;
   try {
-    const response = await fetch('https://api.anthropic.com/api/oauth/usage', {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'anthropic-beta': 'oauth-2025-04-20',
-      },
-    });
+    access = await ensureClaudeUsageAccessToken();
 
-    if (!response.ok) {
+    if (!access?.accessToken) {
       return buildResult({
         providerId: 'claude',
-        providerName: 'Claude',
+        providerName,
         ok: false,
-        configured: true,
-        error: `API error: ${response.status}`,
+        configured: false,
+        error: 'Not configured',
       });
     }
 
-    const payload = await response.json() as Record<string, unknown>;
-    const windows: Record<string, UsageWindow> = {};
-    const fiveHour = (payload as Record<string, unknown>).five_hour as Record<string, unknown> | undefined;
-    const sevenDay = (payload as Record<string, unknown>).seven_day as Record<string, unknown> | undefined;
-    const sevenDaySonnet = (payload as Record<string, unknown>).seven_day_sonnet as Record<string, unknown> | undefined;
-    const sevenDayOpus = (payload as Record<string, unknown>).seven_day_opus as Record<string, unknown> | undefined;
+    const skipUsageEndpoint = shouldSkipClaudeUsageEndpoint(access);
 
-    if (fiveHour) {
-      windows['5h'] = toUsageWindow({
-        usedPercent: toNumber(fiveHour.utilization),
-        windowSeconds: null,
-        resetAt: toTimestamp(fiveHour.resets_at),
-      });
-    }
-    if (sevenDay) {
-      windows['7d'] = toUsageWindow({
-        usedPercent: toNumber(sevenDay.utilization),
-        windowSeconds: null,
-        resetAt: toTimestamp(sevenDay.resets_at),
-      });
-    }
-    if (sevenDaySonnet) {
-      windows['7d-sonnet'] = toUsageWindow({
-        usedPercent: toNumber(sevenDaySonnet.utilization),
-        windowSeconds: null,
-        resetAt: toTimestamp(sevenDaySonnet.resets_at),
-      });
-    }
-    if (sevenDayOpus) {
-      windows['7d-opus'] = toUsageWindow({
-        usedPercent: toNumber(sevenDayOpus.utilization),
-        windowSeconds: null,
-        resetAt: toTimestamp(sevenDayOpus.resets_at),
-      });
+    const buildFallbackOrError = async (status: number | null = null, bodyText = '') => {
+      try {
+        const windows = await fetchClaudeUsageWindowsFromRateLimits(access!.accessToken);
+        return buildResult({
+          providerId: 'claude',
+          providerName,
+          ok: true,
+          configured: true,
+          usage: { windows },
+        });
+      } catch {
+        if (status === 401) {
+          return buildResult({
+            providerId: 'claude',
+            providerName,
+            ok: false,
+            configured: true,
+            error: CLAUDE_SESSION_EXPIRED_ERROR,
+          });
+        }
+        return buildResult({
+          providerId: 'claude',
+          providerName,
+          ok: false,
+          configured: true,
+          error: status == null
+            ? CLAUDE_SCOPE_ERROR
+            : classifyClaudeUsageHttpError(status, bodyText),
+        });
+      }
+    };
+
+    if (skipUsageEndpoint) {
+      return await buildFallbackOrError();
     }
 
-    return buildResult({
-      providerId: 'claude',
-      providerName: 'Claude',
-      ok: true,
-      configured: true,
-      usage: { windows },
-    });
+    let response = await fetchClaudeUsagePayload(access.accessToken);
+
+    if (response.status === 401 && access.canRefresh) {
+      try {
+        access = await ensureClaudeUsageAccessToken({ forceRefresh: true });
+      } catch {
+        return buildResult({
+          providerId: 'claude',
+          providerName,
+          ok: false,
+          configured: true,
+          error: CLAUDE_SESSION_EXPIRED_ERROR,
+        });
+      }
+      if (!access?.accessToken) {
+        return buildResult({
+          providerId: 'claude',
+          providerName,
+          ok: false,
+          configured: true,
+          error: CLAUDE_SESSION_EXPIRED_ERROR,
+        });
+      }
+      response = await fetchClaudeUsagePayload(access.accessToken);
+    }
+
+    if (response.ok) {
+      const payload = await response.json() as Record<string, unknown>;
+      const windows = mapClaudeUsageWindows(payload);
+      if (Object.keys(windows).length > 0) {
+        return buildResult({
+          providerId: 'claude',
+          providerName,
+          ok: true,
+          configured: true,
+          usage: { windows },
+        });
+      }
+      return await buildFallbackOrError();
+    }
+
+    const bodyText = await response.text().catch(() => '');
+    return await buildFallbackOrError(response.status, bodyText);
   } catch (error) {
+    const message = error instanceof Error ? error.message : 'Request failed';
+    const sessionExpired = /token refresh failed|no refresh token|Session expired/i.test(message);
     return buildResult({
       providerId: 'claude',
-      providerName: 'Claude',
+      providerName,
       ok: false,
+      // Reaching this catch means a credential existed, so this is an error
+      // state — not "Not configured". A network/timeout failure must not read
+      // as "no Claude account" (matches claude.js).
       configured: true,
-      error: error instanceof Error ? error.message : 'Request failed',
+      error: sessionExpired ? CLAUDE_SESSION_EXPIRED_ERROR : message,
     });
   }
 };

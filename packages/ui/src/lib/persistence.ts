@@ -14,6 +14,13 @@ import { setFilesViewShowGitignored } from '@/lib/filesViewShowGitignored';
 import { loadAppearancePreferences, applyAppearancePreferences } from '@/lib/appearancePersistence';
 import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 import { sanitizeStarterRefs } from '@/lib/draftStarters';
+import { sanitizeHarnessSettings } from '@/lib/harness/settings';
+import {
+  favoriteTargetsToLegacyRefs,
+  legacyRefsToFavoriteTargets,
+  sanitizeFavoriteTargets,
+} from '@/lib/harness/favorite-targets';
+import type { ExecutionTarget } from '@/types/harness';
 import { normalizeMobileKeyboardMode, setStoredMobileKeyboardMode } from '@/lib/mobileKeyboardMode';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { isTerminalShell } from '@/lib/terminalShell';
@@ -313,6 +320,14 @@ const areModelRefsEqual = (
   left.every((item, idx) => item.providerID === right[idx]?.providerID && item.modelID === right[idx]?.modelID)
 );
 
+const areExecutionTargetsEqual = (
+  left: ExecutionTarget[],
+  right: ExecutionTarget[],
+): boolean => (
+  left.length === right.length
+  && left.every((item, idx) => JSON.stringify(item) === JSON.stringify(right[idx]))
+);
+
 const areStringArraysEqual = (left: string[], right: string[]): boolean => (
   left.length === right.length && left.every((value, idx) => value === right[idx])
 );
@@ -505,6 +520,33 @@ const sanitizeModelRefs = (value: unknown, limit: number): Array<{ providerID: s
   return result;
 };
 
+const resolveFavoriteTargetsFromSettings = (settings: {
+  favoriteTargets?: unknown;
+  favoriteModels?: unknown;
+}): ExecutionTarget[] | undefined => {
+  const fromTargets = sanitizeFavoriteTargets(settings.favoriteTargets, 64);
+  const fromLegacy = sanitizeFavoriteTargets(settings.favoriteModels, 64);
+  // Prefer favoriteTargets when present and non-empty. An empty targets array
+  // still falls back to legacy favoriteModels so older settings snapshots that
+  // only write favoriteModels are not wiped by materialize defaults.
+  if (fromTargets !== undefined && (fromTargets.length > 0 || fromLegacy === undefined)) {
+    return fromTargets;
+  }
+  return fromLegacy;
+};
+
+const resolveRecentTargetsFromSettings = (settings: {
+  recentTargets?: unknown;
+  recentModels?: unknown;
+}): ExecutionTarget[] | undefined => {
+  const fromTargets = sanitizeFavoriteTargets(settings.recentTargets, 16);
+  const fromLegacy = sanitizeFavoriteTargets(settings.recentModels, 16);
+  if (fromTargets !== undefined && (fromTargets.length > 0 || fromLegacy === undefined)) {
+    return fromTargets;
+  }
+  return fromLegacy;
+};
+
 const getPersistApi = (): PersistApi | undefined => {
   const candidate = (useUIStore as unknown as { persist?: PersistApi }).persist;
   if (candidate && typeof candidate === 'object') {
@@ -585,9 +627,11 @@ const materializeAuthoritativeUiSettings = (settings: DesktopSettings): DesktopS
     shortcutOverrides: defaults.shortcutOverrides,
     mobileKeyboardMode: 'resize-content',
     favoriteModels: defaults.favoriteModels,
+    favoriteTargets: defaults.favoriteTargets ?? [],
     hiddenModels: defaults.hiddenModels,
     collapsedModelProviders: defaults.collapsedModelProviders,
     recentModels: defaults.recentModels,
+    recentTargets: defaults.recentTargets ?? [],
     recentAgents: defaults.recentAgents,
     recentEfforts: defaults.recentEfforts,
     diffLayoutPreference: defaults.diffLayoutPreference,
@@ -929,11 +973,30 @@ const applyDesktopUiPreferences = (settings: DesktopSettings) => {
     }
   }
 
-  if (Array.isArray(settings.favoriteModels)) {
-    const current = store.favoriteModels;
-    const next = settings.favoriteModels;
-    if (!areModelRefsEqual(current, next)) {
-      useUIStore.setState({ favoriteModels: next });
+  {
+    const nextTargets = resolveFavoriteTargetsFromSettings(settings);
+    if (nextTargets) {
+      const currentTargets = store.favoriteTargets ?? [];
+      const nextLegacy = favoriteTargetsToLegacyRefs(nextTargets);
+      if (
+        !areExecutionTargetsEqual(currentTargets, nextTargets)
+        || !areModelRefsEqual(store.favoriteModels, nextLegacy)
+      ) {
+        useUIStore.setState({
+          favoriteTargets: nextTargets,
+          favoriteModels: nextLegacy,
+        });
+      }
+    } else if (Array.isArray(settings.favoriteModels)) {
+      const current = store.favoriteModels;
+      const next = settings.favoriteModels;
+      if (!areModelRefsEqual(current, next)) {
+        const targets = legacyRefsToFavoriteTargets(next);
+        useUIStore.setState({
+          favoriteModels: next,
+          favoriteTargets: targets,
+        });
+      }
     }
   }
 
@@ -953,11 +1016,30 @@ const applyDesktopUiPreferences = (settings: DesktopSettings) => {
     }
   }
 
-  if (Array.isArray(settings.recentModels)) {
-    const current = store.recentModels;
-    const next = settings.recentModels;
-    if (!areModelRefsEqual(current, next)) {
-      useUIStore.setState({ recentModels: next });
+  {
+    const nextTargets = resolveRecentTargetsFromSettings(settings);
+    if (nextTargets) {
+      const currentTargets = store.recentTargets ?? [];
+      const nextLegacy = favoriteTargetsToLegacyRefs(nextTargets);
+      if (
+        !areExecutionTargetsEqual(currentTargets, nextTargets)
+        || !areModelRefsEqual(store.recentModels, nextLegacy)
+      ) {
+        useUIStore.setState({
+          recentTargets: nextTargets,
+          recentModels: nextLegacy,
+        });
+      }
+    } else if (Array.isArray(settings.recentModels)) {
+      const current = store.recentModels;
+      const next = settings.recentModels;
+      if (!areModelRefsEqual(current, next)) {
+        const targets = legacyRefsToFavoriteTargets(next);
+        useUIStore.setState({
+          recentModels: next,
+          recentTargets: targets,
+        });
+      }
     }
   }
 
@@ -1169,9 +1251,13 @@ const sanitizeWebSettings = (payload: unknown): DesktopSettings | null => {
   if (typeof candidate.smallModelOverride === 'string' && candidate.smallModelOverride.length > 0) {
     result.smallModelOverride = candidate.smallModelOverride;
   }
+
   if (typeof candidate.walkthroughModelOverride === 'string' && candidate.walkthroughModelOverride.length > 0) {
     result.walkthroughModelOverride = candidate.walkthroughModelOverride;
   }
+
+  Object.assign(result, sanitizeHarnessSettings(candidate));
+
   if (typeof candidate.autoCreateWorktree === 'boolean') {
     result.autoCreateWorktree = candidate.autoCreateWorktree;
   }
@@ -1483,9 +1569,16 @@ const sanitizeWebSettings = (payload: unknown): DesktopSettings | null => {
     }
   }
 
-  const favoriteModels = sanitizeModelRefs(candidate.favoriteModels, 64);
-  if (favoriteModels) {
-    result.favoriteModels = favoriteModels;
+  const favoriteTargets = resolveFavoriteTargetsFromSettings(candidate);
+  if (favoriteTargets) {
+    result.favoriteTargets = favoriteTargets;
+    result.favoriteModels = favoriteTargetsToLegacyRefs(favoriteTargets);
+  } else {
+    const favoriteModels = sanitizeModelRefs(candidate.favoriteModels, 64);
+    if (favoriteModels) {
+      result.favoriteModels = favoriteModels;
+      result.favoriteTargets = legacyRefsToFavoriteTargets(favoriteModels);
+    }
   }
 
   const hiddenModels = sanitizeModelRefs(candidate.hiddenModels, 1024);
@@ -1498,9 +1591,16 @@ const sanitizeWebSettings = (payload: unknown): DesktopSettings | null => {
     result.collapsedModelProviders = collapsedModelProviders;
   }
 
-  const recentModels = sanitizeModelRefs(candidate.recentModels, 16);
-  if (recentModels) {
-    result.recentModels = recentModels;
+  const recentTargets = resolveRecentTargetsFromSettings(candidate);
+  if (recentTargets) {
+    result.recentTargets = recentTargets;
+    result.recentModels = favoriteTargetsToLegacyRefs(recentTargets);
+  } else {
+    const recentModels = sanitizeModelRefs(candidate.recentModels, 16);
+    if (recentModels) {
+      result.recentModels = recentModels;
+      result.recentTargets = legacyRefsToFavoriteTargets(recentModels);
+    }
   }
 
   const recentAgents = sanitizeStringArray(candidate.recentAgents);

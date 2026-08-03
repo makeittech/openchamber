@@ -57,6 +57,16 @@
         "src/**/*.{ts,tsx}",
         "webview/**/*.{ts,tsx}"
       ]
+    },
+    "packages/quota-core": {
+      "entry": [
+        "src/index.js",
+        "src/index.d.ts",
+        "src/**/*.{test,spec}.{js,cjs,mjs}"
+      ],
+      "project": [
+        "src/**/*.{js,d.ts}"
+      ]
     }
   }
 }

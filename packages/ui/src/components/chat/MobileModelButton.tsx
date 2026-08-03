@@ -1,8 +1,14 @@
 import React from 'react';
 import { cn } from '@/lib/utils';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { useHarnessStore } from '@/stores/useHarnessStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useSelectionStore } from '@/sync/selection-store';
+import { resolveActiveHarnessTarget } from '@/lib/harness/resolve-execution-target';
+import { resolveActiveClaudeModel } from '@/lib/harness/claude-models';
 import { getModelDisplayName } from './mobileControlsUtils';
 import { ProviderLogo } from '@/components/ui/ProviderLogo';
+import { HarnessLogo } from '@/components/ui/HarnessLogo';
 import { useI18n } from '@/lib/i18n';
 
 interface MobileModelButtonProps {
@@ -16,7 +22,30 @@ export const MobileModelButton: React.FC<MobileModelButtonProps> = ({ onOpenMode
     const currentProviderId = useConfigStore((state) => state.currentProviderId);
     const getCurrentProvider = useConfigStore((state) => state.getCurrentProvider);
     const currentProvider = getCurrentProvider();
-    const modelLabel = getModelDisplayName(currentProvider, currentModelId, t('chat.modelControls.selectModel'));
+
+    const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
+    const sessionTarget = useSelectionStore((state) => (
+        currentSessionId ? state.sessionTargets.get(currentSessionId) ?? null : null
+    ));
+    const pendingHandoffTarget = useSelectionStore((state) => (
+        currentSessionId ? state.pendingHandoffTargets.get(currentSessionId) ?? null : null
+    ));
+    const lastUsedTarget = useSelectionStore((state) => state.lastUsedTarget);
+    const claudeCatalog = useHarnessStore((state) => state.catalogsById['claude-code']);
+
+    const activeTarget = resolveActiveHarnessTarget({
+        sessionId: currentSessionId,
+        sessionTarget,
+        pendingHandoffTarget,
+        lastUsedTarget,
+    });
+
+    const claudeModel = activeTarget?.harnessId === 'claude-code'
+        ? resolveActiveClaudeModel(activeTarget, claudeCatalog)
+        : null;
+    const modelLabel = claudeModel
+        ? t('chat.harness.chip.claude', { model: claudeModel.metadata.name ?? claudeModel.modelRef })
+        : getModelDisplayName(currentProvider, currentModelId, t('chat.modelControls.selectModel'));
 
     return (
         <button
@@ -43,7 +72,9 @@ export const MobileModelButton: React.FC<MobileModelButtonProps> = ({ onOpenMode
             title={modelLabel}
         >
             <span className="flex h-full w-full min-w-0 items-center gap-1">
-                {currentProviderId ? (
+                {claudeModel ? (
+                    <HarnessLogo harnessId="claude-code" className="size-4 flex-shrink-0" />
+                ) : currentProviderId ? (
                     <ProviderLogo providerId={currentProviderId} className="size-4 flex-shrink-0" />
                 ) : null}
                 <span className="truncate">{modelLabel}</span>

@@ -131,10 +131,25 @@ export type DesktopSettings = {
   sessionGoalDefaultBudgetEnabled?: boolean;
   sessionGoalDefaultBudget?: number;
   smallModelOverride?: string; // format: "provider/model"
+
   // The walkthrough needs structured output and a roomy context, which the
   // small model is often deliberately not chosen for. Unset means "use the
   // small model"; a value replaces it for this feature only.
   walkthroughModelOverride?: string; // format: "provider/model"
+
+  /** Default execution harness for new sessions. */
+  harnessDefaultId?: 'opencode' | 'claude-code';
+  /** Show billing notice when handing off OpenCode → Claude Code. Default true. */
+  harnessWarnOnSwitch?: boolean;
+  /** Feature flag: expose Claude Code engine in picker / routing. Default true. */
+  harnessClaudeCodeEnabled?: boolean;
+  /**
+   * Which agents Claude Code sessions inherit.
+   * `opencode` (default) — OpenChamber/OpenCode agents for permissions + system prompts.
+   * `claude` — native Claude Code agents / prompts / permissions.
+   */
+  harnessClaudeCodeAgentsMode?: 'claude' | 'opencode';
+
   defaultGitIdentityId?: string; // ''/undefined = unset, 'global' or profile id
   openInAppId?: string;
   autoCreateWorktree?: boolean;
@@ -186,9 +201,18 @@ export type DesktopSettings = {
   shortcutOverrides?: Record<string, string>;
 
   favoriteModels?: Array<{ providerID: string; modelID: string }>;
+  /** Target-aware favorites (OpenCode + Claude). Legacy favoriteModels remain for older clients. */
+  favoriteTargets?: Array<
+    | { harnessId: 'opencode'; providerId: string; modelId: string }
+    | { harnessId: 'claude-code'; modelRef: string }
+  >;
   hiddenModels?: Array<{ providerID: string; modelID: string }>;
   collapsedModelProviders?: string[];
   recentModels?: Array<{ providerID: string; modelID: string }>;
+  recentTargets?: Array<
+    | { harnessId: 'opencode'; providerId: string; modelId: string }
+    | { harnessId: 'claude-code'; modelRef: string }
+  >;
   recentAgents?: string[];
   recentEfforts?: Record<string, string[]>;
   diffLayoutPreference?: 'dynamic' | 'inline' | 'side-by-side';

@@ -452,12 +452,16 @@ describe('updateDesktopSettings', () => {
     const stop = startModelPrefsAutoSave();
 
     try {
-      useUIStore.setState({ favoriteModels: [{ providerID: 'anthropic', modelID: 'claude-haiku-4' }] });
+      useUIStore.setState({
+        favoriteModels: [{ providerID: 'anthropic', modelID: 'claude-haiku-4' }],
+        favoriteTargets: [{ harnessId: 'opencode', providerId: 'anthropic', modelId: 'claude-haiku-4' }],
+      });
       await delay(20);
       useUIStore.setState({
         hiddenModels: [{ providerID: 'openai', modelID: 'gpt-5' }],
         collapsedModelProviders: ['openai'],
         recentModels: [{ providerID: 'google', modelID: 'gemini-pro' }],
+        recentTargets: [{ harnessId: 'opencode', providerId: 'google', modelId: 'gemini-pro' }],
         recentAgents: ['build'],
         recentEfforts: { 'openai/gpt-5': ['low'] },
       });
@@ -468,9 +472,11 @@ describe('updateDesktopSettings', () => {
       expect(saveCalls[0]).toEqual({
         draftStartersCraftGoalAdded: true, draftStartersScheduleTaskAdded: true,
         favoriteModels: [{ providerID: 'anthropic', modelID: 'claude-haiku-4' }],
+        favoriteTargets: [{ harnessId: 'opencode', providerId: 'anthropic', modelId: 'claude-haiku-4' }],
         hiddenModels: [{ providerID: 'openai', modelID: 'gpt-5' }],
         collapsedModelProviders: ['openai'],
         recentModels: [{ providerID: 'google', modelID: 'gemini-pro' }],
+        recentTargets: [{ harnessId: 'opencode', providerId: 'google', modelId: 'gemini-pro' }],
         recentAgents: ['build'],
         recentEfforts: { 'openai/gpt-5': ['low'] },
       });

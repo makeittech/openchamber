@@ -15,6 +15,8 @@ import { readEmbeddedThemeSearchParams } from '@/contexts/theme-embedded-bootstr
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { getCycledPrimaryAgentName } from '@/components/chat/mobileControlsUtils';
+import { applyFavoriteExecutionTarget } from '@/lib/harness/apply-favorite-target';
+import { executionTargetsMatchIdentity } from '@/lib/harness/favorite-targets';
 import { focusChatInput } from '@/components/chat/composer/editor/dom';
 import { hasOpenDropdown } from './keyboard-shortcut-dom';
 
@@ -59,7 +61,7 @@ export const useKeyboardShortcuts = () => {
   const currentDirectory = useDirectoryStore((s) => s.currentDirectory);
   const activeProject = useProjectsStore((s) => s.getActiveProject());
   const { themeMode, setThemeMode } = useThemeSystem();
-  const { phase: sessionPhase } = useCurrentSessionActivity();
+  const { phase: sessionPhase, canAbort: sessionCanAbort } = useCurrentSessionActivity();
   const abortPrimedUntilRef = React.useRef<number | null>(null);
   const abortPrimedTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const themeModeRef = React.useRef(themeMode);
@@ -557,8 +559,7 @@ export const useKeyboardShortcuts = () => {
           isSessionSwitcherOpen,
           isAboutDialogOpen,
           activeMainTab,
-          favoriteModels,
-          addRecentModel,
+          favoriteTargets,
         } = useUIStore.getState();
 
         if (isSettingsDialogOpen) {
@@ -568,23 +569,39 @@ export const useKeyboardShortcuts = () => {
         const hasOverlay = isCommandPaletteOpen || isHelpDialogOpen || isSessionSwitcherOpen || isAboutDialogOpen;
         const isChatActive = activeMainTab === 'chat';
 
-        if (hasOverlay || !isChatActive || favoriteModels.length === 0) {
+        if (hasOverlay || !isChatActive || favoriteTargets.length === 0) {
           return;
         }
 
         e.preventDefault();
 
-        const { currentProviderId, currentModelId, setProvider, setModel } = useConfigStore.getState();
-        const len = favoriteModels.length;
-        const currentIdx = favoriteModels.findIndex(
-          (f) => f.providerID === currentProviderId && f.modelID === currentModelId,
+        const { currentProviderId, currentModelId } = useConfigStore.getState();
+        const currentSessionId = useSessionUIStore.getState().currentSessionId;
+        const sessionTarget = currentSessionId
+          ? useSelectionStore.getState().getSessionTarget(currentSessionId)
+          : null;
+        const pendingHandoff = currentSessionId
+          ? useSelectionStore.getState().getPendingHandoffTarget(currentSessionId)
+          : null;
+        const activeTarget = pendingHandoff ?? sessionTarget ?? (
+          currentProviderId && currentModelId
+            ? {
+                harnessId: 'opencode' as const,
+                providerId: currentProviderId,
+                modelId: currentModelId,
+              }
+            : null
         );
-        const delta = eventMatchesShortcut(e, combo('cycle_favorite_model_forward')) ? 1 : -1;
-        const next = favoriteModels[(currentIdx + delta + len) % len];
 
-        setProvider(next.providerID);
-        setModel(next.modelID);
-        addRecentModel(next.providerID, next.modelID);
+        const len = favoriteTargets.length;
+        const currentIdx = activeTarget
+          ? favoriteTargets.findIndex((favorite) => executionTargetsMatchIdentity(favorite, activeTarget))
+          : -1;
+        const delta = eventMatchesShortcut(e, combo('cycle_favorite_model_forward')) ? 1 : -1;
+        const next = favoriteTargets[(currentIdx + delta + len) % len];
+        if (!next) return;
+
+        applyFavoriteExecutionTarget(next);
         return;
       }
 
@@ -608,6 +625,7 @@ export const useKeyboardShortcuts = () => {
         window.dispatchEvent(new CustomEvent('openchamber:dictation-toggle'));
         return;
       }
+
 
     };
 
@@ -639,6 +657,7 @@ export const useKeyboardShortcuts = () => {
     toggleExpandedInput,
     setThemeMode,
     sessionPhase,
+    sessionCanAbort,
     armAbortPrompt,
     resetAbortPriming,
     currentSessionId,

@@ -19,6 +19,7 @@ import { assertUpdaterCapability } from './updater-capability.mjs';
 import { checkForDesktopUpdate } from './updater-check.mjs';
 import { resolveUpdaterChannel } from './updater-channel.mjs';
 import { resolveUpdaterFeed } from './updater-feed.mjs';
+import { stopInProcessServer } from './server-shutdown.mjs';
 import {
   buildLinuxInstalledApps,
   buildLinuxOpenSpecs,
@@ -100,6 +101,29 @@ if (shouldIgnoreLoopbackConnectionLimit({
   app.commandLine.appendSwitch('ignore-connections-limit', '127.0.0.1,localhost');
 }
 
+const shouldDisableHardwareAcceleration = () => {
+  const flag = String(process.env.OPENCHAMBER_DISABLE_GPU || '').trim().toLowerCase();
+  if (flag === '1' || flag === 'true' || flag === 'yes') return true;
+  if (flag === '0' || flag === 'false' || flag === 'no') return false;
+  // Linux hosts without DRM (common in nested/cloud VMs) frequently lose the
+  // Chromium GPU/renderer process and leave a solid #151313 BrowserWindow.
+  if (process.platform === 'linux') {
+    try {
+      return !fs.existsSync('/dev/dri');
+    } catch {
+      return false;
+    }
+  }
+  return false;
+};
+
+if (shouldDisableHardwareAcceleration()) {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch('disable-gpu');
+  app.commandLine.appendSwitch('disable-gpu-compositing');
+  globalThis.__OPENCHAMBER_GPU_DISABLED__ = true;
+}
+
 protocol.registerSchemesAsPrivileged([
   {
     scheme: UI_PROTOCOL,
@@ -126,6 +150,9 @@ log.initialize();
 log.transports.file.maxSize = 5 * 1024 * 1024;
 log.transports.file.level = 'info';
 log.transports.console.level = isDev ? 'debug' : 'warn';
+if (globalThis.__OPENCHAMBER_GPU_DISABLED__) {
+  log.warn('[electron] hardware acceleration disabled (OPENCHAMBER_DISABLE_GPU or missing /dev/dri)');
+}
 
 // The in-process web server runs in this same Node process and uses plain
 // `console.log/warn/error`. Without piping console through electron-log,
@@ -256,6 +283,8 @@ const state = {
   quitInProgress: false,
   quitConfirmationPending: false,
   backgroundShutdownComplete: false,
+  backgroundShutdownPromise: null,
+  serverShutdownPromise: null,
   sshShutdownPromise: null,
   installingUpdate: false,
   pendingUpdate: null,
@@ -345,14 +374,16 @@ const quitConfirmationMessage = () => {
 };
 
 const shutdownBackgroundServices = () => {
-  if (state.backgroundShutdownComplete) return;
+  if (state.backgroundShutdownPromise) return state.backgroundShutdownPromise;
+  if (state.backgroundShutdownComplete) return Promise.resolve();
   state.backgroundShutdownComplete = true;
   setDesktopKeepAwakeActive(false);
-  if (state.installingUpdate) return;
-  killSidecar();
-  setImmediate(() => {
-    void shutdownSshSessions();
-  });
+  if (state.installingUpdate) return Promise.resolve();
+  state.backgroundShutdownPromise = Promise.all([
+    killSidecar(),
+    shutdownSshSessions(),
+  ]).then(() => undefined);
+  return state.backgroundShutdownPromise;
 };
 
 const shutdownSshSessions = async () => {
@@ -405,11 +436,12 @@ const prepareForQuit = ({ installingUpdate = false } = {}) => {
   shutdownBackgroundServices();
 };
 
-const performConfirmedQuit = () => {
-  if (state.quitInProgress) return;
+const performConfirmedQuit = async () => {
+  if (state.quitInProgress) return state.backgroundShutdownPromise;
   state.quitInProgress = true;
 
   prepareForQuit();
+  await shutdownBackgroundServices();
   app.exit(0);
 };
 
@@ -420,12 +452,9 @@ const performConfirmedQuit = () => {
 // reaper remains the backstop for an unhandled hard crash (SIGKILL).
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(signal, () => {
-    try {
-      shutdownBackgroundServices();
-    } catch (error) {
+    void shutdownBackgroundServices().catch((error) => {
       log.warn(`[electron] ${signal} shutdown failed:`, error);
-    }
-    app.exit(0);
+    }).finally(() => app.exit(0));
   });
 }
 
@@ -1584,16 +1613,21 @@ Stop-ProcessTree $targetPid $true
 };
 
 const killSidecar = () => {
+  if (state.serverShutdownPromise) return state.serverShutdownPromise;
   const handle = state.serverHandle;
-  state.serverHandle = null;
-  state.sidecarUrl = null;
-  if (!handle) return;
+  if (!handle) return Promise.resolve();
 
-  try {
-    launchDetachedOpenCodeKiller(handle.getOpenCodeProcessInfo?.());
-  } catch (error) {
-    log.warn('[electron] failed to launch OpenCode killer:', error);
-  }
+  state.serverShutdownPromise = stopInProcessServer({
+    handle,
+    launchFallback: launchDetachedOpenCodeKiller,
+    logger: log,
+  }).finally(() => {
+    if (state.serverHandle === handle) {
+      state.serverHandle = null;
+      state.sidecarUrl = null;
+    }
+  });
+  return state.serverShutdownPromise;
 };
 
 const macosMajorVersion = () => {
@@ -1780,6 +1814,65 @@ const isBenignNavigationAbort = (error) => {
 
   const message = typeof error.message === 'string' ? error.message : '';
   return message.includes('ERR_ABORTED') || message.includes(' (-3) loading ');
+};
+
+const attachRendererRecovery = (browserWindow) => {
+  if (!browserWindow || browserWindow.isDestroyed()) return;
+
+  let reloadAttempts = 0;
+  let reloadTimer = null;
+  const maxReloadAttempts = 3;
+
+  const clearReloadTimer = () => {
+    if (!reloadTimer) return;
+    clearTimeout(reloadTimer);
+    reloadTimer = null;
+  };
+
+  const scheduleReload = (reason) => {
+    if (browserWindow.isDestroyed()) return;
+    if (reloadAttempts >= maxReloadAttempts) {
+      log.error(`[electron] renderer recovery exhausted after ${reloadAttempts} attempts (${reason})`);
+      return;
+    }
+    if (reloadTimer) return;
+
+    const attempt = reloadAttempts + 1;
+    const delayMs = 250 * attempt;
+    reloadTimer = setTimeout(() => {
+      reloadTimer = null;
+      if (browserWindow.isDestroyed()) return;
+      reloadAttempts = attempt;
+      log.warn(`[electron] reloading window after renderer loss (${reason}), attempt ${attempt}/${maxReloadAttempts}`);
+      try {
+        browserWindow.webContents.reload();
+      } catch (error) {
+        log.error('[electron] renderer reload failed:', error);
+      }
+    }, delayMs);
+    if (typeof reloadTimer.unref === 'function') reloadTimer.unref();
+  };
+
+  browserWindow.webContents.on('render-process-gone', (_event, details) => {
+    const reason = details?.reason || 'render-process-gone';
+    log.error('[electron] render-process-gone', details);
+    scheduleReload(reason);
+  });
+
+  browserWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame || isBenignNavigationAbort({ errno: errorCode, message: errorDescription })) return;
+    log.error(`[electron] did-fail-load code=${errorCode} url=${validatedURL || ''} desc=${errorDescription || ''}`);
+    scheduleReload(`did-fail-load:${errorCode}`);
+  });
+
+  browserWindow.webContents.on('did-finish-load', () => {
+    clearReloadTimer();
+    reloadAttempts = 0;
+  });
+
+  browserWindow.on('closed', () => {
+    clearReloadTimer();
+  });
 };
 
 const navigateWindow = async (browserWindow, url, { allowAbort = false } = {}) => {
@@ -2277,8 +2370,9 @@ const openDevToolsForMenuTarget = () => {
   target.webContents.toggleDevTools();
 };
 
-const relaunchFromMenu = () => {
+const relaunchFromMenu = async () => {
   prepareForQuit();
+  await shutdownBackgroundServices();
   app.relaunch();
   app.exit(0);
 };
@@ -2390,6 +2484,7 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {} }
   browserWindow.__ocRuntimeConfig = { apiBaseUrl: desktopApiBaseUrl, clientToken: desktopClientToken, requestHeaders: desktopRequestHeaders };
   browserWindow.__ocInitScript = buildInitScript(desktopLocalOrigin, state.bootOutcome, desktopApiBaseUrl, desktopClientToken, desktopRequestHeaders);
   browserWindow.__ocTitleBarOverlayEnabled = titleBarOverlayEnabled;
+  attachRendererRecovery(browserWindow);
 
   if (useSaved && saved.maximized) {
     browserWindow.maximize();
@@ -2799,6 +2894,7 @@ const createMiniChatWindow = async ({ mode, sessionId = '', directory = '', proj
   browserWindow.__ocMiniChat = true;
   browserWindow.__ocMiniChatSessionId = sessionWindowKey;
   browserWindow.__ocPinned = false;
+  attachRendererRecovery(browserWindow);
 
   if (sessionWindowKey) {
     state.miniChatWindowsBySession.set(sessionWindowKey, browserWindow);
@@ -4174,9 +4270,10 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       await mutateSettingsRoot((root) => {
         root.desktopVibrancy = enabled;
       });
-      setImmediate(() => {
+      setImmediate(async () => {
         try {
           prepareForQuit();
+          await shutdownBackgroundServices();
           app.relaunch();
           app.exit(0);
         } catch (err) {
@@ -4286,13 +4383,14 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       // Defer so the IPC reply flushes before the app starts shutting down.
       // Without this, quitAndInstall() can race with the renderer's pending
       // invoke and the restart appears to do nothing from the UI side.
-      setImmediate(() => {
+      setImmediate(async () => {
         try {
           if (applyUpdate) {
-            killSidecar();
+            await killSidecar();
             autoUpdater.quitAndInstall();
           } else {
             prepareForQuit();
+            await shutdownBackgroundServices();
             app.relaunch();
             app.exit(0);
           }
@@ -5177,9 +5275,13 @@ app.whenReady().then(async () => {
     packaged: app.isPackaged,
     platform: process.platform,
     arch: process.arch,
+    gpuDisabled: Boolean(globalThis.__OPENCHAMBER_GPU_DISABLED__),
     argv: process.argv,
     isBackgroundStart,
     loginItemSettings,
+  });
+  app.on('child-process-gone', (_event, details) => {
+    log.error('[electron] child-process-gone', details);
   });
   nativeTheme.themeSource = readThemeSource();
   registerPackagedUiProtocol();

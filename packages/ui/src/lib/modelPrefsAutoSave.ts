@@ -1,13 +1,16 @@
 import { useUIStore } from '@/stores/useUIStore';
 import { updateDesktopSettings } from '@/lib/persistence';
 import { getRuntimeKey, subscribeRuntimeEndpointWillChange } from '@/lib/runtime-switch';
+import type { ExecutionTarget } from '@/types/harness';
 
 type ModelRef = { providerID: string; modelID: string };
 type ModelPrefsPayload = {
   favoriteModels: ModelRef[];
+  favoriteTargets: ExecutionTarget[];
   hiddenModels: ModelRef[];
   collapsedModelProviders: string[];
   recentModels: ModelRef[];
+  recentTargets: ExecutionTarget[];
   recentAgents: string[];
   recentEfforts: Record<string, string[]>;
 };
@@ -18,6 +21,15 @@ const refsEqual = (a: ModelRef[], b: ModelRef[]): boolean => {
   for (let i = 0; i < a.length; i += 1) {
     if (a[i]?.providerID !== b[i]?.providerID) return false;
     if (a[i]?.modelID !== b[i]?.modelID) return false;
+  }
+  return true;
+};
+
+const targetsEqual = (a: ExecutionTarget[], b: ExecutionTarget[]): boolean => {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (JSON.stringify(a[i]) !== JSON.stringify(b[i])) return false;
   }
   return true;
 };
@@ -42,9 +54,11 @@ const snapshotModelPrefs = (): ModelPrefsPayload => {
   const state = useUIStore.getState();
   return {
     favoriteModels: state.favoriteModels,
+    favoriteTargets: state.favoriteTargets,
     hiddenModels: state.hiddenModels,
     collapsedModelProviders: state.collapsedModelProviders,
     recentModels: state.recentModels,
+    recentTargets: state.recentTargets,
     recentAgents: state.recentAgents,
     recentEfforts: state.recentEfforts,
   };
@@ -52,18 +66,22 @@ const snapshotModelPrefs = (): ModelPrefsPayload => {
 
 const modelPrefsEqual = (a: ModelPrefsPayload, b: ModelPrefsPayload): boolean => (
   refsEqual(a.favoriteModels, b.favoriteModels) &&
+  targetsEqual(a.favoriteTargets, b.favoriteTargets) &&
   refsEqual(a.hiddenModels, b.hiddenModels) &&
   stringsEqual(a.collapsedModelProviders, b.collapsedModelProviders) &&
   refsEqual(a.recentModels, b.recentModels) &&
+  targetsEqual(a.recentTargets, b.recentTargets) &&
   stringsEqual(a.recentAgents, b.recentAgents) &&
   recentEffortsEqual(a.recentEfforts, b.recentEfforts)
 );
 
 const cloneModelPrefs = (prefs: ModelPrefsPayload): ModelPrefsPayload => ({
   favoriteModels: prefs.favoriteModels.slice(),
+  favoriteTargets: prefs.favoriteTargets.slice(),
   hiddenModels: prefs.hiddenModels.slice(),
   collapsedModelProviders: prefs.collapsedModelProviders.slice(),
   recentModels: prefs.recentModels.slice(),
+  recentTargets: prefs.recentTargets.slice(),
   recentAgents: prefs.recentAgents.slice(),
   recentEfforts: Object.fromEntries(Object.entries(prefs.recentEfforts).map(([key, variants]) => [key, variants.slice()])),
 });
@@ -116,17 +134,21 @@ export const startModelPrefsAutoSave = () => {
   const unsubscribe = useUIStore.subscribe((state, prevState) => {
     const next = {
       favoriteModels: state.favoriteModels,
+      favoriteTargets: state.favoriteTargets,
       hiddenModels: state.hiddenModels,
       collapsedModelProviders: state.collapsedModelProviders,
       recentModels: state.recentModels,
+      recentTargets: state.recentTargets,
       recentAgents: state.recentAgents,
       recentEfforts: state.recentEfforts,
     };
     const prev = {
       favoriteModels: prevState.favoriteModels,
+      favoriteTargets: prevState.favoriteTargets,
       hiddenModels: prevState.hiddenModels,
       collapsedModelProviders: prevState.collapsedModelProviders,
       recentModels: prevState.recentModels,
+      recentTargets: prevState.recentTargets,
       recentAgents: prevState.recentAgents,
       recentEfforts: prevState.recentEfforts,
     };

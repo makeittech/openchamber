@@ -2,6 +2,8 @@ import React from 'react';
 import type { Part } from '@opencode-ai/sdk/v2';
 
 import UserTextPart from './parts/UserTextPart';
+import { HandoffContextPartCard } from './HandoffContextPartCard';
+import { isHandoffContextPart } from '@/lib/harness/handoff-context';
 import ToolPart from './parts/ToolPart';
 import AssistantTextPart from './parts/AssistantTextPart';
 import ReasoningPart from './parts/ReasoningPart';
@@ -23,7 +25,10 @@ import type { ContentChangeReason } from '@/hooks/useChatAutoFollow';
 
 import { SimpleMarkdownRenderer } from '../MarkdownRenderer';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useSelectionStore } from '@/sync/selection-store';
+import { getHarnessCapabilityLevel } from '@/lib/harness/capabilities';
 import { useUIStore } from '@/stores/useUIStore';
+import { isHarnessId } from '@/types/harness';
 import { flattenAssistantTextParts, suggestPlanTitleFromText } from '@/lib/messages/messageText';
 import { MULTIRUN_EXECUTION_FORK_PROMPT_META_TEXT } from '@/lib/messages/executionMeta';
 import { useMessageTTS } from '@/hooks/useMessageTTS';
@@ -728,6 +733,14 @@ const UserMessageBody = React.memo(({ messageId, parts, messageCreatedAt, isMobi
                 style={useStickyScrollableUserContent ? { maxHeight: 'calc(var(--chat-scroll-height, 100dvh) * 0.4)' } : undefined}
             >
                 {userContentParts.map((part, index) => {
+                    if (isHandoffContextPart(part)) {
+                        return (
+                            <React.Fragment key={part.id ?? `user-handoff-context-${index}`}>
+                                <HandoffContextPartCard part={part} />
+                            </React.Fragment>
+                        );
+                    }
+
                     if (isSubtaskPart(part)) {
                         return (
                             <React.Fragment key={part.id ?? `user-subtask-${index}`}>
@@ -1220,7 +1233,6 @@ const AssistantMessageBody = React.memo(({
     const isVSCode = isVSCodeRuntime();
     const isMiniChatSurface = chatSurfaceMode === 'mini-chat';
     const canUseProjectPlanActions = !isVSCode && !isMiniChatSurface && !isMobile;
-    const canShowMultiRunAction = !isVSCode && !isMiniChatSurface && !isMobile;
 
     const messagePreviewUrl = React.useMemo(() => {
         if (isVSCode || isMobile || isMiniChatSurface) {
@@ -1257,6 +1269,15 @@ const AssistantMessageBody = React.memo(({
     const createSessionFromAssistantMessage = useSessionUIStore((state) => state.createSessionFromAssistantMessage);
     const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
     const getDirectoryForSession = useSessionUIStore((state) => state.getDirectoryForSession);
+    const sessionTarget = useSelectionStore((state) => (
+        currentSessionId ? state.sessionTargets.get(currentSessionId) ?? null : null
+    ));
+    const multiRunHarnessId = sessionTarget?.harnessId ?? 'opencode';
+    const supportsMultiRun = getHarnessCapabilityLevel(
+        isHarnessId(multiRunHarnessId) ? multiRunHarnessId : 'opencode',
+        'multirun',
+    ) !== 'none';
+    const canShowMultiRunAction = !isVSCode && !isMiniChatSurface && !isMobile;
     const openMultiRunLauncherWithPrompt = useUIStore((state) => state.openMultiRunLauncherWithPrompt);
     const projects = useProjectsStore((state) => state.projects);
     const effectiveDirectory = useEffectiveDirectory();
@@ -2152,14 +2173,27 @@ const AssistantMessageBody = React.memo(({
                             type="button"
                             size="icon"
                             variant="ghost"
-                            className="h-8 w-8 text-muted-foreground bg-transparent hover:text-foreground hover:!bg-transparent active:!bg-transparent focus-visible:!bg-transparent focus-visible:ring-2 focus-visible:ring-primary/50"
+                            disabled={!supportsMultiRun}
+                            className={cn(
+                                'h-8 w-8 bg-transparent hover:!bg-transparent active:!bg-transparent focus-visible:!bg-transparent focus-visible:ring-2 focus-visible:ring-primary/50',
+                                supportsMultiRun
+                                    ? 'text-muted-foreground hover:text-foreground'
+                                    : 'text-muted-foreground/50 cursor-not-allowed opacity-60',
+                            )}
                             onPointerDown={(event) => event.stopPropagation()}
-                            onClick={handleForkMultiRunClick}
+                            onClick={supportsMultiRun ? handleForkMultiRunClick : undefined}
+                            aria-label={supportsMultiRun
+                                ? t('chat.messageBody.actions.startNewMultiRun')
+                                : t('chat.harness.capability.multirunUnsupported')}
                         >
                             <ArrowsMerge className="h-4 w-4" />
                         </Button>
                     </TooltipTrigger>
-                    <TooltipContent sideOffset={6}>{t('chat.messageBody.actions.startNewMultiRun')}</TooltipContent>
+                    <TooltipContent sideOffset={6}>
+                        {supportsMultiRun
+                            ? t('chat.messageBody.actions.startNewMultiRun')
+                            : t('chat.harness.capability.multirunUnsupported')}
+                    </TooltipContent>
                 </Tooltip>
             ) : null}
         </>

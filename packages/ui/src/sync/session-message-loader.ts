@@ -43,6 +43,16 @@ export type SessionMessageLoadState = {
   complete: boolean
   generation: number
   updatedAt: number | undefined
+  /**
+   * An early empty [] snapshot looks renderable and would skip Claude harness
+   * overlay hydration forever. Empty OpenCode sessions stay resolved after one
+   * successful empty fetch, but Claude turns can appear in the harness overlay
+   * shortly after that first miss — retry a bounded number of times with a
+   * short cooldown (or immediately on force/navigation) until messages arrive.
+   */
+  emptyHydrated: boolean
+  emptyHydrationAttempts: number
+  emptyHydratedAt: number | undefined
 }
 
 type LoaderEntry = {
@@ -78,6 +88,23 @@ const getInitialPageSize = () => isConstrainedRuntime()
 const getInitialExpansionLimits = () => isConstrainedRuntime()
   ? CONSTRAINED_INITIAL_PAGE_EXPANSION_LIMITS
   : INITIAL_PAGE_EXPANSION_LIMITS
+
+/** Bounded retries after an early empty [] so Claude harness overlay can catch up. */
+const EMPTY_HYDRATION_MAX_ATTEMPTS = 8
+const EMPTY_HYDRATION_RETRY_MS = 1_500
+
+const needsEmptyHydrationRetry = (
+  entry: LoaderEntry,
+  localCount: number,
+  options?: { force?: boolean; reason?: "navigation" | "reactive" | "prefetch" },
+): boolean => {
+  if (localCount > 0) return false
+  if (options?.force || options?.reason === "navigation") return true
+  if (!entry.snapshot.emptyHydrated) return true
+  if (entry.snapshot.emptyHydrationAttempts >= EMPTY_HYDRATION_MAX_ATTEMPTS) return false
+  const hydratedAt = entry.snapshot.emptyHydratedAt ?? 0
+  return Date.now() - hydratedAt >= EMPTY_HYDRATION_RETRY_MS
+}
 
 const isUserMessage = (message: Message): boolean => {
   const candidate = message as Message & { clientRole?: unknown; role?: unknown }
@@ -123,6 +150,9 @@ const createDefaultState = (generation = 0): SessionMessageLoadState => ({
   complete: false,
   generation,
   updatedAt: undefined,
+  emptyHydrated: false,
+  emptyHydrationAttempts: 0,
+  emptyHydratedAt: undefined,
 })
 
 export const EMPTY_SESSION_MESSAGE_LOAD_STATE = createDefaultState()
@@ -143,6 +173,10 @@ export class SessionMessageLoader {
   }
 
   configure(configuration: LoaderConfiguration): void {
+    // React Strict Mode runs effect cleanups that call dispose() while keeping
+    // this same loader instance mounted. Always clear the disposed bit on
+    // configure so remounted effects can hydrate again.
+    this.disposed = false
     if (this.sdk === configuration.sdk && this.runtimeKey === configuration.runtimeKey) return
     const runtimeChanged = this.runtimeKey !== configuration.runtimeKey
     const previousRuntimeKey = this.runtimeKey
@@ -187,13 +221,18 @@ export class SessionMessageLoader {
     const entry = this.getEntry(normalized)
     const store = this.childStores.ensureChild(normalized.directory, { bootstrap: false })
     const materialization = getSessionMaterializationStatus(store.getState(), normalized.sessionID)
-    if (!options?.force && materialization.renderable) {
+    const localCount = store.getState().message[normalized.sessionID]?.length ?? 0
+    // Claude turns are served via the harness message overlay. An early empty
+    // [] snapshot looks "renderable" and would skip hydration forever — force
+    // one fetch when the local transcript is still empty, then retry briefly.
+    const needsEmptyHydration = needsEmptyHydrationRetry(entry, localCount, options)
+    if (!options?.force && materialization.renderable && !needsEmptyHydration) {
       if (!entry.snapshot.resolved) {
         this.patchEntry(entry, {
           status: "ready",
           error: null,
           resolved: true,
-          limit: Math.max(entry.snapshot.limit, store.getState().message[normalized.sessionID]?.length ?? 0),
+          limit: Math.max(entry.snapshot.limit, localCount),
         })
       }
       return entry.inflight ?? Promise.resolve()
@@ -206,8 +245,47 @@ export class SessionMessageLoader {
     }
     if (options?.force) this.bumpGeneration(entry)
     const kind: SessionMessageLoadKind = options?.reason === "prefetch" ? "prefetch" : "initial"
-    return this.startLoad(normalized, entry, store, kind, async (isCurrent, performance) => {
-      await this.loadInitial(normalized, entry, store, isCurrent, performance)
+    return this.startLoad(normalized, entry, store, kind, async (isCurrent, performance, resolveStore) => {
+      const liveStore = resolveStore()
+      await this.loadInitial(normalized, entry, liveStore, isCurrent, performance)
+      if (!isCurrent()) return
+      const hydratedCount = resolveStore().getState().message[normalized.sessionID]?.length ?? 0
+      if (hydratedCount > 0) {
+        this.patchEntry(entry, {
+          emptyHydrated: false,
+          emptyHydrationAttempts: 0,
+          emptyHydratedAt: undefined,
+        })
+      } else {
+        const attempts = entry.snapshot.emptyHydrationAttempts + 1
+        this.patchEntry(entry, {
+          emptyHydrated: true,
+          emptyHydrationAttempts: attempts,
+          emptyHydratedAt: Date.now(),
+        })
+        // Claude harness overlay can populate after the first empty OpenCode
+        // snapshot. Self-schedule bounded retries so chat does not stay blank
+        // waiting for a later navigation/force.
+        if (attempts < EMPTY_HYDRATION_MAX_ATTEMPTS) {
+          const entryKey = this.keyFor(normalized)
+          const generation = entry.snapshot.generation
+          setTimeout(() => {
+            if (this.disposed) return
+            const current = this.entries.get(entryKey)
+            if (!current || current.snapshot.generation !== generation) return
+            const count = resolveStore().getState().message[normalized.sessionID]?.length ?? 0
+            if (count > 0) return
+            void this.ensure(normalized, { reason: "reactive" })
+          }, EMPTY_HYDRATION_RETRY_MS)
+        }
+      }
+      if (!isMobileSurfaceRuntime() && isCurrent()) {
+        queueMicrotask(() => {
+          if (isCurrent() && entry.snapshot.cursor && !entry.snapshot.complete) {
+            void this.loadOlder(normalized)
+          }
+        })
+      }
     })
   }
 
@@ -223,10 +301,10 @@ export class SessionMessageLoader {
     if (entry.snapshot.complete || !entry.snapshot.cursor) return Promise.resolve()
     const store = this.childStores.ensureChild(normalized.directory, { bootstrap: false })
     const cursor = entry.snapshot.cursor
-    return this.startLoad(normalized, entry, store, "older", async (isCurrent, performance) => {
+    return this.startLoad(normalized, entry, store, "older", async (isCurrent, performance, resolveStore) => {
       const page = await this.fetchPage(normalized, HISTORY_MESSAGE_PAGE_SIZE, cursor, "older", performance)
       if (!isCurrent()) return
-      const committed = this.commitPage(normalized, entry, store, page, "prepend", isCurrent)
+      const committed = this.commitPage(normalized, entry, resolveStore(), page, "prepend", isCurrent)
       if (!committed || !isCurrent()) return
       this.patchEntry(entry, {
         status: "ready",
@@ -298,13 +376,13 @@ export class SessionMessageLoader {
     }
     const store = this.childStores.ensureChild(normalized.directory, { bootstrap: false })
     this.bumpGeneration(entry)
-    return this.startLoad(normalized, entry, store, "refresh", async (isCurrent, performance) => {
+    return this.startLoad(normalized, entry, store, "refresh", async (isCurrent, performance, resolveStore) => {
       const previousCoverage = entry.snapshot.resolved
         ? { cursor: entry.snapshot.cursor, complete: entry.snapshot.complete }
         : null
       const page = await this.fetchPage(normalized, Math.max(1, limit), undefined, "refresh", performance)
       if (!isCurrent()) return
-      const committed = this.commitPage(normalized, entry, store, page, "merge", isCurrent)
+      const committed = this.commitPage(normalized, entry, resolveStore(), page, "merge", isCurrent)
       if (!committed || !isCurrent()) return
       const coverage = previousCoverage ?? page
       this.patchEntry(entry, {
@@ -474,7 +552,11 @@ export class SessionMessageLoader {
     entry: LoaderEntry,
     store: { getState: () => DirectoryStore; setState: DirectoryStoreSetter },
     kind: SessionMessageLoadKind,
-    run: (isCurrent: () => boolean, performance: LoadPerformanceDetails) => Promise<void>,
+    run: (
+      isCurrent: () => boolean,
+      performance: LoadPerformanceDetails,
+      resolveStore: () => { getState: () => DirectoryStore; setState: DirectoryStoreSetter },
+    ) => Promise<void>,
   ): Promise<void> {
     const generation = entry.snapshot.generation
     const sdkEpoch = this.sdkEpoch
@@ -482,22 +564,61 @@ export class SessionMessageLoader {
       operation: kind === "prefetch" ? "session-prefetch" : `session-messages.${kind}`,
       caller: kind,
     })
+    // Do not pin isCurrent() to the store object identity captured at start.
+    // Directory bootstrap can replace the child store while a message fetch is
+    // in flight; discarding that response left Claude harness sessions blank
+    // (outcome "stale") with no automatic retry. Generation + sdkEpoch still
+    // reject forced refreshes, eviction, and runtime switches.
     const isCurrent = () => (
       !this.disposed
       && this.sdkEpoch === sdkEpoch
       && entry.snapshot.generation === generation
-      && this.childStores.getChild(target.directory) === store
+      && Boolean(this.childStores.getChild(target.directory))
     )
     const performance = { retryCount: 0, recordCount: 0 }
+    const resolveStore = () => this.childStores.ensureChild(target.directory, { bootstrap: false })
     this.patchEntry(entry, { status: "loading", loadingKind: kind, error: null })
     let loadPromise: Promise<void>
     try {
-      loadPromise = run(isCurrent, performance)
+      loadPromise = run(isCurrent, performance, resolveStore)
     } catch (error) {
       loadPromise = Promise.reject(error)
     }
     const promise = loadPromise
-      .then(() => finishPerformanceEvent(isCurrent() ? "complete" : "stale", performance))
+      .then(() => {
+        const completed = isCurrent()
+        finishPerformanceEvent(completed ? "complete" : "stale", performance)
+        if (completed) return
+        // Stale empty loads must retry — otherwise Claude overlay data fetched
+        // during bootstrap store replacement / directory invalidation never
+        // lands in the live store. Do not require the same entry object:
+        // invalidateDirectory deletes entries, and requiring identity silently
+        // dropped the only recovery path (ChatContainer deps also stay unchanged
+        // when a stale load commits nothing).
+        if (this.disposed) return
+        const liveCount = () => (
+          this.childStores.getChild(target.directory)?.getState().message[target.sessionID]?.length ?? 0
+        )
+        if (liveCount() > 0) return
+        const scheduleStaleRetry = (attempt: number) => {
+          setTimeout(() => {
+            if (this.disposed) return
+            try {
+              this.childStores.ensureChild(target.directory, { bootstrap: false })
+            } catch {
+              if (attempt < 4) scheduleStaleRetry(attempt + 1)
+              return
+            }
+            if (liveCount() > 0) return
+            void this.ensure(target, { force: true, reason: "navigation" }).then(() => {
+              if (this.disposed) return
+              if (liveCount() > 0) return
+              if (attempt < 4) scheduleStaleRetry(attempt + 1)
+            })
+          }, EMPTY_HYDRATION_RETRY_MS)
+        }
+        scheduleStaleRetry(0)
+      })
       .catch((error: unknown) => {
         if (!isCurrent()) {
           finishPerformanceEvent("stale", performance)
@@ -528,10 +649,12 @@ export class SessionMessageLoader {
     const firstLimit = Math.max(entry.snapshot.limit, storeMessageCount, getInitialPageSize())
     const firstPage = await this.fetchPage(target, firstLimit, undefined, "initial-page", performance)
     if (!isCurrent()) return
+    // Re-resolve after await — directory bootstrap may have replaced the child store.
+    const liveStore = this.childStores.ensureChild(target.directory, { bootstrap: false })
     const deferFirstCommit = !firstPage.complete && !hasUserMessage(firstPage.session)
     let committed = deferFirstCommit
       ? { messages: firstPage.session }
-      : this.commitPage(target, entry, store, firstPage, "merge", isCurrent)
+      : this.commitPage(target, entry, liveStore, firstPage, "merge", isCurrent)
     let acceptedPage = firstPage
 
     if (deferFirstCommit) {
@@ -542,8 +665,9 @@ export class SessionMessageLoader {
         acceptedPage = expandedPage
         const boundaryFound = hasUserMessage(expandedPage.session)
         const isLast = limit === getInitialExpansionLimits()[getInitialExpansionLimits().length - 1]
+        const commitStore = this.childStores.ensureChild(target.directory, { bootstrap: false })
         if (expandedPage.complete || boundaryFound || isLast) {
-          committed = this.commitPage(target, entry, store, expandedPage, "merge", isCurrent)
+          committed = this.commitPage(target, entry, commitStore, expandedPage, "merge", isCurrent)
         } else {
           committed = { messages: expandedPage.session }
         }

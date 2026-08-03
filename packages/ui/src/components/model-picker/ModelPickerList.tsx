@@ -20,7 +20,10 @@ import { mergeModelMetadataWithLiveModel } from '@/lib/modelMetadata';
 import { getModelDisplayName as getSharedModelDisplayName } from '@/lib/modelDisplay';
 import { cn } from '@/lib/utils';
 import { useModelPickerSectionsStore } from '@/stores/useModelPickerSectionsStore';
+import { HarnessTabs, type ModelPickerHarnessOption } from './HarnessTabs';
 import type { ModelMetadata } from '@/types';
+
+export type { ModelPickerHarnessOption };
 
 type ProviderModel = Record<string, unknown> & { id?: string; name?: string };
 
@@ -77,6 +80,31 @@ const formatCost = (value?: number | null) => {
   return formatUsdCurrency(value);
 };
 
+export type ModelPickerLabels = {
+  searchPlaceholder: string;
+  noResults: string;
+  favorites: string;
+  recent: string;
+  keyboardHint: string;
+  notSelected?: string;
+  favorite?: string;
+  unfavorite?: string;
+  capabilities?: string;
+  capabilityToolCalling?: string;
+  capabilityReasoning?: string;
+  input?: string;
+  output?: string;
+  context?: string;
+  costPerMillion?: string;
+  costInOutShort?: string;
+  modalityText?: string;
+  modalityImage?: string;
+  modalityVideo?: string;
+  modalityAudio?: string;
+  modalityPdf?: string;
+  harnesses?: string;
+};
+
 const hasTooltipMetadata = (metadata?: ModelMetadata) => {
   if (!metadata) return false;
   return Boolean(
@@ -84,15 +112,30 @@ const hasTooltipMetadata = (metadata?: ModelMetadata) => {
     metadata.reasoning ||
     metadata.cost?.input !== undefined ||
     metadata.cost?.output !== undefined ||
+    metadata.limit?.context !== undefined ||
+    metadata.limit?.output !== undefined ||
     (metadata.modalities?.input?.length ?? 0) > 0 ||
     (metadata.modalities?.output?.length ?? 0) > 0,
   );
 };
 
+const localizeModalityValue = (
+  value: string,
+  labels: ModelPickerLabels,
+): string => {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'text') return labels.modalityText ?? value;
+  if (normalized === 'image') return labels.modalityImage ?? value;
+  if (normalized === 'video') return labels.modalityVideo ?? value;
+  if (normalized === 'audio') return labels.modalityAudio ?? value;
+  if (normalized === 'pdf') return labels.modalityPdf ?? value;
+  return value;
+};
+
 const ModelPickerRowTooltip: React.FC<{
   metadata?: ModelMetadata;
   active: boolean;
-  labels: ModelPickerListProps['labels'];
+  labels: ModelPickerLabels;
   children: React.ReactElement;
 }> = ({ metadata, active, labels, children }) => {
   const [delayedActive, setDelayedActive] = React.useState(false);
@@ -108,12 +151,19 @@ const ModelPickerRowTooltip: React.FC<{
 
   if (!hasTooltipMetadata(metadata)) return children;
 
-  const inputModalities = metadata?.modalities?.input ?? [];
-  const outputModalities = metadata?.modalities?.output ?? [];
+  const inputModalities = (metadata?.modalities?.input ?? []).map((value) => localizeModalityValue(value, labels));
+  const outputModalities = (metadata?.modalities?.output ?? []).map((value) => localizeModalityValue(value, labels));
   const capabilities = [
     metadata?.tool_call ? labels.capabilityToolCalling : null,
     metadata?.reasoning ? labels.capabilityReasoning : null,
   ].filter(Boolean);
+  const contextLimit = typeof metadata?.limit?.context === 'number' ? formatModelContextTokens(metadata.limit.context) : '';
+  const outputLimit = typeof metadata?.limit?.output === 'number' ? formatModelContextTokens(metadata.limit.output) : '';
+  const costIn = formatCost(metadata?.cost?.input);
+  const costOut = formatCost(metadata?.cost?.output);
+  const costSummary = labels.costInOutShort
+    ? labels.costInOutShort.replace('{input}', costIn).replace('{output}', costOut)
+    : `${costIn} · ${costOut}`;
 
   return (
     <Tooltip delayDuration={0} open={active && delayedActive} onOpenChange={() => {}}>
@@ -139,10 +189,22 @@ const ModelPickerRowTooltip: React.FC<{
                 <span className="typography-meta text-foreground">{outputModalities.join(', ')}</span>
               </div>
             ) : null}
+            {contextLimit ? (
+              <div className="flex items-center justify-between gap-3 text-muted-foreground">
+                <span className="typography-meta font-medium">{labels.context}</span>
+                <span className="typography-meta text-foreground">{contextLimit}</span>
+              </div>
+            ) : null}
+            {outputLimit ? (
+              <div className="flex items-center justify-between gap-3 text-muted-foreground">
+                <span className="typography-meta font-medium">{labels.output}</span>
+                <span className="typography-meta text-foreground">{outputLimit}</span>
+              </div>
+            ) : null}
             {(metadata?.cost?.input !== undefined || metadata?.cost?.output !== undefined) ? (
               <div className="flex items-center justify-between gap-3 text-muted-foreground">
                 <span className="typography-meta font-medium">{labels.costPerMillion}</span>
-                <span className="typography-meta text-foreground">In {formatCost(metadata?.cost?.input)} · Out {formatCost(metadata?.cost?.output)}</span>
+                <span className="typography-meta text-foreground">{costSummary}</span>
               </div>
             ) : null}
           </div>
@@ -320,22 +382,7 @@ interface ModelPickerListProps {
   searchQuery: string;
   onSearchQueryChange: (value: string) => void;
   onSelect: (entry: ModelPickerEntry) => void;
-  labels: {
-    searchPlaceholder: string;
-    noResults: string;
-    favorites: string;
-    recent: string;
-    keyboardHint: string;
-    notSelected?: string;
-    favorite?: string;
-    unfavorite?: string;
-    capabilities?: string;
-    capabilityToolCalling?: string;
-    capabilityReasoning?: string;
-    input?: string;
-    output?: string;
-    costPerMillion?: string;
-  };
+  labels: ModelPickerLabels;
   selectedModel?: { providerID: string; modelID: string } | null;
   hiddenModels?: HiddenModel[];
   allowedProviderIds?: string[];
@@ -367,6 +414,11 @@ interface ModelPickerListProps {
   providerOrder?: string[];
   onReorderProvider?: (orderedProviderIDs: string[]) => void;
   reorderProviderTitle?: string;
+  /** Harness tabs rendered above the search field; hidden when only one harness exists. */
+  harnesses?: ModelPickerHarnessOption[];
+  onSelectHarness?: (harnessId: string) => void;
+  /** Actions rendered under the model list (e.g. Add provider…). */
+  actionsFooter?: React.ReactNode;
   footerContent?: React.ReactNode | ((activeEntry: ModelPickerEntry | undefined) => React.ReactNode);
   renderVersion?: number;
   tooltipsEnabled?: boolean;
@@ -408,6 +460,9 @@ export const ModelPickerList: React.FC<ModelPickerListProps> = ({
   providerOrder,
   onReorderProvider,
   reorderProviderTitle,
+  harnesses,
+  onSelectHarness,
+  actionsFooter,
   footerContent,
   renderVersion,
   tooltipsEnabled = true,
@@ -746,6 +801,17 @@ export const ModelPickerList: React.FC<ModelPickerListProps> = ({
 
   return (
     <>
+      {harnesses && harnesses.length > 1 ? (
+        <div className="px-2 pt-2 pb-1.5 border-b border-border/40">
+          <HarnessTabs
+            harnesses={harnesses}
+            onSelect={onSelectHarness}
+            ariaLabel={labels.harnesses}
+            disabled={disabled}
+          />
+        </div>
+      ) : null}
+
       <div className="px-2 py-1 border-b border-border/40">
         <div className="relative">
           <Icon name="search" className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
@@ -831,6 +897,12 @@ export const ModelPickerList: React.FC<ModelPickerListProps> = ({
           )}
         </div>
       </ScrollableOverlay>
+
+      {actionsFooter ? (
+        <div className="border-t border-border/40 p-1 flex flex-col gap-0.5">
+          {actionsFooter}
+        </div>
+      ) : null}
 
       <div className="px-3 pt-1 pb-1.5 border-t border-border/40 typography-micro text-muted-foreground">
         <ModelPickerFooter store={selectionStore} flatModelList={flatModelList} footerContent={footerContent} fallback={labels.keyboardHint} />

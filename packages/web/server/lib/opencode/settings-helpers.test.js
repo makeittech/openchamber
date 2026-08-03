@@ -94,6 +94,58 @@ describe('settings helpers', () => {
     expect(helpers.sanitizeSettingsUpdate({ messageStreamTransport: 'websocket' })).toEqual({});
   });
 
+  it('accepts harness Claude Code settings including agents mode', () => {
+    const helpers = createTestHelpers();
+
+    expect(helpers.sanitizeSettingsUpdate({
+      harnessDefaultId: 'claude-code',
+      harnessWarnOnSwitch: false,
+      harnessClaudeCodeEnabled: true,
+      harnessClaudeCodeAgentsMode: 'claude',
+    })).toEqual({
+      harnessDefaultId: 'claude-code',
+      harnessWarnOnSwitch: false,
+      harnessClaudeCodeEnabled: true,
+      harnessClaudeCodeAgentsMode: 'claude',
+    });
+
+    expect(helpers.sanitizeSettingsUpdate({
+      harnessDefaultId: 'codex-cli',
+      harnessClaudeCodeAgentsMode: 'cursor',
+    })).toEqual({
+      harnessDefaultId: 'opencode',
+      harnessClaudeCodeAgentsMode: 'opencode',
+    });
+
+    expect(helpers.sanitizeSettingsUpdate({
+      harnessWarnOnSwitch: 'yes',
+      harnessClaudeCodeAgentsMode: 1,
+    })).toEqual({});
+  });
+
+  it('migrates legacy engines* keys and prefers new keys on conflict', () => {
+    const helpers = createTestHelpers();
+
+    expect(helpers.sanitizeSettingsUpdate({
+      enginesDefaultHarnessId: 'claude-code',
+      enginesClaudeCodeWarnOnOpenCodeHandoff: false,
+      enginesClaudeCodeEnabled: true,
+      enginesClaudeCodeAgentsMode: 'claude',
+    })).toEqual({
+      harnessDefaultId: 'claude-code',
+      harnessWarnOnSwitch: false,
+      harnessClaudeCodeEnabled: true,
+      harnessClaudeCodeAgentsMode: 'claude',
+    });
+
+    expect(helpers.sanitizeSettingsUpdate({
+      harnessWarnOnSwitch: true,
+      enginesClaudeCodeWarnOnOpenCodeHandoff: false,
+    })).toEqual({
+      harnessWarnOnSwitch: true,
+    });
+  });
+
   it('sanitizes the persisted terminal shell', () => {
     const helpers = createTestHelpers();
 

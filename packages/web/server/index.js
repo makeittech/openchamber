@@ -74,6 +74,7 @@ import { createBootstrapRuntime } from './lib/opencode/bootstrap-runtime.js';
 import { createSessionRuntime } from './lib/opencode/session-runtime.js';
 import { createOpenCodeWatcherRuntime } from './lib/opencode/watcher.js';
 import { createSessionAssistRuntime } from './lib/session-assist/runtime.js';
+import { createSessionTitleRuntime } from './lib/session-title/runtime.js';
 import { createSessionGoalRuntime } from './lib/session-goal/runtime.js';
 import { createContextObligatoryRuntime } from './lib/context-obligatory/runtime.js';
 import { createScheduledTasksRuntime } from './lib/scheduled-tasks/runtime.js';
@@ -88,6 +89,16 @@ import { createPushRuntime } from './lib/notifications/push-runtime.js';
 import { createApnsRuntime } from './lib/notifications/apns-runtime.js';
 import { createNotificationTemplateRuntime } from './lib/notifications/template-runtime.js';
 import { createPermissionAutoAcceptRuntime } from './lib/permission-auto-accept/runtime.js';
+import {
+  createHarnessRouter,
+  getSessionBinding,
+  listPendingPermissions as listHarnessPendingPermissions,
+  addHarnessEventObserver,
+  getHarnessRecentMessages,
+  isHarnessSessionWorking,
+  translateOpenCodeCommandForClaude,
+  createOpenCodeAgentResolver,
+} from './lib/harness/index.js';
 import { createGracefulShutdownRuntime } from './lib/opencode/shutdown-runtime.js';
 import { createProjectConfigRuntime } from './lib/projects/project-config.js';
 import { createRemoteClientAuthRuntime } from './lib/client-auth/remote-clients.js';
@@ -97,6 +108,7 @@ import { attachRealtimeProxy } from './lib/realtime-proxy.js';
 import { createRelayService } from './lib/relay/service.js';
 import { createRelayHostLock } from './lib/relay/host-lock.js';
 import { createAgentToolRuntime } from './lib/agent-tool/runtime.js';
+import { createClaudeOpenChamberMcpAdapter } from './lib/agent-tool/claude-mcp.js';
 import { createSystemPromptRuntime } from './lib/system-prompt/runtime.js';
 import { createOpenChamberSessionService } from './lib/openchamber-sessions/routes.js';
 import { createScheduledTaskService } from './lib/scheduled-tasks/service.js';
@@ -448,6 +460,31 @@ const broadcastGlobalUiEvent = createGlobalUiEventBroadcaster({
   wsClients: uiNotificationWsClients,
   writeSseEvent,
 });
+/** @type {ReturnType<typeof createClaudeOpenChamberMcpAdapter> | null} */
+let claudeOpenChamberMcpAdapter = null;
+const harnessRouter = createHarnessRouter({
+  getBroadcast: () => broadcastGlobalUiEvent,
+  createOpenChamberMcpServers: (options) => (
+    claudeOpenChamberMcpAdapter?.createMcpServers(options) ?? Promise.resolve(null)
+  ),
+  // OpenCode/OpenChamber slash commands run on Claude sessions by resolving the
+  // authoritative template from OpenCode per turn. `buildOpenCodeUrl` /
+  // `getOpenCodeAuthHeaders` are declared further down; this closure only runs
+  // while serving a prompt, long after module evaluation.
+  resolveOpenCodeCommand: (params) => translateOpenCodeCommandForClaude({
+    ...params,
+    buildOpenCodeUrl,
+    getOpenCodeAuthHeaders,
+  }),
+  // Same lazy binding for OpenCode agent inheritance (prompt + permissions +
+  // custom subagents). A pre-built harnessRouter is shared with route
+  // registration, so the resolver must live here — not only inside
+  // registerHarnessRoutes — or agentsMode=opencode silently inherits nothing.
+  resolveOpenCodeAgents: createOpenCodeAgentResolver({
+    buildOpenCodeUrl: (requestPath, prefixOverride) => buildOpenCodeUrl(requestPath, prefixOverride),
+    getOpenCodeAuthHeaders: () => getOpenCodeAuthHeaders(),
+  }),
+});
 const broadcastUiNotification = (...args) => notificationEmitterRuntime.broadcastUiNotification(...args);
 
 const sessionRuntime = createSessionRuntime({
@@ -733,10 +770,22 @@ const sessionAssistRuntime = createSessionAssistRuntime({
   getSmallModelService: async () => import('./lib/small-model/index.js'),
 });
 
+const sessionTitleRuntime = createSessionTitleRuntime({
+  buildOpenCodeUrl,
+  getOpenCodeAuthHeaders,
+  getSmallModelService: async () => import('./lib/small-model/index.js'),
+  getHarnessRecentMessages,
+  getSessionBinding: (sessionId) => getSessionBinding(sessionId),
+});
+
 const sessionGoalRuntime = createSessionGoalRuntime({
   buildOpenCodeUrl,
   getOpenCodeAuthHeaders,
   getSmallModelService: async () => import('./lib/small-model/index.js'),
+  getHarnessBinding: (sessionId) => getSessionBinding(sessionId),
+  getHarnessRecentMessages,
+  isHarnessSessionWorking,
+  promptHarness: (body) => harnessRouter.prompt(body),
   emitGoalNotification: async ({ sessionId, directory, status, goal }) => {
     // The goal settle notification replaces the per-turn ready notifications
     // (suppressed while the goal is active) — so it obeys the same toggle.
@@ -790,11 +839,22 @@ const permissionAutoAcceptRuntime = createPermissionAutoAcceptRuntime({
   readSettingsFromDiskMigrated,
   persistSettings,
   broadcastGlobalUiEvent,
+  isHarnessSession: (sessionId) => getSessionBinding(sessionId)?.harnessId === 'claude-code',
+  replyHarnessPermission: (body) => harnessRouter.replyPermission(body),
+  listHarnessPendingPermissions,
 });
 permissionAutoAcceptRuntime.start();
 notificationTriggerRuntime.setGetIsSessionAutoAccepting(
   (sessionId, directory) => permissionAutoAcceptRuntime.isSessionAutoAccepting(sessionId, directory),
 );
+
+// Harness events are not on the OpenCode global hub — fan them into title,
+// Goal, and permission auto-accept so backend loops work without a connected UI.
+addHarnessEventObserver((payload, directory) => {
+  sessionTitleRuntime.processHarnessPayload(payload, directory);
+  sessionGoalRuntime.processPayload(payload, directory);
+  permissionAutoAcceptRuntime.processHarnessPayload(payload, directory);
+});
 
 const openCodeWatcherRuntime = createOpenCodeWatcherRuntime({
   waitForOpenCodePort: (...args) => waitForOpenCodePort(...args),
@@ -816,6 +876,16 @@ globalMessageStreamHub.subscribeEvent((event) => {
   const raw = event?.payload;
   const payload = raw?.payload && typeof raw.payload === 'object' ? raw.payload : raw;
   if (!payload || typeof payload !== 'object') return;
+  if (payload.type === 'session.deleted') {
+    const sessionId = typeof payload.properties?.info?.id === 'string'
+      ? payload.properties.info.id
+      : '';
+    if (sessionId) {
+      void harnessRouter.deleteSession(sessionId).catch((error) => {
+        console.warn('[harness] failed to clean deleted session:', error?.message || error);
+      });
+    }
+  }
   const directory = typeof event?.directory === 'string' && event.directory && event.directory !== 'global'
     ? event.directory
     : '';
@@ -1165,6 +1235,7 @@ const scheduledTaskService = createScheduledTaskService({
   sanitizeProjects,
   projectConfigRuntime,
   scheduledTasksRuntime,
+  harnessRuntime: harnessRouter,
 });
 const openChamberSessionService = createOpenChamberSessionService({
   readSettingsFromDiskMigrated,
@@ -1174,6 +1245,8 @@ const openChamberSessionService = createOpenChamberSessionService({
   getOpenCodeAuthHeaders,
   waitForOpenCodeReady,
   emitSessionCreatedEvent,
+  promptHarness: (body) => harnessRouter.prompt(body),
+  getSessionBinding: (sessionId) => getSessionBinding(sessionId),
 });
 const openChamberControlService = createOpenChamberControlService({
   readSettingsFromDiskMigrated,
@@ -1183,6 +1256,9 @@ const openChamberControlService = createOpenChamberControlService({
   waitForOpenCodeReady,
   sessionService: openChamberSessionService,
   scheduledTaskService,
+  getSessionBinding: (sessionId) => getSessionBinding(sessionId),
+  getHarnessRecentMessages,
+  isHarnessSessionWorking,
 });
 
 const ensureGlobalWatcherStarted = async () => {
@@ -1228,6 +1304,7 @@ const gracefulShutdownRuntime = createGracefulShutdownRuntime({
   syncToHmrState,
   openCodeWatcherRuntime,
   sessionAssistRuntime,
+  sessionTitleRuntime,
   sessionGoalRuntime,
   contextObligatoryRuntime,
   sessionRuntime,
@@ -1281,6 +1358,13 @@ async function main(options = {}) {
     getActivePort: () => {
       const address = server?.address?.();
       return typeof address === 'object' && address ? address.port : null;
+    },
+  });
+  claudeOpenChamberMcpAdapter = createClaudeOpenChamberMcpAdapter({
+    executeAction: (...args) => openChamberControlService.execute(...args),
+    isEnabled: async () => {
+      const settings = await readSettingsFromDiskMigrated().catch(() => null);
+      return settings?.agentControlToolEnabled !== false;
     },
   });
   systemPromptRuntime = createSystemPromptRuntime({
@@ -1618,6 +1702,10 @@ async function main(options = {}) {
   relayServiceInstance = relayService;
   relayService.registerRoutes(app);
 
+  // Rehydrate durable retry overlays before status routes can answer. A failed
+  // start is not converted to an empty journal: startup fails closed.
+  await harnessRouter.start();
+
   await featureRoutesRuntime.registerRoutes(app, {
     crypto,
     fs,
@@ -1658,6 +1746,9 @@ async function main(options = {}) {
     getOpenChamberEventClients: () => uiOpenChamberEventClients,
     writeSseEvent,
     permissionAutoAcceptRuntime,
+    getBroadcastGlobalUiEvent: () => broadcastGlobalUiEvent,
+    getOpenCodeReady: () => isOpenCodeReady,
+    harnessRouter,
   });
 
   const previewProxyRuntime = createPreviewProxyRuntime({

@@ -33,10 +33,11 @@ These stores act like centralized keyed caches. UI should consume narrow slices 
 
 Examples:
 
-- `useUIStore.ts`
+- `useUIStore.ts` — includes target-aware `favoriteTargets` / `recentTargets` (OpenCode + Claude Code). Legacy `favoriteModels` / `recentModels` stay synced for older settings clients (`providerID: 'claude-code'` encodes Claude model refs).
 - `useDirectoryStore.ts`
 - `useFeatureFlagsStore.ts`
 - `useUpdateStore.ts`
+- `useHarnessStore.ts` — OpenChamber `/api/harness` catalog/status client (not OpenCode SDK). Fetch failure must not clear prior catalogs to a fake ready-empty state.
 
 These stores coordinate visible app state, navigation, selected tabs, dialogs, and lightweight feature flags.
 
@@ -49,6 +50,16 @@ Examples:
 - `useSessionFoldersStore.ts`
 
 These stores coordinate persistent project/session metadata across multiple views.
+
+`messageQueueStore.ts` owns follow-ups accepted while a session is busy or in
+retry. Its versioned Zustand persistence is local to the same browser/Desktop
+profile: reload and local app restart retain the queue, but there is deliberately
+no server ownership or cross-client/cross-device synchronization. Users can
+reorder/delete queued items while Claude waits. Capacity is admission-based: a
+full per-target queue or the target-count limit rejects the new item and retains
+all previously accepted items; it never evicts old work to admit new work.
+Authoritative session deletion clears the queue for the runtime/directory/session
+identity, while Stop/cancel does not.
 
 `useGlobalSessionsStore.ts` owns cold/global active and archived session coverage, including `sessionsByDirectory`. It is complementary to directory child stores: it is not the source of live busy/retry status or session messages.
 

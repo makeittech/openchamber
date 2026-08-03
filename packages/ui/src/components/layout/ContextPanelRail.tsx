@@ -76,11 +76,13 @@ const ContextPanelRailItem: React.FC<RailItemProps> = ({
             className={cn(
               'flex h-9 w-9 touch-none select-none items-center justify-center rounded-md transition-colors',
               isActive
+
                 ? 'text-primary'
                 : 'text-muted-foreground hover:text-foreground',
             )}
           >
             <Icon name={surface.icon} className="h-[18px] w-[18px]" />
+
             {showActivityDot ? (
               <span
                 aria-hidden="true"

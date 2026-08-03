@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { readTaskTagSessionIdFromOutput } from './taskSessionIdParser';
 import { tryParseJsonOutput } from '../toolRenderers';
+import { formatToolDurationMs } from './formatToolDuration';
 import { getStreamingThrottleText } from '../../hooks/useStreamingTextThrottle';
 import { getStreamingOutputAppend, getToolOutput } from './toolOutput';
 import { getToolDescriptionFallback } from './toolRenderUtils';
@@ -43,7 +44,6 @@ describe('streaming output transitions', () => {
         expect(getStreamingThrottleText('long output', 'short', true, false)).toBe('long output');
     });
 });
-
 describe('readTaskTagSessionIdFromOutput', () => {
     test('parses task tags without state attributes', () => {
         expect(readTaskTagSessionIdFromOutput('<task id="ses_abc123">')).toBe('ses_abc123');
@@ -66,6 +66,7 @@ describe('OpenChamber tool output', () => {
     });
 });
 
+
 describe('getToolDescriptionFallback', () => {
     test('uses the glob pattern when the provided description and title are empty', () => {
         expect(getToolDescriptionFallback('glob', '', { pattern: 'packages/electron/README.md' }))
@@ -75,5 +76,18 @@ describe('getToolDescriptionFallback', () => {
     test('prefers an existing glob description over the pattern', () => {
         expect(getToolDescriptionFallback('glob', 'Electron docs', { pattern: 'packages/electron/README.md' }))
             .toBe('Electron docs');
+
+describe('formatToolDurationMs', () => {
+    test('formats sub-minute durations with one decimal second', () => {
+        expect(formatToolDurationMs(1_500)).toBe('1.5s');
+        expect(formatToolDurationMs(0)).toBe('0.1s');
+    });
+
+    test('keeps counting past five minutes instead of capping at 300.0s', () => {
+        expect(formatToolDurationMs(5 * 60 * 1000)).toBe('5m');
+        expect(formatToolDurationMs(5 * 60 * 1000 + 12_000)).toBe('5m 12s');
+        expect(formatToolDurationMs(65 * 60 * 1000)).toBe('1h 5m');
+        expect(formatToolDurationMs(2 * 60 * 60 * 1000)).toBe('2h');
+
     });
 });

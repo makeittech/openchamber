@@ -116,6 +116,38 @@ describe('permission auto-accept runtime', () => {
     expect(fetchImpl.mock.calls.some(([url]) => new URL(url).pathname === '/permission/pending/reply')).toBe(true);
   });
 
+  it('replies to Claude harness permissions via replyHarnessPermission', async () => {
+    const replyHarnessPermission = vi.fn(async () => ({ ok: true }));
+    const fetchImpl = vi.fn(async () => new Response('[]'));
+    const runtime = createPermissionAutoAcceptRuntime({
+      globalEventHub: {
+        subscribeEvent() { return () => {}; },
+        subscribeStatus() { return () => {}; },
+      },
+      buildOpenCodeUrl: (path) => `http://opencode.test${path}`,
+      getOpenCodeAuthHeaders: () => ({}),
+      readSettingsFromDiskMigrated: async () => ({
+        permissionAutoAccept: { sessions: { 'ses_claude': true }, revision: 1 },
+      }),
+      persistSettings: async () => {},
+      fetchImpl,
+      retryDelaysMs: [0],
+      isHarnessSession: (sessionId) => sessionId === 'ses_claude',
+      replyHarnessPermission,
+    });
+    await expect(runtime.processPermission({
+      id: 'perm_claude',
+      sessionID: 'ses_claude',
+    }, '/project')).resolves.toBe(true);
+    expect(replyHarnessPermission).toHaveBeenCalledWith({
+      sessionId: 'ses_claude',
+      requestId: 'perm_claude',
+      reply: 'once',
+      directory: '/project',
+    });
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes('/permission/'))).toBe(false);
+  });
+
   it('accepts existing pending permissions when a session policy is enabled', async () => {
     const fetchImpl = vi.fn(async (url, init = {}) => {
       const parsed = new URL(url);

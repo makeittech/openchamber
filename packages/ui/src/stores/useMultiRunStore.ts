@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import type { Session } from '@opencode-ai/sdk/v2';
 import { routeMessage, useSessionUIStore } from '@/sync/session-ui-store';
+import { persistSessionExecutionTarget } from '@/lib/harness/resolve-execution-target';
+import { executionTargetFromMultiRunModel } from '@/lib/multirun/execution-target';
 import { devtools } from 'zustand/middleware';
 import type { CreateMultiRunParams, CreateMultiRunResult } from '@/types/multirun';
 import { opencodeClient } from '@/lib/opencode/client';
@@ -224,6 +226,10 @@ export const useMultiRunStore = create<MultiRunStore>()(
                     variant: model.variant,
                     prompt,
                   });
+                  persistSessionExecutionTarget(
+                    session.id,
+                    executionTargetFromMultiRunModel(model, { agent }),
+                  );
                   continue;
                 }
 
@@ -265,6 +271,10 @@ export const useMultiRunStore = create<MultiRunStore>()(
                   variant: model.variant,
                   prompt,
                 });
+                persistSessionExecutionTarget(
+                  session.id,
+                  executionTargetFromMultiRunModel(model, { agent }),
+                );
               } catch (err) {
                 console.warn('[MultiRun] Failed to create session:', err);
               }
@@ -300,6 +310,14 @@ export const useMultiRunStore = create<MultiRunStore>()(
                 createdRuns.map(async (run) => {
                   try {
                     const text = await expandText(run.prompt).catch(() => run.prompt);
+                    const executionTarget = executionTargetFromMultiRunModel(
+                      {
+                        providerID: run.providerID,
+                        modelID: run.modelID,
+                        variant: run.variant,
+                      },
+                      { agent },
+                    );
                     await routeMessage({
                       sessionId: run.sessionId,
                       directory: run.worktreePath,
@@ -307,8 +325,13 @@ export const useMultiRunStore = create<MultiRunStore>()(
                       providerID: run.providerID,
                       modelID: run.modelID,
                       variant: run.variant,
+                      // Sent for Claude targets too: the harness resolves that
+                      // OpenCode agent's prompt + permission ruleset from the
+                      // name, so withholding it makes the run ask for
+                      // every tool instead of following the agent.
                       agent,
                       files: filesForMessage,
+                      executionTarget,
                     });
                   } catch (err) {
                     console.warn('[MultiRun] Failed to start run:', err);

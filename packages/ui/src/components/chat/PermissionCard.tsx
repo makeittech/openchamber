@@ -99,10 +99,14 @@ export const PermissionCard: React.FC<PermissionCardProps> = ({
   const sessions = useSessions();
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const isFromSubagent = React.useMemo(() => {
+    if (permission.metadata && typeof permission.metadata === 'object') {
+      const meta = permission.metadata as Record<string, unknown>;
+      if (meta.fromSubagent === true) return true;
+    }
     if (!currentSessionId || permission.sessionID === currentSessionId) return false;
     const sourceSession = sessions.find((session) => session.id === permission.sessionID);
     return Boolean(sourceSession?.parentID && sourceSession.parentID === currentSessionId);
-  }, [permission.sessionID, currentSessionId, sessions]);
+  }, [permission.metadata, permission.sessionID, currentSessionId, sessions]);
 
   const handleResponse = async (response: PermissionResponse) => {
     setIsResponding(true);
@@ -325,7 +329,7 @@ export const PermissionCard: React.FC<PermissionCardProps> = ({
                 </span>
                 {isFromSubagent ? (
                   <span className="typography-micro text-muted-foreground px-1.5 py-0.5 rounded bg-foreground/5">
-                    From subagent
+                    {t('chat.questionCard.fromSubagent')}
                   </span>
                 ) : null}
               </div>

@@ -8,6 +8,8 @@ import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { applyFavoriteExecutionTarget } from '@/lib/harness/apply-favorite-target';
+import { executionTargetsMatchIdentity } from '@/lib/harness/favorite-targets';
 
 export const useMiniChatKeyboardShortcuts = () => {
   const shortcutOverrides = useUIStore((state) => state.shortcutOverrides);
@@ -79,20 +81,36 @@ export const useMiniChatKeyboardShortcuts = () => {
       const cyclesForward = eventMatchesShortcut(event, combo('cycle_favorite_model_forward'));
       const cyclesBackward = eventMatchesShortcut(event, combo('cycle_favorite_model_backward'));
       if (cyclesForward || cyclesBackward) {
-        const { favoriteModels, addRecentModel } = useUIStore.getState();
-        if (favoriteModels.length === 0) {
+        const { favoriteTargets } = useUIStore.getState();
+        if (favoriteTargets.length === 0) {
           return;
         }
 
         event.preventDefault();
-        const { currentProviderId, currentModelId, setProvider, setModel } = useConfigStore.getState();
-        const currentIndex = favoriteModels.findIndex((favorite) => favorite.providerID === currentProviderId && favorite.modelID === currentModelId);
+        const { currentProviderId, currentModelId } = useConfigStore.getState();
+        const currentSessionId = useSessionUIStore.getState().currentSessionId;
+        const sessionTarget = currentSessionId
+          ? useSelectionStore.getState().getSessionTarget(currentSessionId)
+          : null;
+        const pendingHandoff = currentSessionId
+          ? useSelectionStore.getState().getPendingHandoffTarget(currentSessionId)
+          : null;
+        const activeTarget = pendingHandoff ?? sessionTarget ?? (
+          currentProviderId && currentModelId
+            ? {
+                harnessId: 'opencode' as const,
+                providerId: currentProviderId,
+                modelId: currentModelId,
+              }
+            : null
+        );
+        const currentIndex = activeTarget
+          ? favoriteTargets.findIndex((favorite) => executionTargetsMatchIdentity(favorite, activeTarget))
+          : -1;
         const delta = cyclesForward ? 1 : -1;
-        const next = favoriteModels[(currentIndex + delta + favoriteModels.length) % favoriteModels.length];
-
-        setProvider(next.providerID);
-        setModel(next.modelID);
-        addRecentModel(next.providerID, next.modelID);
+        const next = favoriteTargets[(currentIndex + delta + favoriteTargets.length) % favoriteTargets.length];
+        if (!next) return;
+        applyFavoriteExecutionTarget(next);
       }
     };
 

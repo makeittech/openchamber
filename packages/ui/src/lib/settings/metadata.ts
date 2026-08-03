@@ -5,6 +5,7 @@ export type SettingsPageSlug =
   | 'general'
   | 'projects'
   | 'remote-instances'
+  | 'harness'
   | 'providers'
   | 'usage'
   | 'agents'
@@ -79,6 +80,13 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
     kind: 'single',
     keywords: ['ssh', 'remote', 'instances', 'tunnels', 'forwarding', 'connection'],
     isAvailable: (ctx) => !ctx.isVSCode,
+  },
+  {
+    slug: 'harness',
+    title: 'Harnesses',
+    group: 'opencode',
+    kind: 'split',
+    keywords: ['harness', 'harnesses', 'engine', 'engines', 'claude code', 'claude', 'opencode', 'subscription', 'cli'],
   },
   {
     slug: 'providers',

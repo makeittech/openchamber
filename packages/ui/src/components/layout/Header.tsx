@@ -18,6 +18,9 @@ import { SortableTabsStrip, type SortableTabsStripItem } from '@/components/ui/s
 import { DiffIcon } from '@/components/icons/DiffIcon';
 import { useUIStore, type ContextPanelMode, type MainTab } from '@/stores/useUIStore';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { useHarnessStore } from '@/stores/useHarnessStore';
+import { resolveActiveModelLimits } from '@/lib/harness/active-model-limits';
+import { useSelectionStore } from '@/sync/selection-store';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSessionWorktreeStore } from '@/sync/session-worktree-store';
 import { formatSessionWorktreeBadge } from '@/sync/session-worktree-contract';
@@ -854,11 +857,38 @@ export const Header: React.FC<HeaderProps> = ({
   }, []);
 
   const currentModel = getCurrentModel();
-  const limit = currentModel && typeof currentModel.limit === 'object' && currentModel.limit !== null
+  const sessionTarget = useSelectionStore((state) => (
+    currentSessionId ? state.sessionTargets.get(currentSessionId) ?? null : null
+  ));
+  const pendingHandoffTarget = useSelectionStore((state) => (
+    currentSessionId ? state.pendingHandoffTargets.get(currentSessionId) ?? null : null
+  ));
+  const lastUsedTarget = useSelectionStore((state) => state.lastUsedTarget);
+  const claudeCatalog = useHarnessStore((state) => state.catalogsById['claude-code']);
+  const openCodeLimit = currentModel && typeof currentModel.limit === 'object' && currentModel.limit !== null
     ? (currentModel.limit as Record<string, unknown>)
     : null;
-  const contextLimit = (limit && typeof limit.context === 'number' ? limit.context : 0);
-  const outputLimit = (limit && typeof limit.output === 'number' ? limit.output : 0);
+  const activeModelLimits = React.useMemo(() => resolveActiveModelLimits({
+    sessionId: currentSessionId,
+    sessionTarget,
+    pendingHandoffTarget,
+    lastUsedTarget,
+    claudeCatalog,
+    openCodeContext: typeof openCodeLimit?.context === 'number' ? openCodeLimit.context : 0,
+    openCodeOutput: typeof openCodeLimit?.output === 'number' ? openCodeLimit.output : 0,
+    openCodeModelName: typeof currentModel?.name === 'string' ? currentModel.name : null,
+  }), [
+    claudeCatalog,
+    currentModel,
+    currentSessionId,
+    lastUsedTarget,
+    openCodeLimit?.context,
+    openCodeLimit?.output,
+    pendingHandoffTarget,
+    sessionTarget,
+  ]);
+  const contextLimit = activeModelLimits.context;
+  const outputLimit = activeModelLimits.output;
   const contextUsage = getContextUsage(contextLimit, outputLimit);
   const [stableDesktopContextUsage, setStableDesktopContextUsage] = React.useState<SessionContextUsage | null>(null);
   const isContextUsageResolvedForSession = !currentSessionId || currentSessionMessagesResolved;

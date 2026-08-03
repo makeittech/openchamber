@@ -8,6 +8,9 @@ import { useProjectsStore } from '@/stores/useProjectsStore';
 import { updateDesktopSettings } from '@/lib/persistence';
 import { getProjectDraftStarters, saveProjectDraftStarters } from '@/lib/openchamberConfig';
 import { isVSCodeRuntime } from '@/lib/desktop';
+import { getHarnessCapabilityLevel } from '@/lib/harness/capabilities';
+import { useSelectionStore } from '@/sync/selection-store';
+import { isHarnessId } from '@/types/harness';
 import type { IconName } from '@/components/icon/icons';
 import {
     BUILTIN_STARTERS,
@@ -105,9 +108,21 @@ export function useDraftStarters(): UseDraftStartersResult {
 
     const commandNames = React.useMemo(() => new Set(commands.map((c) => c.name)), [commands]);
     const skillNames = React.useMemo(() => new Set(skills.map((s) => s.name)), [skills]);
+    const lastUsedTarget = useSelectionStore((state) => state.lastUsedTarget);
+    const draftHarnessId = lastUsedTarget?.harnessId ?? 'opencode';
+    const supportsGoal = getHarnessCapabilityLevel(
+        isHarnessId(draftHarnessId) ? draftHarnessId : 'opencode',
+        'goal',
+    ) !== 'none';
+    const supportsOpenChamberTool = getHarnessCapabilityLevel(
+        isHarnessId(draftHarnessId) ? draftHarnessId : 'opencode',
+        'openchamber-tool',
+    ) !== 'none';
 
     const resolve = React.useCallback((ref: DraftStarterRef, group: StarterGroup): ResolvedStarter | null => {
         if (isVSCode && ref.type === 'command' && (ref.name === 'craft-goal' || ref.name === 'schedule-task')) return null;
+        if (!supportsGoal && ref.type === 'command' && ref.name === 'craft-goal') return null;
+        if (!supportsOpenChamberTool && ref.type === 'command' && ref.name === 'schedule-task') return null;
         if (ref.type === 'command') {
             const builtin = getBuiltInStarter(ref.name);
             if (builtin) {
@@ -118,7 +133,7 @@ export function useDraftStarters(): UseDraftStartersResult {
         }
         if (!skillNames.has(ref.name)) return null;
         return { id: chipId(group, ref), ref, group, label: normalizeStarterLabel(ref.name), icon: SKILL_FALLBACK_ICON, submitText: `/${ref.name}` };
-    }, [t, commandNames, skillNames, isVSCode]);
+    }, [t, commandNames, skillNames, isVSCode, supportsGoal, supportsOpenChamberTool]);
 
     const globalRefs = React.useMemo<readonly DraftStarterRef[]>(
         () => globalRaw ?? DEFAULT_GLOBAL_STARTERS,
@@ -145,6 +160,7 @@ export function useDraftStarters(): UseDraftStartersResult {
         const items: PinnableItem[] = [];
         for (const b of BUILTIN_STARTERS) {
             if (isVSCode && (b.name === 'craft-goal' || b.name === 'schedule-task')) continue;
+            if (!supportsGoal && b.name === 'craft-goal') continue;
             items.push({ type: 'command', name: b.name, label: t(b.labelKey), icon: b.icon, section: 'built-in', scope: 'user' });
         }
         for (const c of commands) {
@@ -156,7 +172,7 @@ export function useDraftStarters(): UseDraftStartersResult {
         }
         // Only offer items that are not already pinned (removed built-ins reappear here).
         return items.filter((item) => !pinnedKeys.has(`${item.type}:${item.name}`));
-    }, [t, commands, skills, pinnedKeys, isVSCode]);
+    }, [t, commands, skills, pinnedKeys, isVSCode, supportsGoal]);
 
     const persistGlobal = React.useCallback((next: DraftStarterRef[]) => {
         useUIStore.getState().setGlobalDraftStarters(next);

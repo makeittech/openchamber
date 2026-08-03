@@ -43,6 +43,7 @@ import { MinDurationShineText } from './MinDurationShineText';
 import { ToolRevealOnMount } from './ToolRevealOnMount';
 import { getToolIcon } from './toolPresentation';
 import { useDurationTickerNow } from './useDurationTicker';
+import { formatToolDurationMs } from './formatToolDuration';
 import {
     buildTaskSummaryEntriesFromSession,
     normalizeTaskSummaryEntries,
@@ -117,11 +118,7 @@ const GIT_REFRESH_MUTATING_TOOLS = new Set([
 ]);
 
 const formatDuration = (start: number, end?: number, now: number = Date.now()) => {
-    const duration = Math.max(0, (end ?? now) - start);
-    const seconds = duration / 1000;
-
-    const displaySeconds = seconds < 0.05 && end !== undefined ? 0.1 : seconds;
-    return `${displaySeconds.toFixed(1)}s`;
+    return formatToolDurationMs(Math.max(0, (end ?? now) - start));
 };
 
 const LiveDuration: React.FC<{ start: number; end?: number; active: boolean }> = ({ start, end, active }) => {

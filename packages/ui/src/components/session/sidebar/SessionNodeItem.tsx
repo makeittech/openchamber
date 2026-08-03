@@ -20,6 +20,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { isSessionPinned, type SessionPinnedTarget } from '@/stores/useSessionPinnedStore';
 import { Icon } from "@/components/icon/Icon";
+import { HarnessLogo } from '@/components/ui/HarnessLogo';
 import { buildExportFilename, downloadAsMarkdown, formatSessionAsMarkdown, getExportRevealLabelKey, revealExportedMarkdown, saveAsMarkdownDesktop } from '@/lib/exportSession';
 import type { ChildSessionExport } from '@/lib/exportSession';
 import { buildSessionMessageRecordsSnapshot, useDirectoryStore, useGlobalSessionStatus, useSessionPermissions } from '@/sync/sync-context';
@@ -48,6 +49,7 @@ import { RuntimeAPIContext } from '@/contexts/runtimeAPIContext';
 import { startSessionTreeWorktreeMove, useIsSessionWorktreeMovePending } from '@/lib/worktrees/sessionWorktreeMove';
 import { streamPerfCount } from '@/stores/utils/streamDebug';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useSelectionStore } from '@/sync/selection-store';
 
 type Folder = { id: string; name: string; sessionIds: string[] };
 
@@ -454,6 +456,17 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     </span>
   ) : null;
   const sessionTitle = resolvedSession.title || t('sessions.sidebar.session.untitled');
+  const sessionExecutionTarget = useSelectionStore((state) => state.sessionTargets.get(session.id) ?? null);
+  const isClaudeCodeSession = sessionExecutionTarget?.harnessId === 'claude-code';
+  const claudeEngineGlyph = isClaudeCodeSession ? (
+    <span
+      className="inline-flex flex-shrink-0 items-center text-muted-foreground"
+      title={t('sessions.sidebar.session.harness.claudeCodeTooltip')}
+      aria-label={t('sessions.sidebar.session.harness.claudeCodeAria')}
+    >
+      <HarnessLogo harnessId="claude-code" className="h-3 w-3" />
+    </span>
+  ) : null;
   const hasChildren = node.children.length > 0;
   const isPinnedSession = isSessionPinned(pinnedSessionIds, sessionDirectory, session.id);
   // Per-render-context expansion key: the same session can appear in both
@@ -513,12 +526,9 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
       return;
     }
 
-    try {
-      await sync.loadCompleteHistory(session.id, sessionDirectory);
-    } catch {
-      toast.error(t('sessions.sidebar.session.export.failedLoadHistory'));
-      return;
-    }
+
+    await sync.ensureSessionRenderable(session.id, true, sessionDirectory);
+
 
     const records = buildSessionMessageRecordsSnapshot(directoryStore.getState(), session.id).list;
     if (records.length === 0) {
@@ -1212,10 +1222,13 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                     )}
                   >
                     <div className="flex w-full items-center min-w-0 flex-1 gap-1 overflow-hidden">
-                      {/* Unread emphasis is color-only: a font-weight change
-                          would reflow the truncated title and cause a micro
-                          horizontal shift when the status flips. */}
-                      <div className={cn('block min-w-0 flex-1 truncate typography-ui-label font-normal', isActive ? 'text-primary' : needsAttention ? 'text-foreground' : 'text-foreground/80')}>{renderHighlightedText(sessionTitle, normalizedSessionSearchQuery)}</div>
+                      <div className={cn('flex min-w-0 flex-1 items-center gap-1 overflow-hidden', isActive ? 'text-primary' : 'text-foreground')}>
+                        {claudeEngineGlyph}
+                        {/* Unread emphasis is color-only: a font-weight change
+                            would reflow the truncated title and cause a micro
+                            horizontal shift when the status flips. */}
+                        <span className={cn('block min-w-0 flex-1 truncate typography-ui-label font-normal', isActive ? 'text-primary' : needsAttention ? 'text-foreground' : 'text-foreground/80')}>{renderHighlightedText(sessionTitle, normalizedSessionSearchQuery)}</span>
+                      </div>
                       {alwaysShowActions ? (
                         // Touch runtimes have no hover tooltip, so the compact
                         // date stays inline there.

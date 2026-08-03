@@ -1,29 +1,123 @@
-import { readAuthFile } from '../../opencode/auth.js';
+import { readAuthFile, writeAuthFile } from '../../opencode/auth.js';
 import {
   getAuthEntry,
   normalizeAuthEntry,
   buildResult,
-  toUsageWindow,
-  toNumber,
-  toTimestamp
 } from '../utils/index.js';
+import {
+  CLAUDE_SCOPE_ERROR,
+  CLAUDE_SESSION_EXPIRED_ERROR,
+  classifyClaudeUsageHttpError,
+  ensureClaudeUsageAccessToken as ensureClaudeUsageAccessTokenCore,
+  fetchClaudeUsagePayload,
+  fetchClaudeUsageWindowsFromRateLimits,
+  mapClaudeUsageWindows,
+  readClaudeCliOAuthAccessToken,
+  shouldSkipClaudeUsageEndpoint,
+} from '@openchamber/quota-core';
 
 export const providerId = 'claude';
-export const providerName = 'Claude';
+export const providerName = 'Claude subscription';
 const aliases = ['anthropic', 'claude'];
 
+// Re-exported for backward compatibility: these are the actual shared
+// implementations from @openchamber/quota-core, not local copies. Anything
+// still importing them from this module (or from the deleted
+// claude-oauth.js / claude-cli-auth.js siblings) gets the single source of
+// truth.
+export { mapClaudeUsageWindows, shouldSkipClaudeUsageEndpoint };
+
+/**
+ * Resolve a usable Claude subscription access token, refreshing when
+ * expired. Wires this host's own OpenCode `auth.json` reader/writer
+ * (shared with every other quota provider) into the shared quota-core
+ * credential/refresh layer, so persistence behavior (backup file, status
+ * logging) is unchanged from before the extraction.
+ *
+ * @param {Parameters<typeof ensureClaudeUsageAccessTokenCore>[0]} [options]
+ */
+function ensureClaudeUsageAccessToken(options = {}) {
+  return ensureClaudeUsageAccessTokenCore({
+    readAuth: readAuthFile,
+    writeAuth: writeAuthFile,
+    ...options,
+  });
+}
+
+/**
+ * Resolve whether Claude subscription usage can be probed.
+ * Prefers Claude Code CLI OAuth (engine-aligned), then OpenCode auth.json.
+ *
+ * @returns {boolean}
+ */
 export const isConfigured = () => {
+  if (readClaudeCliOAuthAccessToken()) return true;
   const auth = readAuthFile();
   const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
-  return Boolean(entry?.access || entry?.token);
+  const openCodeToken = entry?.access ?? entry?.token;
+  return typeof openCodeToken === 'string' && Boolean(openCodeToken.trim());
 };
 
-export const fetchQuota = async () => {
-  const auth = readAuthFile();
-  const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
-  const accessToken = entry?.access ?? entry?.token;
+/**
+ * @param {string} accessToken
+ * @param {{ fetchImpl?: typeof fetch }} [options]
+ */
+async function loadWindowsWithRateLimitFallback(accessToken, options = {}) {
+  return fetchClaudeUsageWindowsFromRateLimits(accessToken, options);
+}
 
-  if (!accessToken) {
+/**
+ * @param {string} accessToken
+ * @param {number | null} [status]
+ * @param {string} [bodyText]
+ */
+async function buildFallbackOrError(accessToken, status = null, bodyText = '') {
+  try {
+    const windows = await loadWindowsWithRateLimitFallback(accessToken);
+    return buildResult({
+      providerId,
+      providerName,
+      ok: true,
+      configured: true,
+      usage: { windows },
+    });
+  } catch {
+    if (status === 401) {
+      return buildResult({
+        providerId,
+        providerName,
+        ok: false,
+        configured: true,
+        error: CLAUDE_SESSION_EXPIRED_ERROR,
+      });
+    }
+    return buildResult({
+      providerId,
+      providerName,
+      ok: false,
+      configured: true,
+      error: status == null
+        ? CLAUDE_SCOPE_ERROR
+        : classifyClaudeUsageHttpError(status, bodyText),
+    });
+  }
+}
+
+export const fetchQuota = async () => {
+  let access;
+  try {
+    access = await ensureClaudeUsageAccessToken();
+  } catch {
+    return buildResult({
+      providerId,
+      providerName,
+      ok: false,
+      configured: true,
+      error: CLAUDE_SESSION_EXPIRED_ERROR,
+    });
+  }
+
+  if (!access?.accessToken) {
     return buildResult({
       providerId,
       providerName,
@@ -34,67 +128,62 @@ export const fetchQuota = async () => {
   }
 
   try {
-    const response = await fetch('https://api.anthropic.com/api/oauth/usage', {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'anthropic-beta': 'oauth-2025-04-20'
+    // Setup-tokens / inference-only credentials cannot call /api/oauth/usage
+    // (403 scope or 429 from the non-profile bucket). Go straight to the
+    // Messages unified rate-limit header probe.
+    if (shouldSkipClaudeUsageEndpoint(access)) {
+      return await buildFallbackOrError(access.accessToken);
+    }
+
+    let response = await fetchClaudeUsagePayload(access.accessToken);
+
+    if (response.status === 401 && access.canRefresh) {
+      try {
+        access = await ensureClaudeUsageAccessToken({ forceRefresh: true });
+      } catch {
+        return buildResult({
+          providerId,
+          providerName,
+          ok: false,
+          configured: true,
+          error: CLAUDE_SESSION_EXPIRED_ERROR,
+        });
       }
-    });
 
-    if (!response.ok) {
-      return buildResult({
-        providerId,
-        providerName,
-        ok: false,
-        configured: true,
-        error: `API error: ${response.status}`
-      });
-    }
+      if (!access?.accessToken) {
+        return buildResult({
+          providerId,
+          providerName,
+          ok: false,
+          configured: true,
+          error: CLAUDE_SESSION_EXPIRED_ERROR,
+        });
+      }
 
-    const payload = await response.json();
-    const windows = {};
-    const fiveHour = payload?.five_hour ?? null;
-    const sevenDay = payload?.seven_day ?? null;
-    const sevenDaySonnet = payload?.seven_day_sonnet ?? null;
-    const sevenDayOpus = payload?.seven_day_opus ?? null;
-
-    if (fiveHour) {
-      windows['5h'] = toUsageWindow({
-        usedPercent: toNumber(fiveHour.utilization),
-        windowSeconds: null,
-        resetAt: toTimestamp(fiveHour.resets_at)
-      });
-    }
-    if (sevenDay) {
-      windows['7d'] = toUsageWindow({
-        usedPercent: toNumber(sevenDay.utilization),
-        windowSeconds: null,
-        resetAt: toTimestamp(sevenDay.resets_at)
-      });
-    }
-    if (sevenDaySonnet) {
-      windows['7d-sonnet'] = toUsageWindow({
-        usedPercent: toNumber(sevenDaySonnet.utilization),
-        windowSeconds: null,
-        resetAt: toTimestamp(sevenDaySonnet.resets_at)
-      });
-    }
-    if (sevenDayOpus) {
-      windows['7d-opus'] = toUsageWindow({
-        usedPercent: toNumber(sevenDayOpus.utilization),
-        windowSeconds: null,
-        resetAt: toTimestamp(sevenDayOpus.resets_at)
-      });
+      response = await fetchClaudeUsagePayload(access.accessToken);
     }
 
-    return buildResult({
-      providerId,
-      providerName,
-      ok: true,
-      configured: true,
-      usage: { windows }
-    });
+    if (response.ok) {
+      const payload = await response.json();
+      const windows = mapClaudeUsageWindows(payload);
+      if (Object.keys(windows).length > 0) {
+        return buildResult({
+          providerId,
+          providerName,
+          ok: true,
+          configured: true,
+          usage: { windows }
+        });
+      }
+      // Empty payload — still try rate-limit headers.
+      return await buildFallbackOrError(access.accessToken);
+    }
+
+    // 401/403/429/5xx: prefer Messages rate-limit headers over surfacing a raw
+    // status. This is what keeps Services/Settings populated for setup-tokens
+    // and when Anthropic rate-limits the undocumented usage endpoint.
+    const bodyText = await response.text().catch(() => '');
+    return await buildFallbackOrError(access.accessToken, response.status, bodyText);
   } catch (error) {
     return buildResult({
       providerId,

@@ -1,11 +1,13 @@
 /**
- * Selection Store — per-session model, agent, and variant selections.
+ * Selection Store — per-session model, agent, variant, and execution-target selections.
  * Extracted from session-ui-store for subscription isolation.
  */
 
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
 import { createDeferredSafeJSONStorage } from "@/stores/utils/safeStorage"
+import type { ExecutionTarget } from "@/types/harness"
+import { isExecutionTarget } from "@/types/harness"
 
 type ModelSelection = { providerId: string; modelId: string }
 type LastUsedProvider = { providerID: string; modelID: string }
@@ -14,14 +16,20 @@ type PersistedSelectionState = {
   sessionModelSelections?: [string, ModelSelection][]
   sessionAgentSelections?: [string, string][]
   sessionAgentModelSelections?: AgentModelSelectionEntries
+  sessionTargets?: [string, ExecutionTarget][]
   lastUsedProvider?: LastUsedProvider | null
+  lastUsedTarget?: ExecutionTarget | null
 }
 
 export type SelectionState = {
   sessionModelSelections: Map<string, ModelSelection>
   sessionAgentSelections: Map<string, string>
   sessionAgentModelSelections: Map<string, Map<string, ModelSelection>>
+  sessionTargets: Map<string, ExecutionTarget>
+  /** Ephemeral: engine switch on a used session waits for Send to create a new session. */
+  pendingHandoffTargets: Map<string, ExecutionTarget>
   lastUsedProvider: LastUsedProvider | null
+  lastUsedTarget: ExecutionTarget | null
 
   saveSessionModelSelection: (sessionId: string, providerId: string, modelId: string) => void
   getSessionModelSelection: (sessionId: string) => { providerId: string; modelId: string } | null
@@ -31,6 +39,13 @@ export type SelectionState = {
   getAgentModelForSession: (sessionId: string, agentName: string) => { providerId: string; modelId: string } | null
   saveAgentModelVariantForSession: (sessionId: string, agentName: string, providerId: string, modelId: string, variant: string | undefined) => void
   getAgentModelVariantForSession: (sessionId: string, agentName: string, providerId: string, modelId: string) => string | undefined
+  saveSessionTarget: (sessionId: string, target: ExecutionTarget) => void
+  getSessionTarget: (sessionId: string) => ExecutionTarget | null
+  setPendingHandoffTarget: (sessionId: string, target: ExecutionTarget) => void
+  getPendingHandoffTarget: (sessionId: string) => ExecutionTarget | null
+  clearPendingHandoffTarget: (sessionId: string) => void
+  saveLastUsedTarget: (target: ExecutionTarget) => void
+  getLastUsedTarget: () => ExecutionTarget | null
 }
 
 const isPersistedSelectionState = (state: unknown): state is PersistedSelectionState => (
@@ -43,13 +58,34 @@ const agentModelVariantSelections = new Map<string, Map<string, Map<string, stri
 // Maximum number of sessions to persist to local storage to prevent unbounded growth
 const MAX_PERSISTED_SESSIONS = 150
 
+const sanitizePersistedTargets = (entries: unknown): Map<string, ExecutionTarget> => {
+  const map = new Map<string, ExecutionTarget>()
+  if (!Array.isArray(entries)) {
+    return map
+  }
+  for (const entry of entries) {
+    if (!Array.isArray(entry) || entry.length < 2) {
+      continue
+    }
+    const [sessionId, target] = entry
+    if (typeof sessionId !== "string" || sessionId.length === 0 || !isExecutionTarget(target)) {
+      continue
+    }
+    map.set(sessionId, target)
+  }
+  return map
+}
+
 export const useSelectionStore = create<SelectionState>()(
   persist(
     (set, get) => ({
       sessionModelSelections: new Map(),
       sessionAgentSelections: new Map(),
       sessionAgentModelSelections: new Map(),
+      sessionTargets: new Map(),
+      pendingHandoffTargets: new Map(),
       lastUsedProvider: null,
+      lastUsedTarget: null,
 
       saveSessionModelSelection: (sessionId, providerId, modelId) =>
         set((s) => {
@@ -122,10 +158,52 @@ export const useSelectionStore = create<SelectionState>()(
         const key = `${providerId}/${modelId}`
         return agentModelVariantSelections.get(sessionId)?.get(agentName)?.get(key)
       },
+
+      saveSessionTarget: (sessionId, target) =>
+        set((s) => {
+          if (!isExecutionTarget(target)) return s
+          const existing = s.sessionTargets.get(sessionId)
+          if (existing && JSON.stringify(existing) === JSON.stringify(target)) {
+            return { lastUsedTarget: target }
+          }
+          const map = new Map(s.sessionTargets)
+          map.delete(sessionId)
+          map.set(sessionId, target)
+          return { sessionTargets: map, lastUsedTarget: target }
+        }),
+
+      getSessionTarget: (sessionId) => get().sessionTargets.get(sessionId) ?? null,
+
+      setPendingHandoffTarget: (sessionId, target) =>
+        set((s) => {
+          if (!sessionId.trim() || !isExecutionTarget(target)) return s
+          const existing = s.pendingHandoffTargets.get(sessionId)
+          if (existing && JSON.stringify(existing) === JSON.stringify(target)) return s
+          const map = new Map(s.pendingHandoffTargets)
+          map.set(sessionId, target)
+          return { pendingHandoffTargets: map }
+        }),
+
+      getPendingHandoffTarget: (sessionId) => get().pendingHandoffTargets.get(sessionId) ?? null,
+
+      clearPendingHandoffTarget: (sessionId) =>
+        set((s) => {
+          if (!s.pendingHandoffTargets.has(sessionId)) return s
+          const map = new Map(s.pendingHandoffTargets)
+          map.delete(sessionId)
+          return { pendingHandoffTargets: map }
+        }),
+
+      saveLastUsedTarget: (target) => {
+        if (!isExecutionTarget(target)) return
+        set({ lastUsedTarget: target })
+      },
+
+      getLastUsedTarget: () => get().lastUsedTarget,
     }),
     {
       name: "selection-store",
-      version: 1,
+      version: 2,
       storage: createDeferredSafeJSONStorage(),
       partialize: (state) => {
         // Convert Maps to arrays and slice to keep only the most recent MAX_PERSISTED_SESSIONS
@@ -134,12 +212,17 @@ export const useSelectionStore = create<SelectionState>()(
         const agentModels = Array.from(state.sessionAgentModelSelections.entries())
           .slice(-MAX_PERSISTED_SESSIONS)
           .map(([sessionId, agentMap]) => [sessionId, Array.from(agentMap.entries())])
+        const targets = Array.from(state.sessionTargets.entries()).slice(-MAX_PERSISTED_SESSIONS)
 
         return {
           sessionModelSelections: models,
           sessionAgentSelections: agents,
           sessionAgentModelSelections: agentModels,
+          sessionTargets: targets,
           lastUsedProvider: state.lastUsedProvider,
+          lastUsedTarget: state.lastUsedTarget && isExecutionTarget(state.lastUsedTarget)
+            ? state.lastUsedTarget
+            : null,
         }
       },
       merge: (persistedState: unknown, currentState) => {
@@ -151,16 +234,31 @@ export const useSelectionStore = create<SelectionState>()(
           })
         }
 
+        const lastUsedTarget = persisted?.lastUsedTarget && isExecutionTarget(persisted.lastUsedTarget)
+          ? persisted.lastUsedTarget
+          : currentState.lastUsedTarget
+
         return {
           ...currentState,
           lastUsedProvider: persisted?.lastUsedProvider ?? currentState.lastUsedProvider,
+          lastUsedTarget,
           sessionModelSelections: new Map(persisted?.sessionModelSelections ?? []),
           sessionAgentSelections: new Map(persisted?.sessionAgentSelections ?? []),
           sessionAgentModelSelections: agentModelSelections,
+          sessionTargets: sanitizePersistedTargets(persisted?.sessionTargets),
         }
       },
-      migrate: (persistedState: unknown) => {
-        // Scaffold for future schema migrations
+      migrate: (persistedState: unknown, version) => {
+        if (!isPersistedSelectionState(persistedState)) {
+          return persistedState
+        }
+        if (version < 2) {
+          return {
+            ...persistedState,
+            sessionTargets: Array.isArray(persistedState.sessionTargets) ? persistedState.sessionTargets : [],
+            lastUsedTarget: persistedState.lastUsedTarget ?? null,
+          }
+        }
         return persistedState
       }
     }

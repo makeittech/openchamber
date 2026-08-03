@@ -16,6 +16,9 @@ import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useGitBranchLabel, useGitStore } from '@/stores/useGitStore';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { useHarnessStore } from '@/stores/useHarnessStore';
+import { resolveActiveModelLimits } from '@/lib/harness/active-model-limits';
+import { useSelectionStore } from '@/sync/selection-store';
 import { Icon } from "@/components/icon/Icon";
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import type { SessionContextUsage } from '@/stores/types/sessionTypes';
@@ -135,6 +138,14 @@ const MiniChatHeader: React.FC<{ mode: MiniChatMode }> = ({ mode }) => {
   const rawBranchLabel = gitBranchForDirectory || worktreeMetadataBranch || sessionWorktreeMetadata?.branch?.trim() || worktreeAttachment?.branch?.trim() || catalogWorktreeBranch;
   const branchLabel = rawBranchLabel && rawBranchLabel !== 'HEAD' ? rawBranchLabel : null;
   const currentModel = getCurrentModel();
+  const sessionTarget = useSelectionStore((state) => (
+    currentSessionId ? state.sessionTargets.get(currentSessionId) ?? null : null
+  ));
+  const pendingHandoffTarget = useSelectionStore((state) => (
+    currentSessionId ? state.pendingHandoffTargets.get(currentSessionId) ?? null : null
+  ));
+  const lastUsedTarget = useSelectionStore((state) => state.lastUsedTarget);
+  const claudeCatalog = useHarnessStore((state) => state.catalogsById['claude-code']);
   const latestAssistantModel = React.useMemo(() => {
     for (let i = currentSessionMessages.length - 1; i >= 0; i -= 1) {
       const message = currentSessionMessages[i] as { role?: unknown; providerID?: unknown; modelID?: unknown };
@@ -146,12 +157,29 @@ const MiniChatHeader: React.FC<{ mode: MiniChatMode }> = ({ mode }) => {
     }
     return undefined;
   }, [currentSessionMessages, providers]);
-  const modelForLimits = currentModel?.limit ? currentModel : latestAssistantModel;
-  const limit = modelForLimits && typeof modelForLimits.limit === 'object' && modelForLimits.limit !== null
-    ? (modelForLimits.limit as Record<string, unknown>)
+  const modelForOpenCodeLimits = currentModel?.limit ? currentModel : latestAssistantModel;
+  const openCodeLimit = modelForOpenCodeLimits && typeof modelForOpenCodeLimits.limit === 'object' && modelForOpenCodeLimits.limit !== null
+    ? (modelForOpenCodeLimits.limit as Record<string, unknown>)
     : null;
-  const contextLimit = limit && typeof limit.context === 'number' ? limit.context : 0;
-  const outputLimit = limit && typeof limit.output === 'number' ? limit.output : 0;
+  const activeModelLimits = React.useMemo(() => resolveActiveModelLimits({
+    sessionId: currentSessionId,
+    sessionTarget,
+    pendingHandoffTarget,
+    lastUsedTarget,
+    claudeCatalog,
+    openCodeContext: typeof openCodeLimit?.context === 'number' ? openCodeLimit.context : 0,
+    openCodeOutput: typeof openCodeLimit?.output === 'number' ? openCodeLimit.output : 0,
+  }), [
+    claudeCatalog,
+    currentSessionId,
+    lastUsedTarget,
+    openCodeLimit?.context,
+    openCodeLimit?.output,
+    pendingHandoffTarget,
+    sessionTarget,
+  ]);
+  const contextLimit = activeModelLimits.context;
+  const outputLimit = activeModelLimits.output;
   const contextUsage = React.useMemo<SessionContextUsage | null>(() => {
     if (!currentSessionId || currentSessionMessages.length === 0) {
       return null;

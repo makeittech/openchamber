@@ -243,6 +243,7 @@
     "vite": "^7.1.2"
   },
   "dependencies": {
+    "@openchamber/quota-core": "workspace:*",
     "@openchamber/ui": "workspace:*",
     "@opencode-ai/sdk": "1.18.11",
     "adm-zip": "^0.5.16",

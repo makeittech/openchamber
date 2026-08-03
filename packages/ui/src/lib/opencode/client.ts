@@ -910,6 +910,29 @@ class OpencodeService {
     throw error;
   }
 
+  /**
+   * Append a user message to a session without triggering a model reply
+   * (`noReply`). Used to place transferred handoff context visibly at the top
+   * of a destination session; the message still becomes model context on the
+   * next real prompt.
+   */
+  async postContextMessage(params: {
+    id: string;
+    text: string;
+    directory?: string | null;
+  }): Promise<void> {
+    const requestDirectory = this.normalizeCandidatePath(params.directory ?? null) ?? this.currentDirectory;
+    const result = await this.client.session.promptAsync({
+      sessionID: params.id,
+      ...(requestDirectory ? { directory: requestDirectory } : {}),
+      noReply: true,
+      parts: [{ type: 'text', text: params.text }],
+    });
+    if (result.error) {
+      throw new Error(`Failed to post context message: ${formatSdkError(result.error)}`);
+    }
+  }
+
   async sendCommand(params: {
     id: string;
     providerID: string;
