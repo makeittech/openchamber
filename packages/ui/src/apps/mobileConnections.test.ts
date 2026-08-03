@@ -17,6 +17,7 @@ const createLocalStorageStub = () => {
 const installTestWindow = () => {
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
+    writable: true,
     value: {
       setTimeout: globalThis.setTimeout.bind(globalThis),
       clearTimeout: globalThis.clearTimeout.bind(globalThis),
@@ -28,7 +29,7 @@ const installTestWindow = () => {
 
 const restoreGlobals = () => {
   globalThis.fetch = originalFetch;
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: originalWindow });
+  Object.defineProperty(globalThis, 'window', { configurable: true, writable: true, value: originalWindow });
 };
 
 const STORAGE_KEY = 'openchamber.mobile.connections.v1';
