@@ -25,27 +25,15 @@ const terminalViewportSource = readFileSync(
     'utf-8',
 );
 
-const viewportKeyBlock = (() => {
-    const start = terminalViewSource.indexOf('const terminalViewportKey = React.useMemo(');
-    expect(start).toBeGreaterThan(-1);
-    const end = terminalViewSource.indexOf('}, [', start);
-    expect(end).toBeGreaterThan(start);
-    return terminalViewSource.slice(start, terminalViewSource.indexOf(');', end));
-})();
+const viewportKeyDeclaration = terminalViewSource
+    .split('\n')
+    .find((line) => line.includes('const terminalViewportKey =')) ?? '';
 
 describe('terminal viewport remount guard', () => {
     test('viewport identity excludes the PTY session id', () => {
-        expect(viewportKeyBlock).toContain('effectiveDirectory');
-        expect(viewportKeyBlock).toContain('activeTabId');
-        expect(viewportKeyBlock).not.toContain('terminalSessionId');
-    });
-
-    test('viewport key memo does not depend on the PTY session id', () => {
-        const dependencyStart = terminalViewSource.indexOf('}, [', terminalViewSource.indexOf('const terminalViewportKey'));
-        const dependencies = terminalViewSource.slice(dependencyStart, terminalViewSource.indexOf(']', dependencyStart));
-        expect(dependencies).toContain('effectiveDirectory');
-        expect(dependencies).toContain('activeTabId');
-        expect(dependencies).not.toContain('terminalSessionId');
+        expect(viewportKeyDeclaration).toContain('effectiveDirectory');
+        expect(viewportKeyDeclaration).toContain('activeTabId');
+        expect(viewportKeyDeclaration).not.toContain('terminalSessionId');
     });
 
     test('replay discontinuities reset the terminal in place instead of remounting it', () => {

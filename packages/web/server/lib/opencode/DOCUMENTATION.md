@@ -58,8 +58,14 @@ This module provides OpenCode server integration utilities for the web server ru
 - `AUTH_FILE`: Auth file path constant.
 - `OPENCODE_DATA_DIR`: OpenCode data directory path constant.
 
+## Public exports (providers.js)
+- `getProviderSources(providerId, workingDirectory)`: Resolves which OpenCode config layers define a provider.
+- `upsertProviderConfig(providerId, config, workingDirectory, scope?, options?)`: Validates and writes a custom OpenAI-compatible provider block (`npm`, `name`, `options.baseURL`, `models`, optional `env`/`headers`) into the user/project/custom config layer. Does not store API keys. Requires `config.env` or `options.hasStoredAuth` (auth already written via OpenCode `auth.set`). Edit flows must pass the provider's effective existing layer (`custom` > `project` > `user`) so updates do not create a global user override.
+- `validateCustomProviderConfig(providerId, config, options?)`: Structural validation for custom provider payloads (id format, http(s) base URL, models, credentials via `env` or `hasStoredAuth`).
+- `removeProviderConfig(providerId, workingDirectory, scope?)`: Removes a provider block from the selected config layer.
+
 ## Public exports (shared.js)
-- `OPENCODE_CONFIG_DIR`, `AGENT_DIR`, `COMMAND_DIR`, `SKILL_DIR`, `CONFIG_FILE`, `CUSTOM_CONFIG_FILE`: Path constants.
+- `OPENCODE_CONFIG_DIR`, `AGENT_DIR`, `COMMAND_DIR`, `SKILL_DIR`, `CONFIG_FILE`: Path constants. `OPENCODE_CONFIG` is resolved at call time for the custom config layer path.
 - `AGENT_SCOPE`, `COMMAND_SCOPE`, `SKILL_SCOPE`: Scope constants with USER and PROJECT values.
 - `ensureDirs()`: Creates required OpenCode directories.
 - `parseMdFile(filePath)`, `writeMdFile(filePath, frontmatter, body)`: Markdown file operations with YAML frontmatter.
@@ -83,6 +89,7 @@ This module provides OpenCode server integration utilities for the web server ru
   - `GET /api/opencode/upgrade-status` (returns version availability plus the authoritative `upgrade.supported`, `upgrade.manager`, and `upgrade.reason` capability)
   - `POST /api/opencode/directory`
   - `GET /api/provider/:providerId/source`
+  - `PUT /api/provider` (create/update custom OpenAI-compatible provider config in OpenCode user/project/custom layers via `scope`; secrets stay in auth via the OpenCode auth API)
   - `DELETE /api/provider/:providerId/auth`
 - Owns lazy auth library loading for provider auth checks/removal.
 - Keeps route behavior independent from composition root; `index.js` now supplies dependencies only.
@@ -359,6 +366,10 @@ an authoritative loopback callback URL even when OpenChamber binds port `0`.
   - Skills config CRUD and metadata under `/api/config/skills*`
   - Skills catalog listing/source pagination, scan, and install routes
   - Supporting skill file read/write/delete routes
+  - Directory resolution prefers an explicit request directory, then soft-falls
+    back to the active project / `lastDirectory` so repository-local
+    `.agents/skills` and `.opencode/skills` remain discoverable when the client
+    omits `directory`. Requests without any project still list user-scoped skills.
 
 ## Public exports (system-skills.js)
 - `buildSystemSkills({ apiBaseUrl })`: returns the OpenChamber system skill definitions (`{ name, frontmatter, body }`) with the local API base URL embedded. Currently ships `create-project` — bootstrap a new project, write its AGENTS.md, and link a Discord channel via `POST /api/messenger/agent/create-project`.

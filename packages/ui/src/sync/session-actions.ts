@@ -13,6 +13,7 @@ import { opencodeClient } from "@/lib/opencode/client"
 import { mergeSessionDirectoryMetadata, resolveGlobalSessionDirectory, useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
 import { useConfigStore } from "@/stores/useConfigStore"
 import { registerSessionDirectory } from "./sync-refs"
+import { recordSendFailure } from "./send-failure-log"
 import { isSyntheticPart } from "@/lib/messages/synthetic"
 import { materializeSessionSnapshots } from "./materialization"
 import { stripMessageDiffSnapshots, stripSessionDiffSnapshots } from "./sanitize"
@@ -667,6 +668,16 @@ function isStaleRuntime(expectedRuntimeKey: string | undefined): boolean {
   return expectedRuntimeKey !== undefined && getRuntimeKey() !== expectedRuntimeKey
 }
 
+/**
+ * Read a session, apply `updater` to its metadata, and persist the result.
+ *
+ * `expectedRuntimeKey` is optional here and unguarded when omitted, unlike the
+ * archive and delete actions. When supplied, the runtime is rechecked before
+ * the read, before the write, and before the global store is updated; a change
+ * at any of those points **throws** `"runtime changed"` rather than returning a
+ * value, because this function must resolve to a `Session`. Callers that pass a
+ * key must therefore be prepared to catch that rejection.
+ */
 export async function patchSessionMetadata(
   sessionId: string,
   directory: string | null | undefined,
@@ -767,7 +778,21 @@ function cleanupSessionWorktreeMetadata(sessionId: string): void {
   useSessionUIStore.getState().setWorktreeMetadata(sessionId, null)
 }
 
-function finalizeConfirmedSessionDeletion(sessionId: string, sessionDirectory?: string): void {
+/**
+ * Commit a server-confirmed deletion.
+ *
+ * `expectedRuntimeKey` is the runtime the deletion was confirmed on. It is
+ * forwarded to `cleanupPersistedSessionState`, which rejects an identity whose
+ * runtime is no longer active. Passing the live `getRuntimeKey()` here would
+ * make that existing check a tautology, so the captured key is required to keep
+ * it meaningful. Callers must still reject a stale runtime themselves, because
+ * the in-memory live/global/UI stores mutated below are not runtime-scoped.
+ */
+function finalizeConfirmedSessionDeletion(
+  sessionId: string,
+  sessionDirectory?: string,
+  expectedRuntimeKey = getRuntimeKey(),
+): void {
   const snapshots = removeSessionFromLiveStores(sessionId, sessionDirectory)
   invalidateSessionLoads(sessionId, [...snapshots.map((snapshot) => snapshot.directory), sessionDirectory])
   useGlobalSessionsStore.getState().removeSessions([sessionId])
@@ -776,23 +801,50 @@ function finalizeConfirmedSessionDeletion(sessionId: string, sessionDirectory?: 
   cleanupSessionWorktreeMetadata(sessionId)
   if (sessionDirectory) {
     cleanupPersistedSessionState({
-      runtimeKey: getRuntimeKey(),
+      runtimeKey: expectedRuntimeKey,
       directory: sessionDirectory,
       sessionId,
     })
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export async function deleteSession(sessionId: string, _options?: Record<string, unknown>): Promise<boolean> {
+export type DeleteSessionOptions = {
+  /**
+   * Runtime key the deletion is scoped to. Defaults to the active runtime when
+   * the action starts; callers may supply a key captured earlier when
+   * confirmation spans a runtime switch.
+   */
+  expectedRuntimeKey?: string
+}
+
+/**
+ * Delete one session.
+ *
+ * The runtime is rechecked before the request and again before any store is
+ * reconciled, so a response produced by the previous runtime cannot mutate the
+ * current runtime's state. Session IDs are not unique across runtimes, so
+ * committing a stale deletion could otherwise evict an unrelated session and
+ * erase its persisted queue, todos, drafts, folders, and pins.
+ *
+ * A `404` is treated as an already-completed deletion, but only when it is
+ * still authoritative for the captured runtime. After a runtime change the
+ * `404` describes either the previous runtime or a runtime this session never
+ * belonged to; neither justifies committing cleanup here, so the action reports
+ * failure and leaves reconciliation to the next authoritative load.
+ */
+export async function deleteSession(sessionId: string, options?: DeleteSessionOptions): Promise<boolean> {
+  const expectedRuntimeKey = options?.expectedRuntimeKey ?? getRuntimeKey()
+  if (isStaleRuntime(expectedRuntimeKey)) return false
   const sessionDirectory = getSessionDirectory(sessionId)
   try {
-    await cleanupReviewMetadataBeforeDelete(sessionId, sessionDirectory)
+    await cleanupReviewMetadataBeforeDelete(sessionId, sessionDirectory, expectedRuntimeKey)
+    if (isStaleRuntime(expectedRuntimeKey)) return false
     const deleted = await opencodeClient.deleteSession(sessionId, sessionDirectory)
+    if (isStaleRuntime(expectedRuntimeKey)) return false
     if (deleted !== true) {
       throw new Error("session.delete failed: server did not confirm deletion")
     }
-    finalizeConfirmedSessionDeletion(sessionId, sessionDirectory)
+    finalizeConfirmedSessionDeletion(sessionId, sessionDirectory, expectedRuntimeKey)
     return true
   } catch (error) {
     console.error("[session-actions] deleteSession failed", error)
@@ -800,7 +852,8 @@ export async function deleteSession(sessionId: string, _options?: Record<string,
     // Subsequent delete attempts for those children return 404; treat as
     // success since the session was already deleted by the cascade.
     if ((error as { status?: number })?.status === 404) {
-      finalizeConfirmedSessionDeletion(sessionId, sessionDirectory)
+      if (isStaleRuntime(expectedRuntimeKey)) return false
+      finalizeConfirmedSessionDeletion(sessionId, sessionDirectory, expectedRuntimeKey)
       return true
     }
     return false
@@ -808,23 +861,68 @@ export async function deleteSession(sessionId: string, _options?: Record<string,
 }
 
 /** Delete a session specifying which directory it lives in. Used by agent groups for cross-directory deletes. */
-export async function deleteSessionInDirectory(sessionId: string, directory: string): Promise<boolean> {
+export async function deleteSessionInDirectory(
+  sessionId: string,
+  directory: string,
+  expectedRuntimeKey = getRuntimeKey(),
+): Promise<boolean> {
+  if (isStaleRuntime(expectedRuntimeKey)) return false
   try {
-    await cleanupReviewMetadataBeforeDelete(sessionId, directory)
+    await cleanupReviewMetadataBeforeDelete(sessionId, directory, expectedRuntimeKey)
+    if (isStaleRuntime(expectedRuntimeKey)) return false
     const deleted = await opencodeClient.deleteSession(sessionId, directory)
+    if (isStaleRuntime(expectedRuntimeKey)) return false
     if (deleted !== true) {
       throw new Error("session.delete failed: server did not confirm deletion")
     }
-    finalizeConfirmedSessionDeletion(sessionId, directory)
+    finalizeConfirmedSessionDeletion(sessionId, directory, expectedRuntimeKey)
     return true
   } catch (error) {
     console.error("[session-actions] deleteSessionInDirectory failed", error)
     if ((error as { status?: number })?.status === 404) {
-      finalizeConfirmedSessionDeletion(sessionId, directory)
+      if (isStaleRuntime(expectedRuntimeKey)) return false
+      finalizeConfirmedSessionDeletion(sessionId, directory, expectedRuntimeKey)
       return true
     }
     return false
   }
+}
+
+export type DeleteSessionsOptions = {
+  /**
+   * Runtime key captured when the batch was confirmed. When supplied, the batch
+   * stops as soon as the active runtime differs.
+   */
+  expectedRuntimeKey?: string
+}
+
+/**
+ * Delete several sessions sequentially, preserving partial results.
+ *
+ * One failed session never blocks or erases the others: it is reported in
+ * `failedIds` while the remaining IDs are still attempted. When the runtime
+ * changes mid-batch, the sessions already committed on the captured runtime
+ * stay in `deletedIds` and every ID that was not committed there is reported in
+ * `failedIds`, so existing partial-failure feedback stays truthful.
+ */
+export async function deleteSessions(
+  ids: string[],
+  options?: DeleteSessionsOptions,
+): Promise<{ deletedIds: string[]; failedIds: string[] }> {
+  const deletedIds: string[] = []
+  const failedIds: string[] = []
+  const expectedRuntimeKey = options?.expectedRuntimeKey ?? getRuntimeKey()
+
+  for (const [index, id] of ids.entries()) {
+    if (isStaleRuntime(expectedRuntimeKey)) {
+      failedIds.push(...ids.slice(index))
+      break
+    }
+    if (await deleteSession(id, { expectedRuntimeKey })) deletedIds.push(id)
+    else failedIds.push(id)
+  }
+
+  return { deletedIds, failedIds }
 }
 
 /**
@@ -1088,7 +1186,9 @@ export async function optimisticSend(input: {
   try {
     await input.send(messageID)
   } catch (error) {
-    const acceptedRecords = isAmbiguousSendFailure(error)
+    const status = getErrorStatus(error)
+    const ambiguousFailure = isAmbiguousSendFailure(error)
+    const acceptedRecords = ambiguousFailure
       ? await fetchRecentSendConfirmationRecords(input.sessionId, messageID, targetDirectory)
       : null
 
@@ -1101,6 +1201,24 @@ export async function optimisticSend(input: {
       })
       return
     }
+
+    // The rollback below makes the user's message disappear with no other
+    // trace, and the composer intentionally stays silent for transport-level
+    // failures. Record the failure so the About dialog's diagnostics report can
+    // answer "it disappeared and nothing happened" with an actual cause.
+    // `reason` is truncated by the recorder: a rejected send echoes the
+    // provider/OpenCode response body, which this log has no reason to keep.
+    const failureRecord = {
+      sessionId: input.sessionId,
+      messageId: messageID,
+      directory: targetDirectory ?? null,
+      status,
+      ambiguous: ambiguousFailure,
+      confirmationChecked: ambiguousFailure,
+      reason: error instanceof Error ? error.message : String(error),
+    }
+    recordSendFailure(failureRecord)
+    console.warn("[session-actions] prompt send rejected; rolling back optimistic message", failureRecord)
 
     // Rollback via optimistic infrastructure
     _optimisticRemove({
