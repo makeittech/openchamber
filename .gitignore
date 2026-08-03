@@ -69,3 +69,7 @@ workspaces/
 .worktrees/
 test-results/
 artifacts/browser-profile-*/
+
+# Deployment worktrees (watcher)
+deploy-main/
+deploy-alpha/
