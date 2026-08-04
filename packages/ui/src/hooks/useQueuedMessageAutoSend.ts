@@ -252,7 +252,9 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
         return;
       }
 
-      const payload = buildQueuedAutoSendPayload(queueSnapshot);
+      // Read the queue back at dispatch time and skip anything already being
+      // delivered, rather than trusting the render-time snapshot.
+      const payload = buildQueuedAutoSendPayload(useMessageQueueStore.getState().getSendableQueue(target));
       if (!payload) {
         return;
       }
@@ -279,6 +281,10 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
       }
 
       inFlightSessionsRef.current.add(targetKey);
+      // The ref only guards this hook. Publish the dispatch to the store so the
+      // composer cannot merge the same item into a parallel send while this one
+      // is still awaiting the server.
+      useMessageQueueStore.getState().markSending(target, payload.queuedMessageId);
 
       try {
         await sendQueuedAutoSendPayload(sessionId, target.directory, payload, {
@@ -311,6 +317,7 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
         retryScheduler.schedule(nextAttemptAt);
       } finally {
         inFlightSessionsRef.current.delete(targetKey);
+        useMessageQueueStore.getState().clearSending(target, payload.queuedMessageId);
       }
     };
 

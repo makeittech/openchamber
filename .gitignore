@@ -68,7 +68,7 @@ workspaces/
 *.pid
 .worktrees/
 test-results/
-artifacts/browser-profile-*/
+artifacts/
 
 # Deployment worktrees (watcher)
 deploy-main/

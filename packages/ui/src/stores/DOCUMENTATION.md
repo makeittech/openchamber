@@ -48,6 +48,7 @@ Examples:
 - `useProjectsStore.ts`
 - `useGlobalSessionsStore.ts`
 - `useSessionFoldersStore.ts`
+- `messageQueueStore.ts`
 
 These stores coordinate persistent project/session metadata across multiple views.
 
@@ -60,6 +61,16 @@ full per-target queue or the target-count limit rejects the new item and retains
 all previously accepted items; it never evicts old work to admit new work.
 Authoritative session deletion clears the queue for the runtime/directory/session
 identity, while Stop/cancel does not.
+
+`messageQueueStore.ts` also keeps a queued message until its own send resolves,
+so between dispatch and resolution the entry is still visible to every reader.
+Dispatchers must therefore mark the send (`markSending`/`clearSending`) and read
+`getSendableQueue()` — or filter `sendingIds` themselves — instead of dispatching
+straight from `queuedMessages`; otherwise a composer submit merges a message the
+auto-send hook is already delivering and it is sent twice (the window is seconds
+over a relay). `clearQueue()` retains in-flight entries for the same reason.
+`sendingIds` is deliberately not persisted: a restart has no in-flight sends, and
+a stale flag would strand a queued message.
 
 `useGlobalSessionsStore.ts` owns cold/global active and archived session coverage, including `sessionsByDirectory`. It is complementary to directory child stores: it is not the source of live busy/retry status or session messages.
 

@@ -180,6 +180,7 @@ const COMMAND_TRANSLATION_ERROR_CODES = new Set([
     'COMMAND_UNAVAILABLE',
     'COMMAND_INVALID',
 ]);
+const EMPTY_SENDING_IDS: string[] = [];
 const COMPACT_CHAT_PLACEHOLDER_MAX_WIDTH = 560;
 const renameFileForAttachmentCitation = (file: File, filename: string): File => {
     if (file.name === filename) {
@@ -1076,9 +1077,16 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 hasContent: options.presetText.trim().length > 0 || attachedFiles.length > 0 || hasDrafts,
             }
             : getCurrentInputSnapshot();
-        const queuedMessagesToSend = queuedMessageId
+        // A queued item stays in the queue until its own send resolves, so the
+        // auto-send hook may already be delivering one of these. Merging it here
+        // would send the same message twice (the window is seconds over a relay).
+        const sendingIds = messageQueueTarget
+            ? useMessageQueueStore.getState().sendingIds[getMessageQueueKey(messageQueueTarget)] ?? EMPTY_SENDING_IDS
+            : EMPTY_SENDING_IDS;
+        const queuedMessagesToSend = (queuedMessageId
             ? queuedMessages.filter((message) => message.id === queuedMessageId)
-            : queuedMessages;
+            : queuedMessages
+        ).filter((message) => !sendingIds.includes(message.id));
 
         if (queuedOnly && autoReviewRunning) {
             return;
