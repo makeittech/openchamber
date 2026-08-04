@@ -167,6 +167,8 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
 
     const getAgentModelForSession = useSelectionStore((s) => s.getAgentModelForSession);
     const getSessionModelSelection = useSelectionStore((s) => s.getSessionModelSelection);
+    // Must be declared before any selector that closes over it (const TDZ).
+    const sessionId = message.info.sessionID;
     const sessionHarnessId = useSelectionStore((s) => (
         sessionId ? s.getSessionTarget(sessionId)?.harnessId : undefined
     ));
@@ -209,8 +211,6 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     const isUser = messageRole.isUser;
     const useExternalUserActionsRow = isUser && (isMobile || !stickyUserHeader);
     const showStickyInlineHoverRow = isUser && !isMobile && stickyUserHeader && !useExternalUserActionsRow;
-
-    const sessionId = message.info.sessionID;
     const planModeEnabled = useFeatureFlagsStore((state) => state.planModeEnabled);
 
     // Keep non-active-turn rows detached from context-store churn.
