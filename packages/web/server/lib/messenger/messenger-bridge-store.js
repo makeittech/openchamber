@@ -1,27 +1,25 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { createRequire } from 'node:module';
 
 export const MESSENGER_NOTIFY_ON_COMPLETE_DEFAULT = false;
 export const MESSENGER_INTERRUPT_TIMEOUT_DEFAULT_MS = 8000;
 export const MESSENGER_INTERRUPT_TIMEOUT_MIN_MS = 1000;
 export const MESSENGER_INTERRUPT_TIMEOUT_MAX_MS = 60000;
 
-// Pick the SQLite driver that matches the current JS runtime. The web server
+// Pick the SQLite driver built into the current JS runtime. The web server
 // runs under Node (the published `openchamber serve` CLI and the in-process
 // server inside the Electron desktop shell) AND under Bun (the local
-// `dev:server` script). `bun:sqlite` only exists under Bun, while the native
-// `better-sqlite3` addon cannot be dlopen'd by Bun — so neither works
-// everywhere on its own. Both expose a compatible API for what this store
+// `dev:server` script). `bun:sqlite` only exists under Bun and `node:sqlite`
+// only under Node — but both are runtime built-ins, so the bridge store needs
+// no external dependency. Both expose a compatible API for what this store
 // needs: `db.exec(sql)` for raw DDL and `db.prepare(sql).run/get/all(...)`.
 const isBun = typeof globalThis.Bun !== 'undefined';
 let Database;
 if (isBun) {
   ({ Database } = await import('bun:sqlite'));
 } else {
-  const require = createRequire(import.meta.url);
-  Database = require('better-sqlite3');
+  ({ DatabaseSync: Database } = await import('node:sqlite'));
 }
 
 /**

@@ -46,6 +46,25 @@ function makeBridge(overrides = {}) {
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
+// Minimal polling stand-in for vitest's `vi.waitFor` (unavailable under
+// `bun test`): re-runs the assertion until it passes or the deadline hits.
+const waitFor = async (assertion, { timeout = 2000, interval = 10 } = {}) => {
+  const deadline = Date.now() + timeout;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((r) => setTimeout(r, interval));
+    }
+  }
+  assertion();
+  void lastError;
+};
+
 describe('approval flow — reply directory', () => {
   let originalFetch;
 
@@ -564,7 +583,7 @@ describe('web session mirroring', () => {
       },
     });
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(postOrder.length).toBeGreaterThanOrEqual(2);
     });
 
@@ -2621,7 +2640,7 @@ describe('plain message supersedes an in-flight turn', () => {
       await fn(idleEvent);
     }
     await flush();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(promptCalls().length).toBeGreaterThanOrEqual(2);
     });
 

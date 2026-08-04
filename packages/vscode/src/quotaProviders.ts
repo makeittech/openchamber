@@ -1527,6 +1527,19 @@ const fetchOllamaCloudQuota = async (): Promise<ProviderResult> => {
   }
 };
 
+const fetchCursorQuota = async (): Promise<ProviderResult> => {
+  const accessToken = readCredential('cursor')?.accessToken;
+  if (!accessToken) return buildResult({ providerId: 'cursor', providerName: 'Cursor', ok: false, configured: false, error: 'Not configured' });
+  try {
+    const response = await fetch('https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage', { method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1' }, body: '{}', signal: AbortSignal.timeout(15_000) });
+    if (!response.ok) throw new Error(response.status === 401 ? 'Cursor session expired' : `API error: ${response.status}`);
+    const payload = await response.json() as Record<string, unknown>;
+    const plan = (payload.planUsage as Record<string, unknown> | undefined) ?? {};
+    const usedPercent = toNumber(plan.totalPercentUsed);
+    return buildResult({ providerId: 'cursor', providerName: 'Cursor', ok: true, configured: true, usage: { windows: { billing_cycle: toUsageWindow({ usedPercent, windowSeconds: null, resetAt: toTimestamp(payload.billingCycleEnd) }) } } });
+  } catch (error) { return buildResult({ providerId: 'cursor', providerName: 'Cursor', ok: false, configured: true, error: error instanceof Error ? error.message : 'Request failed' }); }
+};
+
 const fetchOpenRouterQuota = async (): Promise<ProviderResult> => {
   const auth = readAuthFile();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['openrouter'])) as Record<string, unknown> | null;

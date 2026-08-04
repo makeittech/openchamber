@@ -136,17 +136,22 @@ export const useSessionActions = (args: Args) => {
   }, []);
 
   const handleShareSession = React.useCallback(async (session: Session) => {
-    const result = await args.shareSession(session.id);
-    if (!result?.share?.url) {
+    try {
+      const result = await args.shareSession(session.id);
+      const shareUrl = result ? getSessionShareUrl(result) : null;
+      if (!shareUrl) {
+        toast.error(t('sessions.sidebar.session.share.error'));
+        return;
+      }
+      const copied = await copyShareUrl(shareUrl, session.id);
+      toast[copied ? 'success' : 'warning'](t('sessions.sidebar.session.share.successTitle'), {
+        description: t(copied
+          ? 'sessions.sidebar.session.share.successDescription'
+          : 'sessions.sidebar.session.share.copyUrlError'),
+      });
+    } catch {
       toast.error(t('sessions.sidebar.session.share.error'));
-      return;
     }
-    const copied = await copyShareUrl(result.share.url, session.id);
-    toast[copied ? 'success' : 'warning'](t('sessions.sidebar.session.share.successTitle'), {
-      description: t(copied
-        ? 'sessions.sidebar.session.share.successDescription'
-        : 'sessions.sidebar.session.share.copyUrlError'),
-    });
   }, [args, copyShareUrl, t]);
 
   const handleCopyShareUrl = React.useCallback((url: string, sessionId: string) => {
