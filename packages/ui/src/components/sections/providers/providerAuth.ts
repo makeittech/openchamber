@@ -1,4 +1,4 @@
-export interface ProviderAuthMethod {
+export interface AuthMethod {
   type?: string;
   name?: string;
   label?: string;
@@ -8,13 +8,16 @@ export interface ProviderAuthMethod {
   [key: string]: unknown;
 }
 
-export interface ProviderOAuthEntry {
-  /** Index in the provider.auth() array; oauth.authorize addresses methods by this index. */
-  index: number;
-  method: ProviderAuthMethod;
+export interface OAuthAuthMethodEntry {
+  method: AuthMethod;
+  /** Index in the full provider auth-methods array (passed to oauth authorize/callback). */
+  methodIndex: number;
 }
 
-export const normalizeAuthType = (method: ProviderAuthMethod): string => {
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+
+export const normalizeAuthType = (method: AuthMethod): string => {
   const raw = typeof method.type === 'string' ? method.type : '';
   const label = `${method.name ?? ''} ${method.label ?? ''}`.toLowerCase();
   const merged = `${raw} ${label}`.toLowerCase();
@@ -23,54 +26,32 @@ export const normalizeAuthType = (method: ProviderAuthMethod): string => {
   return raw.toLowerCase();
 };
 
-export const oauthMethodEntries = (methods: ProviderAuthMethod[]): ProviderOAuthEntry[] =>
-  methods
-    .map((method, index) => ({ index, method }))
-    .filter((entry) => normalizeAuthType(entry.method) === 'oauth');
-
-const isOauthOnly = (methods: ProviderAuthMethod[]): boolean =>
-  methods.length > 0 && methods.every((method) => normalizeAuthType(method) === 'oauth');
-
-interface ProviderAuthViewInput {
-  methods: ProviderAuthMethod[];
-  /** True once provider credential provenance is known (source lookup resolved). */
-  credentialsResolved: boolean;
-  /** Stored credentials for the provider (auth.json entry). */
-  hasStoredCredentials: boolean;
-}
-
-interface ProviderAuthView {
-  oauthEntries: ProviderOAuthEntry[];
-  /** Unknown methods keep the key field; an explicit api method always shows it. */
-  showApiKeyField: boolean;
-  /** OAuth-only provider whose credentials are known to be missing. */
-  signInRequired: boolean;
-  /** Open the auth panel without user action instead of a Connected summary. */
-  autoOpenPanel: boolean;
-  /** Fetch the browser URL up front so it is visible without pressing Connect. */
-  autoStartMethodIndex: number | null;
-}
+export const parseAuthPayload = (payload: unknown): Record<string, AuthMethod[]> => {
+  if (!isRecord(payload)) {
+    return {};
+  }
+  const result: Record<string, AuthMethod[]> = {};
+  for (const [providerId, value] of Object.entries(payload)) {
+    if (Array.isArray(value)) {
+      result[providerId] = value.filter((entry) => isRecord(entry)) as AuthMethod[];
+    }
+  }
+  return result;
+};
 
 /**
- * Derives the Authentication section state from the provider's advertised auth
- * methods. OAuth-only providers (plugin providers such as Cursor) have no API
- * key path at all, so the key field is hidden and, when no credentials are
- * stored, the OAuth flow replaces the Connected summary.
+ * Show the API key form when the provider declares API auth, or when auth
+ * methods are still unknown (empty). OAuth-only providers must not get an
+ * API key prompt.
  */
-export const deriveProviderAuthView = ({
-  methods,
-  credentialsResolved,
-  hasStoredCredentials,
-}: ProviderAuthViewInput): ProviderAuthView => {
-  const oauthEntries = oauthMethodEntries(methods);
-  const oauthOnly = isOauthOnly(methods);
-  const signInRequired = oauthOnly && credentialsResolved && !hasStoredCredentials;
-
-  return {
-    oauthEntries,
-    showApiKeyField: methods.length === 0 || methods.some((method) => normalizeAuthType(method) === 'api'),
-    signInRequired,
-    autoOpenPanel: signInRequired,
-    autoStartMethodIndex: signInRequired ? (oauthEntries[0]?.index ?? null) : null,
-  };
+export const shouldShowApiKeyAuth = (methods: AuthMethod[]): boolean => {
+  if (methods.length === 0) {
+    return true;
+  }
+  return methods.some((method) => normalizeAuthType(method) === 'api');
 };
+
+export const getOAuthAuthMethods = (methods: AuthMethod[]): OAuthAuthMethodEntry[] =>
+  methods
+    .map((method, methodIndex) => ({ method, methodIndex }))
+    .filter(({ method }) => normalizeAuthType(method) === 'oauth');
