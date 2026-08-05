@@ -81,6 +81,7 @@ type MobileSessionsSheetProps = {
     /** Connected instance label — Capacitor only; null hides the left slot. */
     instanceLabel: string | null;
     onOpenInstances?: () => void;
+    onOpenWorkQueue?: () => void;
     onOpenSettings: () => void;
     /** Present only while a server update is available (hosted web). */
     onOpenUpdate?: () => void;
@@ -1829,6 +1830,20 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
                 >
                   <Icon name="download" className="size-5" />
                   <span className="absolute right-2 top-2 inline-flex size-2 rounded-full bg-primary" aria-hidden />
+                </Button>
+              ) : null}
+              {footer.onOpenWorkQueue ? (
+                <Button
+                  type="button"
+                  variant="default"
+                  size="lg"
+                  className="w-10 px-0"
+                  onClick={footer.onOpenWorkQueue}
+                  aria-label={t('sessions.sidebar.footer.actions.workQueue')}
+                  title={t('sessions.sidebar.footer.actions.workQueue')}
+                  style={{ touchAction: 'manipulation' }}
+                >
+                  <Icon name="layout-column" className="size-5" />
                 </Button>
               ) : null}
               <Button

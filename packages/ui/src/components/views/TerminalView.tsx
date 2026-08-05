@@ -424,7 +424,9 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
             }
 
             const tab = state.tabs.find((t) => t.id === tabId) ?? state.tabs[0];
-            const terminalId = tab?.terminalSessionId ?? null;
+            // `let`, not `const`: the session-creation branch below assigns the
+            // fresh session id to this variable (see `ensureSession`).
+            let terminalId = tab?.terminalSessionId ?? null;
             const terminalLifecycle = tab?.lifecycle ?? 'idle';
             const isActionTab = Boolean(tab?.label?.startsWith('Action:'));
             const buffer = useTerminalStore.getState().getBuffer(directory, tabId);

@@ -30,6 +30,7 @@ import { SimpleMarkdownRenderer } from '@/components/chat/MarkdownRenderer';
 import { languageByExtension, loadLanguageByExtension } from '@/lib/codemirror/languageByExtension';
 import { createFlexokiCodeMirrorTheme } from '@/lib/codemirror/flexokiTheme';
 import { shikiHighlightExtension } from '@/lib/codemirror/shikiHighlight';
+import { isViewDestroyed } from '@/lib/codemirror/viewDestroyed';
 import { getResolvedShikiTheme } from '@/lib/shiki/appThemeRegistry';
 import { File as PierreFile } from '@pierre/diffs/react';
 import {
@@ -2772,7 +2773,10 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
     if (typeof window !== 'undefined') {
       window.requestAnimationFrame(() => {
         const syncedView = editorViewRef.current;
-        if (!syncedView) {
+        // The ref may have moved to an unrelated view (file switched, editor
+        // remounted) while this frame was pending; only the view captured
+        // above is safe to dispatch the stale target position against.
+        if (!syncedView || syncedView !== view || isViewDestroyed(syncedView)) {
           return;
         }
 

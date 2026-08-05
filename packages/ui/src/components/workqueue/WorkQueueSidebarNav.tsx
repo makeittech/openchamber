@@ -2,20 +2,23 @@ import React from 'react';
 import { SettingsSidebarLayout } from '@/components/sections/shared/SettingsSidebarLayout';
 import { SettingsSidebarItem } from '@/components/sections/shared/SettingsSidebarItem';
 import { Icon } from '@/components/icon/Icon';
-import type { IconName } from '@/components/icon/icons';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import type { WorkQueueItem } from '@/lib/api/types';
 import type { WorkQueueFilters } from './WorkQueueToolbar';
-import { matchesSection, matchesFacetFilters } from './workQueueFilters';
+import { SECTION_ICONS, SECTIONS, type WorkQueueNavSection } from './workQueueFilters';
 
-export type WorkQueueNavSection = 'queue' | 'recommended' | 'critical' | 'in_progress' | 'cloud_agents' | 'done';
+// Kept for existing consumers (e.g. useWorkQueueViewStore); the canonical
+// definition lives in workQueueFilters.ts.
+export type { WorkQueueNavSection } from './workQueueFilters';
 
 interface WorkQueueSidebarNavProps {
   items: WorkQueueItem[];
   section: WorkQueueNavSection;
   onSectionChange: (section: WorkQueueNavSection) => void;
   filters: WorkQueueFilters;
+  /** Per-section counts after facet filters — computed once by the parent. */
+  counts: Record<WorkQueueNavSection, number>;
   onRepoChange: (repo: string) => void;
 }
 
@@ -44,36 +47,15 @@ const WorkQueueNavRow: React.FC<{
   </button>
 );
 
-const SECTION_ICONS: Record<WorkQueueNavSection, IconName> = {
-  queue: 'list-unordered',
-  recommended: 'sparkling',
-  critical: 'bug',
-  in_progress: 'time',
-  cloud_agents: 'cloud',
-  done: 'check',
-};
-
-const SECTIONS: WorkQueueNavSection[] = ['queue', 'recommended', 'critical', 'in_progress', 'cloud_agents', 'done'];
-
 export const WorkQueueSidebarNav: React.FC<WorkQueueSidebarNavProps> = ({
   items,
   section,
   onSectionChange,
   filters,
+  counts,
   onRepoChange,
 }) => {
   const { t } = useI18n();
-
-  // Counts apply the same non-section facet filters as the list itself, so a
-  // section's badge always matches what selecting it would actually show.
-  const counts = React.useMemo(() => {
-    const facetMatched = items.filter((item) => matchesFacetFilters(item, filters));
-    const result = {} as Record<WorkQueueNavSection, number>;
-    for (const sectionKey of SECTIONS) {
-      result[sectionKey] = facetMatched.filter((item) => matchesSection(item, sectionKey)).length;
-    }
-    return result;
-  }, [items, filters]);
 
   const repoCounts = React.useMemo(() => {
     const map = new Map<string, number>();

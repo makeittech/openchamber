@@ -200,7 +200,9 @@ export const useWorkQueueStore = create<WorkQueueStore>((set, get) => ({
   },
 
   launchCloudAgent: async (api, id, options) => {
-    set((state) => ({ pendingIds: new Set(state.pendingIds).add(id) }));
+    // Clear any stale failure first so callers that read `error` right after
+    // a successful launch never see an old, unrelated failure.
+    set((state) => ({ pendingIds: new Set(state.pendingIds).add(id), error: null }));
     try {
       const { item } = await api.launchCloudAgent(id, options);
       set((state) => {

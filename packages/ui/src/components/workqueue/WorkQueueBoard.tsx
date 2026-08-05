@@ -19,7 +19,10 @@ import type { WorkQueueItem, WorkQueueItemStatus } from '@/lib/api/types';
 import { WorkQueueCard } from './WorkQueueCard';
 import type { WorkQueueSort } from './WorkQueueToolbar';
 
-const COLUMNS: WorkQueueItemStatus[] = ['backlog', 'todo', 'in_progress', 'done'];
+// No `done` column: finished items are archived from the queue and belong in
+// the sidebar's Done section, not on the triage board. Three columns keep
+// every card readable even on a ~1000px window with the detail panel open.
+const COLUMNS: WorkQueueItemStatus[] = ['backlog', 'todo', 'in_progress'];
 const VIRTUALIZE_THRESHOLD = 30;
 
 interface WorkQueueBoardProps {
@@ -89,7 +92,10 @@ const BoardColumn: React.FC<{
   });
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col rounded-lg border border-border/40 bg-muted/20">
+    <div
+      data-wq-column={status}
+      className="flex min-w-[220px] flex-1 flex-col rounded-lg border border-border/40 bg-muted/20"
+    >
       <div className="flex items-center justify-between px-3 py-2 border-b border-border/40">
         <span className="typography-ui-label font-medium text-foreground">{t(`workQueue.status.${status}` as const)}</span>
         <span className="typography-micro text-muted-foreground">{items.length}</span>
@@ -165,7 +171,9 @@ export const WorkQueueBoard: React.FC<WorkQueueBoardProps> = ({ items, sort, sel
       measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
       onDragEnd={handleDragEnd}
     >
-      <div className="flex flex-1 min-h-0 gap-3 p-3">
+      {/* Horizontal scroll on narrow widths: columns keep a readable minimum
+          width instead of squeezing cards into unreadable strips. */}
+      <div data-wq-board className="flex flex-1 min-h-0 gap-3 overflow-x-auto p-3">
         {COLUMNS.map((status) => (
           <BoardColumn
             key={status}

@@ -828,6 +828,8 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   const deleteSessions = useSessionUIStore((state) => state.deleteSessions);
   const archiveSession = useSessionUIStore((state) => state.archiveSession);
   const archiveSessions = useSessionUIStore((state) => state.archiveSessions);
+  const unarchiveSession = useSessionUIStore((state) => state.unarchiveSession);
+  const unarchiveSessions = useSessionUIStore((state) => state.unarchiveSessions);
 
   const {
     copiedSessionId,
@@ -838,9 +840,9 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     handleShareSession,
     handleCopyShareUrl,
     handleCopySessionId,
-    handleCopySessionReference,
     handleUnshareSession,
     handleDeleteSession,
+    handleRestoreSession,
     confirmDeleteSession,
   } = useSessionActions({
     mobileVariant,
@@ -860,6 +862,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     deleteSessions,
     archiveSession,
     archiveSessions,
+    unarchiveSession,
     childrenMap,
     showDeletionDialog,
     setDeleteSessionConfirm,
@@ -916,9 +919,9 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   const stableHandleShareSession = useStableRenderCallback(handleShareSession);
   const stableHandleCopyShareUrl = useStableRenderCallback(handleCopyShareUrl);
   const stableHandleCopySessionId = useStableRenderCallback(handleCopySessionId);
-  const stableHandleCopySessionReference = useStableRenderCallback(handleCopySessionReference);
   const stableHandleUnshareSession = useStableRenderCallback(handleUnshareSession);
   const stableHandleDeleteSession = useStableRenderCallback(handleDeleteSession);
+  const stableHandleRestoreSession = useStableRenderCallback(handleRestoreSession);
   const stableCreateFolderAndStartRename = useStableRenderCallback(createFolderAndStartRename);
 
   const showMoreGroupSessions = React.useCallback((groupId: string, currentVisibleCount: number) => {
@@ -1571,7 +1574,6 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
         copiedSessionId={copiedSessionId}
         handleCopyShareUrl={stableHandleCopyShareUrl}
         handleCopySessionId={stableHandleCopySessionId}
-        handleCopySessionReference={stableHandleCopySessionReference}
         handleUnshareSession={stableHandleUnshareSession}
         openSidebarMenuKey={openSidebarMenuKey}
         setOpenSidebarMenuKey={setOpenSidebarMenuKey}
@@ -1583,6 +1585,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
         createFolderAndStartRename={stableCreateFolderAndStartRename}
         openContextPanelTab={openContextPanelTab}
         handleDeleteSession={stableHandleDeleteSession}
+        handleRestoreSession={stableHandleRestoreSession}
         mobileVariant={mobileVariant}
         alwaysShowActions={alwaysShowSidebarActions}
         renderSessionNode={renderSessionNode}
@@ -1756,6 +1759,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     handleBulkCreateFolderAndMove,
     handleBulkRemoveFromFolder,
     handleBulkDelete,
+    handleBulkRestore,
     confirmBulkDelete,
   } = useSidebarBulkActions({
     isInlineEditing,
@@ -1766,6 +1770,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     removeSessionsFromFolders,
     createFolderAndStartRename,
     archiveSessions,
+    unarchiveSessions,
     deleteSessions,
     setBulkDeleteConfirm,
   });
@@ -1913,6 +1918,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
           onCreateFolderAndMove={handleBulkCreateFolderAndMove}
           onRemoveFromFolder={handleBulkRemoveFromFolder}
           canRemoveFromFolder={bulkCanRemoveFromFolder}
+          onRestore={handleBulkRestore}
           onDelete={handleBulkDelete}
           onDone={handleExitSelectionMode}
         />

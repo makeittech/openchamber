@@ -41,7 +41,6 @@ export const WorkQueueCloudAgentDialog: React.FC<WorkQueueCloudAgentDialogProps>
   const [model, setModel] = React.useState('');
   const [repository, setRepository] = React.useState('');
   const [isLoading, setIsLoading] = React.useState(false);
-  const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
@@ -67,17 +66,20 @@ export const WorkQueueCloudAgentDialog: React.FC<WorkQueueCloudAgentDialogProps>
     return () => { cancelled = true; };
   }, [open, itemId, workQueue]);
 
-  const handleSubmit = async () => {
-    setIsSubmitting(true);
-    try {
-      await onSubmit({ prompt, model, repository });
-      onOpenChange(false);
-    } finally {
-      setIsSubmitting(false);
-    }
+  // The dialog closes immediately on Send — the launch runs in the
+  // background and the result surfaces as a popup/toast, so the user is
+  // never blocked waiting for the dispatch request. The ref guards against
+  // a double submission during the exit animation.
+  const submittedRef = React.useRef(false);
+  const handleSubmit = () => {
+    if (submittedRef.current) return;
+    submittedRef.current = true;
+    const payload = { prompt, model, repository };
+    onOpenChange(false);
+    void onSubmit(payload);
   };
 
-  const canSubmit = Boolean(prompt.trim() && repository.trim() && draft?.connected && !isLoading && !isSubmitting);
+  const canSubmit = Boolean(prompt.trim() && repository.trim() && draft?.connected && !isLoading);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -125,7 +127,7 @@ export const WorkQueueCloudAgentDialog: React.FC<WorkQueueCloudAgentDialogProps>
             {t('workQueue.cloudAgent.dialog.cancel')}
           </Button>
           <Button size="sm" onClick={handleSubmit} disabled={!canSubmit} className="gap-1.5">
-            <Icon name="cloud" className={isSubmitting ? 'h-3.5 w-3.5 animate-spin' : 'h-3.5 w-3.5'} />
+            <Icon name="cloud" className="h-3.5 w-3.5" />
             {t('workQueue.cloudAgent.dialog.send')}
           </Button>
         </DialogFooter>

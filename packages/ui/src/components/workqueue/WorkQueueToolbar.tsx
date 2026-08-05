@@ -76,6 +76,12 @@ export const WorkQueueToolbar: React.FC<WorkQueueToolbarProps> = ({
 
   const hasActiveFilters = Object.entries(filters).some(([key, value]) => key !== 'sort' && value !== '');
 
+  // Number of active facets (search excluded — it's always visible in the
+  // primary row and doesn't need a badge on the Filters toggle).
+  const activeFacetCount = Object.entries(filters).filter(([key, value]) =>
+    key !== 'sort' && key !== 'search' && value !== '',
+  ).length;
+
   const repoOptions = React.useMemo(() => {
     const repos = new Set(items.map((item) => item.repo).filter(Boolean));
     return Array.from(repos).sort().map((repo) => ({ value: repo, label: repo }));
@@ -111,9 +117,10 @@ export const WorkQueueToolbar: React.FC<WorkQueueToolbarProps> = ({
   ];
 
   return (
-    <div className="flex flex-col gap-2 border-b border-border/50 px-4 py-3">
-      <div className="flex items-center gap-2">
-        <div className="relative flex-1 min-w-0">
+    <div className="flex flex-col border-b border-border/50">
+      {/* Primary row: always visible. Search + filters toggle + bulk actions. */}
+      <div data-wq-toolbar-row="primary" className="flex flex-wrap items-center gap-2 px-4 py-2">
+        <div className="relative min-w-0 flex-1">
           <Icon name="search" className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             ref={searchRef}
@@ -124,6 +131,28 @@ export const WorkQueueToolbar: React.FC<WorkQueueToolbarProps> = ({
             aria-label={t('workQueue.toolbar.searchPlaceholder')}
           />
         </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="gap-1.5 flex-shrink-0"
+          aria-expanded={advancedOpen}
+          aria-controls="workqueue-filters-panel"
+          onClick={() => onAdvancedOpenChange(!advancedOpen)}
+        >
+          <Icon name="equalizer-2" className="h-3.5 w-3.5" />
+          {t('workQueue.toolbar.filters')}
+          {activeFacetCount > 0 && (
+            <span
+              className={cn(
+                'inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 typography-micro font-medium leading-none',
+                advancedOpen ? 'bg-primary text-primary-foreground' : 'bg-primary/15 text-primary',
+              )}
+            >
+              {activeFacetCount}
+            </span>
+          )}
+        </Button>
         <Button variant="outline" size="sm" onClick={onSync} disabled={isSyncing} className="gap-1.5 flex-shrink-0">
           <Icon name="refresh" className={isSyncing ? 'h-3.5 w-3.5 animate-spin' : 'h-3.5 w-3.5'} />
           {t('workQueue.toolbar.sync')}
@@ -142,96 +171,86 @@ export const WorkQueueToolbar: React.FC<WorkQueueToolbarProps> = ({
         </Button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-1.5">
-        <Button
-          type="button"
-          variant="chip"
-          size="sm"
-          aria-pressed={filters.issueType === ''}
-          onClick={() => onFiltersChange({ ...filters, issueType: '' })}
-        >
-          {t('workQueue.toolbar.filterAll')}
-        </Button>
-        {QUICK_ISSUE_TYPES.filter((issueType) => (issueTypeCounts[issueType] ?? 0) > 0).map((issueType) => (
-          <Button
-            key={issueType}
-            type="button"
-            variant="chip"
-            size="sm"
-            aria-pressed={filters.issueType === issueType}
-            onClick={() => onFiltersChange({ ...filters, issueType: filters.issueType === issueType ? '' : issueType })}
-          >
-            {t(`workQueue.issueType.${issueType}` as const)}
-            <span className="ml-1 text-muted-foreground/70">{issueTypeCounts[issueType]}</span>
-          </Button>
-        ))}
-      </div>
-
-      <div className="flex flex-wrap items-center gap-1.5">
-        <WorkQueueFilterDropdown
-          label={t('workQueue.toolbar.filterRepo')}
-          value={filters.repo}
-          allLabel={t('workQueue.toolbar.filterAll')}
-          options={repoOptions}
-          onChange={(repo) => onFiltersChange({ ...filters, repo })}
-        />
-        <WorkQueueFilterDropdown
-          label={t('workQueue.toolbar.filterAssignee')}
-          value={filters.assignee}
-          allLabel={t('workQueue.toolbar.filterAll')}
-          options={assigneeOptions}
-          onChange={(assignee) => onFiltersChange({ ...filters, assignee })}
-        />
-        <WorkQueueFilterDropdown
-          label={t('workQueue.toolbar.filterType')}
-          value={filters.type}
-          allLabel={t('workQueue.toolbar.filterAll')}
-          options={typeOptions}
-          onChange={(type) => onFiltersChange({ ...filters, type: type as WorkQueueItemType | '' })}
-        />
-        <WorkQueueFilterDropdown
-          label={t('workQueue.toolbar.filterPriority')}
-          value={filters.priority}
-          allLabel={t('workQueue.toolbar.filterAll')}
-          options={priorityOptions}
-          onChange={(priority) => onFiltersChange({ ...filters, priority: priority as WorkQueuePriority | '' })}
-        />
-        <WorkQueueFilterDropdown
-          label={t('workQueue.toolbar.sortLabel')}
-          value={filters.sort}
-          allLabel={t('workQueue.toolbar.sortDefault')}
-          options={sortOptions}
-          onChange={(sort) => onFiltersChange({ ...filters, sort: sort as WorkQueueSort })}
-        />
-
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="gap-1"
-          onClick={() => onAdvancedOpenChange(!advancedOpen)}
-        >
-          <Icon name={advancedOpen ? 'arrow-up-s' : 'arrow-down-s'} className="h-3.5 w-3.5" />
-          {t('workQueue.toolbar.advancedFilters')}
-        </Button>
-
-        {hasActiveFilters && (
-          <Button type="button" variant="ghost" size="sm" onClick={onResetFilters} className="ml-auto gap-1 text-muted-foreground">
-            <Icon name="close" className="h-3.5 w-3.5" />
-            {t('workQueue.toolbar.resetFilters')}
-          </Button>
-        )}
-      </div>
-
+      {/* Filters panel: collapsed by default so the queue gets the vertical
+          space. Opens on the Filters toggle; the same toggle closes it. */}
       {advancedOpen && (
-        <div className={cn('flex flex-wrap items-center gap-1.5 border-t border-border/40 pt-2')}>
-          <WorkQueueFilterDropdown
-            label={t('workQueue.toolbar.filterComplexity')}
-            value={filters.complexity}
-            allLabel={t('workQueue.toolbar.filterAll')}
-            options={complexityOptions}
-            onChange={(complexity) => onFiltersChange({ ...filters, complexity: complexity as WorkQueueComplexity | '' })}
-          />
+        <div id="workqueue-filters-panel" data-wq-filters className="flex flex-col gap-2 border-t border-border/40 bg-muted/10 px-4 py-2.5">
+          <div data-wq-toolbar-row="chips" className="flex flex-wrap items-center gap-1.5">
+            <Button
+              type="button"
+              variant="chip"
+              size="sm"
+              aria-pressed={filters.issueType === ''}
+              onClick={() => onFiltersChange({ ...filters, issueType: '' })}
+            >
+              {t('workQueue.toolbar.filterAll')}
+            </Button>
+            {QUICK_ISSUE_TYPES.filter((issueType) => (issueTypeCounts[issueType] ?? 0) > 0).map((issueType) => (
+              <Button
+                key={issueType}
+                type="button"
+                variant="chip"
+                size="sm"
+                aria-pressed={filters.issueType === issueType}
+                onClick={() => onFiltersChange({ ...filters, issueType: filters.issueType === issueType ? '' : issueType })}
+              >
+                {t(`workQueue.issueType.${issueType}` as const)}
+                <span className="ml-1 text-muted-foreground/70">{issueTypeCounts[issueType]}</span>
+              </Button>
+            ))}
+          </div>
+
+          <div data-wq-toolbar-row="dropdowns" className="flex flex-wrap items-center gap-1.5">
+            <WorkQueueFilterDropdown
+              label={t('workQueue.toolbar.filterRepo')}
+              value={filters.repo}
+              allLabel={t('workQueue.toolbar.filterAll')}
+              options={repoOptions}
+              onChange={(repo) => onFiltersChange({ ...filters, repo })}
+            />
+            <WorkQueueFilterDropdown
+              label={t('workQueue.toolbar.filterAssignee')}
+              value={filters.assignee}
+              allLabel={t('workQueue.toolbar.filterAll')}
+              options={assigneeOptions}
+              onChange={(assignee) => onFiltersChange({ ...filters, assignee })}
+            />
+            <WorkQueueFilterDropdown
+              label={t('workQueue.toolbar.filterType')}
+              value={filters.type}
+              allLabel={t('workQueue.toolbar.filterAll')}
+              options={typeOptions}
+              onChange={(type) => onFiltersChange({ ...filters, type: type as WorkQueueItemType | '' })}
+            />
+            <WorkQueueFilterDropdown
+              label={t('workQueue.toolbar.filterPriority')}
+              value={filters.priority}
+              allLabel={t('workQueue.toolbar.filterAll')}
+              options={priorityOptions}
+              onChange={(priority) => onFiltersChange({ ...filters, priority: priority as WorkQueuePriority | '' })}
+            />
+            <WorkQueueFilterDropdown
+              label={t('workQueue.toolbar.filterComplexity')}
+              value={filters.complexity}
+              allLabel={t('workQueue.toolbar.filterAll')}
+              options={complexityOptions}
+              onChange={(complexity) => onFiltersChange({ ...filters, complexity: complexity as WorkQueueComplexity | '' })}
+            />
+            <WorkQueueFilterDropdown
+              label={t('workQueue.toolbar.sortLabel')}
+              value={filters.sort}
+              allLabel={t('workQueue.toolbar.sortDefault')}
+              options={sortOptions}
+              onChange={(sort) => onFiltersChange({ ...filters, sort: sort as WorkQueueSort })}
+            />
+
+            {hasActiveFilters && (
+              <Button type="button" variant="ghost" size="sm" onClick={onResetFilters} className="ml-auto gap-1 text-muted-foreground">
+                <Icon name="close" className="h-3.5 w-3.5" />
+                {t('workQueue.toolbar.resetFilters')}
+              </Button>
+            )}
+          </div>
         </div>
       )}
     </div>

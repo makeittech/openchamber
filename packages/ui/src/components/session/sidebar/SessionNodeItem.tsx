@@ -84,7 +84,6 @@ type Props = {
   copiedSessionId: string | null;
   handleCopyShareUrl: (url: string, sessionId: string) => void;
   handleCopySessionId: (sessionId: string) => void;
-  handleCopySessionReference: (session: Session) => void;
   handleUnshareSession: (sessionId: string) => void;
   openSidebarMenuKey: string | null;
   setOpenSidebarMenuKey: (key: string | null) => void;
@@ -96,6 +95,7 @@ type Props = {
   createFolderAndStartRename: (scopeKey: string, parentId?: string | null) => { id: string } | null;
   openContextPanelTab: (directory: string, options: { mode: 'chat'; dedupeKey: string; label: string; sessionTitleFallback?: string; readOnly?: boolean }) => void;
   handleDeleteSession: (session: Session, source?: { archivedBucket?: boolean; hardDelete?: boolean; skipConfirm?: boolean }) => void;
+  handleRestoreSession: (session: Session) => void;
   mobileVariant: boolean;
   alwaysShowActions: boolean;
   renderSessionNode: (
@@ -280,7 +280,6 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     copiedSessionId,
     handleCopyShareUrl,
     handleCopySessionId,
-    handleCopySessionReference,
     handleUnshareSession,
     openSidebarMenuKey,
     setOpenSidebarMenuKey,
@@ -292,6 +291,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     createFolderAndStartRename,
     openContextPanelTab,
     handleDeleteSession,
+    handleRestoreSession,
     mobileVariant,
     alwaysShowActions,
     renderSessionNode,
@@ -932,11 +932,6 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
         {isPinnedSession ? <Icon name="unpin" className="mr-1 h-4 w-4" /> : <Icon name="pushpin" className="mr-1 h-4 w-4" />}
         {isPinnedSession ? t('sessions.sidebar.session.menu.unpin') : t('sessions.sidebar.session.menu.pin')}
       </Item>
-      <Item onClick={() => { void handleCopySessionReference(resolvedSession); }} className="[&>svg]:mr-1">
-        {copiedSessionId === session.id
-          ? <><Icon name="check" className="mr-1 h-4 w-4" style={{ color: 'var(--status-success)' }} />{t('sessions.sidebar.session.menu.copied')}</>
-          : <><Icon name="file-copy" className="mr-1 h-4 w-4" />{t('sessions.sidebar.session.menu.copyReference')}</>}
-      </Item>
       {!isSessionShared(resolvedSession) ? (
         <Item onClick={() => handleShareSession(resolvedSession)} className="[&>svg]:mr-1">
           <Icon name="share-2" className="mr-1 h-4 w-4" />
@@ -1111,6 +1106,12 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
         <Item className="[&>svg]:mr-1" onClick={() => handleDeleteSession(session, { archivedBucket })}>
           <Icon name="inbox-archive" className="mr-1 h-4 w-4" />
           {t('sessions.sidebar.bulkActions.archive')}
+        </Item>
+      ) : null}
+      {archivedBucket ? (
+        <Item className="[&>svg]:mr-1" onClick={() => handleRestoreSession(session)}>
+          <Icon name="inbox-unarchive" className="mr-1 h-4 w-4" />
+          {t('sessions.sidebar.bulkActions.restore')}
         </Item>
       ) : null}
       <Item className="text-destructive focus:text-destructive [&>svg]:mr-1" onClick={() => handleDeleteSession(session, { archivedBucket, hardDelete: true })}>
@@ -1622,7 +1623,6 @@ const areSessionNodeItemPropsEqual = (prev: Props, next: Props): boolean => {
     && prev.handleShareSession === next.handleShareSession
     && prev.handleCopyShareUrl === next.handleCopyShareUrl
     && prev.handleCopySessionId === next.handleCopySessionId
-    && prev.handleCopySessionReference === next.handleCopySessionReference
     && prev.handleUnshareSession === next.handleUnshareSession
     && prev.setOpenSidebarMenuKey === next.setOpenSidebarMenuKey
     && prev.getFoldersForScope === next.getFoldersForScope
@@ -1632,6 +1632,7 @@ const areSessionNodeItemPropsEqual = (prev: Props, next: Props): boolean => {
     && prev.createFolderAndStartRename === next.createFolderAndStartRename
     && prev.openContextPanelTab === next.openContextPanelTab
     && prev.handleDeleteSession === next.handleDeleteSession
+    && prev.handleRestoreSession === next.handleRestoreSession
     && prev.renderSessionNode === next.renderSessionNode;
 };
 

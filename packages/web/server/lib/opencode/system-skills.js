@@ -115,7 +115,7 @@ function buildReadSessionSkill({ apiBaseUrl }) {
     '',
     'Use this skill when the user pastes a **session id**, a **Discord thread URL**, or asks you to read another conversation from a different project/thread.',
     '',
-    'Users copy the reference from the OpenChamber session sidebar (right-click → Copy session reference). Discord-bound sessions copy the thread URL; web-only sessions copy the session id.',
+    'Users copy the session id from the OpenChamber session sidebar (right-click → Copy session ID). Discord-bound sessions use the thread URL; web-only sessions use the session id.',
     '',
     'This skill file is managed by OpenChamber and refreshed on server start. Remove the `managed-by` frontmatter field to take ownership of your edits.',
     '',

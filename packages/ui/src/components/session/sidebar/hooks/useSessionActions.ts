@@ -3,7 +3,6 @@ import type { Session } from '@opencode-ai/sdk/v2';
 import { toast } from '@/components/ui';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { useI18n } from '@/lib/i18n';
-import { fetchSessionReference } from '@/lib/sessionReference';
 import { getSessionShareUrl, isSessionShared } from '@/stores/useGlobalSessionsStore';
 import type { MainTab } from '@/stores/useUIStore';
 import { useUIStore } from '@/stores/useUIStore';
@@ -42,6 +41,7 @@ type Args = {
   deleteSessions: (ids: string[]) => Promise<{ deletedIds: string[]; failedIds: string[] }>;
   archiveSession: (id: string) => Promise<boolean>;
   archiveSessions: (ids: string[]) => Promise<{ archivedIds: string[]; failedIds: string[] }>;
+  unarchiveSession: (id: string) => Promise<boolean>;
   childrenMap: Map<string, Session[]>;
   showDeletionDialog: boolean;
   setDeleteSessionConfirm: DeleteSessionConfirmSetter;
@@ -185,29 +185,6 @@ export const useSessionActions = (args: Args) => {
     }
   }, [args, t]);
 
-  const handleCopySessionReference = React.useCallback(async (session: Session) => {
-    try {
-      const payload = await fetchSessionReference(session.id);
-      const reference = payload?.reference ?? session.id;
-      const result = await copyTextToClipboard(reference);
-      if (!result.ok) {
-        toast.error(t('sessions.sidebar.session.reference.copyError'));
-        return;
-      }
-      setCopiedSessionId(session.id);
-      if (copyTimeout.current) {
-        clearTimeout(copyTimeout.current);
-      }
-      copyTimeout.current = window.setTimeout(() => {
-        setCopiedSessionId(null);
-        copyTimeout.current = null;
-      }, 2000);
-      toast.success(t('sessions.sidebar.session.reference.success'));
-    } catch {
-      toast.error(t('sessions.sidebar.session.reference.copyError'));
-    }
-  }, [t]);
-
   const collectDescendants = React.useCallback((sessionId: string): Session[] => {
     const collected: Session[] = [];
     const visit = (id: string) => {
@@ -320,6 +297,18 @@ export const useSessionActions = (args: Args) => {
     await executeDeleteSession(session, { archivedBucket }, { descendantIds });
   }, [args, executeDeleteSession]);
 
+  const handleRestoreSession = React.useCallback(
+    async (session: Session) => {
+      const success = await args.unarchiveSession(session.id);
+      if (success) {
+        toast.success(t('sessions.sidebar.session.restore.success'));
+      } else {
+        toast.error(t('sessions.sidebar.session.restore.error'));
+      }
+    },
+    [args, t],
+  );
+
   return {
     copiedSessionId,
     handleSessionSelect,
@@ -329,9 +318,9 @@ export const useSessionActions = (args: Args) => {
     handleShareSession,
     handleCopyShareUrl,
     handleCopySessionId,
-    handleCopySessionReference,
     handleUnshareSession,
     handleDeleteSession,
+    handleRestoreSession,
     confirmDeleteSession,
   };
 };

@@ -489,35 +489,4 @@ describe('discord-agent-api — POST /create-project', () => {
     expect(res.body.messageCount).toBe(1);
     expect(res.body.transcript).toContain('Hello');
   });
-
-  it('GET /session-reference/:sessionId returns a copyable reference', async () => {
-    const bridge = makeBridge([
-      {
-        sessionId: 'ses_a',
-        targetKey: SESSION_THREAD,
-        projectPath: '/home/me/my-app',
-        projectLabel: 'My App',
-      },
-    ]);
-    const opencodeFetch = vi.fn(async (path) => {
-      if (path.startsWith('/session/ses_a')) {
-        return {
-          ok: true,
-          json: async () => ({ id: 'ses_a', title: 'Alpha', directory: '/home/me/my-app' }),
-        };
-      }
-      return { ok: false, json: async () => null };
-    });
-    const app = createApp({
-      readSettings: async () => makeSettings(),
-      bridge,
-      listProjects: async () => [{ path: '/home/me/my-app' }],
-      opencodeFetch,
-    });
-
-    const res = await request(app).get('/api/messenger/agent/session-reference/ses_a');
-    expect(res.status).toBe(200);
-    expect(res.body.reference).toContain(SESSION_THREAD);
-    expect(res.body.sessionId).toBe('ses_a');
-  });
 });
