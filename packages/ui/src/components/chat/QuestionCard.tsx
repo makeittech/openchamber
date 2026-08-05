@@ -268,19 +268,20 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({ question }) => {
 
   const agents = useConfigStore((s) => s.agents);
   const currentAgentName = useConfigStore((s) => s.currentAgentName);
+  // Subscribe to the per-session selection (same pattern as MobileAgentButton)
+  // so the "Submit & switch to build" affordance updates when the agent changes.
+  const sessionAgentName = useSelectionStore((state) =>
+    currentSessionId ? state.getSessionAgentSelection(currentSessionId) : null
+  );
   // The primary build agent, mirroring the config store's agent cascade:
   // prefer an agent literally named "build", fall back to the first primary agent.
   const buildAgentName = React.useMemo(() => {
     const primaryAgents = agents.filter((agent) => isPrimaryMode(agent.mode));
     return primaryAgents.find((agent) => agent.name === 'build')?.name ?? primaryAgents[0]?.name ?? null;
   }, [agents]);
-  // The session's effective agent is the per-session selection when present,
-  // otherwise the app-wide current agent (same resolution as the model/agent
-  // controls). Switching stores below re-renders via currentAgentName.
-  const effectiveAgentName = React.useMemo(() => {
-    if (!currentSessionId) return currentAgentName ?? null;
-    return useSelectionStore.getState().getSessionAgentSelection(currentSessionId) ?? currentAgentName ?? null;
-  }, [currentAgentName, currentSessionId]);
+  const effectiveAgentName = currentSessionId
+    ? (sessionAgentName || currentAgentName || null)
+    : (currentAgentName ?? null);
   const canSubmitAndSwitchToBuild = Boolean(
     requiredSatisfied
     && !isResponding
@@ -291,16 +292,43 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({ question }) => {
 
   const handleSubmitAndSwitchToBuild = React.useCallback(async () => {
     if (!buildAgentName || !currentSessionId) return;
-    // Switch the session (and the app default) to the build agent before
-    // submitting, so the answers are followed by a build-mode turn without a
-    // separate mode switch. Mirrors the agent-change behavior of the
-    // model/agent controls; the current question turn still completes with the
-    // agent that asked it, and the next prompt in this session runs in build.
-    useSelectionStore.getState().saveSessionAgentSelection(currentSessionId, buildAgentName);
-    useConfigStore.getState().setAgent(buildAgentName);
-    useUIStore.getState().addRecentAgent(buildAgentName);
-    await handleConfirm();
-  }, [buildAgentName, currentSessionId, handleConfirm]);
+    // Submit answers first. Only switch to build when the reply lands so a
+    // failed submit cannot leave the session on the wrong agent. The answered
+    // question turn still belongs to the agent that asked it; the next prompt
+    // in this session runs in build.
+    if (!requiredSatisfied || isResponding || hasResponded) return;
+    setIsResponding(true);
+    try {
+      const answers = buildAnswersPayload();
+      await respondToQuestion(question.sessionID, question.id, answers);
+      setHasResponded(true);
+      useSelectionStore.getState().saveSessionAgentSelection(currentSessionId, buildAgentName);
+      useConfigStore.getState().setAgent(buildAgentName);
+      useUIStore.getState().addRecentAgent(buildAgentName);
+    } catch (error) {
+      if (sessionActions.isQuestionRequestNotFoundError(error)) {
+        toast.info(t('chat.questionCard.noLongerPending'));
+        setHasResponded(true);
+      } else {
+        toast.error(t('chat.questionCard.submitFailed'), {
+          description: t('chat.questionCard.tryAgain'),
+        });
+      }
+    } finally {
+      setIsResponding(false);
+    }
+  }, [
+    buildAgentName,
+    buildAnswersPayload,
+    currentSessionId,
+    hasResponded,
+    isResponding,
+    question.id,
+    question.sessionID,
+    requiredSatisfied,
+    respondToQuestion,
+    t,
+  ]);
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
