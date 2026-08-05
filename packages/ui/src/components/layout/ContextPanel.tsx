@@ -29,6 +29,7 @@ import { setExternallyViewedSession, useDirectoryStore } from '@/sync/sync-conte
 import { ContextPanelContent } from './ContextSidebarTab';
 import { toast } from '@/components/ui';
 import { runtimeFetch } from '@/lib/runtime-fetch';
+import { isTerminalEventTarget } from '@/lib/terminalFocus';
 import { getRuntimeBearerTokenSync, getRuntimeExtraHeadersSync, refreshRuntimeUrlAuthToken } from '@/lib/runtime-auth';
 import { getRuntimeUrlResolver } from '@/lib/runtime-url';
 import { getRuntimeApiBaseUrl, getRuntimeKey } from '@/lib/runtime-switch';
@@ -2450,6 +2451,14 @@ export const ContextPanel: React.FC = () => {
 
   const handlePanelKeyDownCapture = React.useCallback((event: React.KeyboardEvent<HTMLElement>) => {
     if (event.key !== 'Escape') {
+      return;
+    }
+
+    // Escape belongs to the terminal while it is focused: Vim's Normal mode,
+    // menu cancels and shell line-editing all begin with it. Intercepting
+    // here (capture phase) would stop the key before the terminal's own
+    // listeners and close the pane instead of reaching the running program.
+    if (isTerminalEventTarget(event.target)) {
       return;
     }
 
