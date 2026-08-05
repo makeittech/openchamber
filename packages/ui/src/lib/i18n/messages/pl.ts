@@ -822,6 +822,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.questionCard.other': 'Inne...',
   'chat.questionCard.yourAnswer': 'Twoja odpowiedź',
   'chat.questionCard.submit': 'Wyślij',
+  'chat.questionCard.submitAndSwitchToBuild': 'Wyślij i przełącz na Build',
   'chat.questionCard.next': 'Następne',
   'chat.questionCard.dismiss': 'Odrzuć',
   'chat.questionCard.copyMarkdown': 'Kopiuj jako Markdown',

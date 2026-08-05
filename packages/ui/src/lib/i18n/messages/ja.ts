@@ -2010,6 +2010,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.questionCard.other': 'その他…',
   'chat.questionCard.yourAnswer': 'あなたの回答',
   'chat.questionCard.submit': '送信',
+  'chat.questionCard.submitAndSwitchToBuild': '送信してBuildに切り替え',
   'chat.questionCard.next': '次へ',
   'chat.questionCard.dismiss': '閉じる',
   'chat.questionCard.copyMarkdown': 'Markdownとしてコピー',

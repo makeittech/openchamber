@@ -1984,6 +1984,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.questionCard.other': '其他…',
   'chat.questionCard.yourAnswer': '你的回答',
   'chat.questionCard.submit': '提交',
+  'chat.questionCard.submitAndSwitchToBuild': '送出並切換到 Build',
   'chat.questionCard.next': '下一個',
   'chat.questionCard.dismiss': '忽略',
   'chat.questionCard.copyMarkdown': '複製為 Markdown',

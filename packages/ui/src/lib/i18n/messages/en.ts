@@ -2014,6 +2014,7 @@ export const dict = {
   'chat.questionCard.other': 'Other…',
   'chat.questionCard.yourAnswer': 'Your answer',
   'chat.questionCard.submit': 'Submit',
+  'chat.questionCard.submitAndSwitchToBuild': 'Submit & switch to build',
   'chat.questionCard.next': 'Next',
   'chat.questionCard.dismiss': 'Dismiss',
   'chat.questionCard.copyMarkdown': 'Copy as Markdown',

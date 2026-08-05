@@ -2016,6 +2016,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.questionCard.other': '기타…',
   'chat.questionCard.yourAnswer': '내 답변',
   'chat.questionCard.submit': '제출',
+  'chat.questionCard.submitAndSwitchToBuild': '제출하고 Build로 전환',
   'chat.questionCard.next': '다음',
   'chat.questionCard.dismiss': '닫기',
   'chat.questionCard.copyMarkdown': 'Markdown으로 복사',

@@ -9,9 +9,12 @@ import { copyTextToClipboard } from '@/lib/clipboard';
 import { toast } from '@/components/ui';
 import type { QuestionRequest } from '@/types/question';
 import { useUIStore } from '@/stores/useUIStore';
+import { useConfigStore } from '@/stores/useConfigStore';
+import { useSelectionStore } from '@/sync/selection-store';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSessions } from '@/sync/sync-context';
 import * as sessionActions from '@/sync/session-actions';
+import { isPrimaryMode } from '@/components/chat/mobileControlsUtils';
 import { useI18n } from '@/lib/i18n';
 import { serializeQuestionAsJson, serializeQuestionAsMarkdown } from './questionSerializers';
 import { QUESTION_CUSTOM_TEXTAREA_MIN_HEIGHT, getQuestionCustomTextareaHeight } from './questionTextareaSizing';
@@ -262,6 +265,42 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({ question }) => {
       setIsResponding(false);
     }
   }, [buildAnswersPayload, question.id, question.sessionID, requiredSatisfied, respondToQuestion, t]);
+
+  const agents = useConfigStore((s) => s.agents);
+  const currentAgentName = useConfigStore((s) => s.currentAgentName);
+  // The primary build agent, mirroring the config store's agent cascade:
+  // prefer an agent literally named "build", fall back to the first primary agent.
+  const buildAgentName = React.useMemo(() => {
+    const primaryAgents = agents.filter((agent) => isPrimaryMode(agent.mode));
+    return primaryAgents.find((agent) => agent.name === 'build')?.name ?? primaryAgents[0]?.name ?? null;
+  }, [agents]);
+  // The session's effective agent is the per-session selection when present,
+  // otherwise the app-wide current agent (same resolution as the model/agent
+  // controls). Switching stores below re-renders via currentAgentName.
+  const effectiveAgentName = React.useMemo(() => {
+    if (!currentSessionId) return currentAgentName ?? null;
+    return useSelectionStore.getState().getSessionAgentSelection(currentSessionId) ?? currentAgentName ?? null;
+  }, [currentAgentName, currentSessionId]);
+  const canSubmitAndSwitchToBuild = Boolean(
+    requiredSatisfied
+    && !isResponding
+    && currentSessionId
+    && buildAgentName
+    && effectiveAgentName !== buildAgentName
+  );
+
+  const handleSubmitAndSwitchToBuild = React.useCallback(async () => {
+    if (!buildAgentName || !currentSessionId) return;
+    // Switch the session (and the app default) to the build agent before
+    // submitting, so the answers are followed by a build-mode turn without a
+    // separate mode switch. Mirrors the agent-change behavior of the
+    // model/agent controls; the current question turn still completes with the
+    // agent that asked it, and the next prompt in this session runs in build.
+    useSelectionStore.getState().saveSessionAgentSelection(currentSessionId, buildAgentName);
+    useConfigStore.getState().setAgent(buildAgentName);
+    useUIStore.getState().addRecentAgent(buildAgentName);
+    await handleConfirm();
+  }, [buildAgentName, currentSessionId, handleConfirm]);
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -542,6 +581,24 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({ question }) => {
               {requiredSatisfied ? <Icon name="check" className="h-3 w-3" /> : <Icon name="arrow-right-s" className="h-3 w-3" />}
               {requiredSatisfied ? t('chat.questionCard.submit') : t('chat.questionCard.next')}
             </button>
+
+            {canSubmitAndSwitchToBuild ? (
+              <button
+                type="button"
+                onClick={() => void handleSubmitAndSwitchToBuild()}
+                disabled={isResponding}
+                title={t('chat.questionCard.submitAndSwitchToBuild')}
+                aria-label={t('chat.questionCard.submitAndSwitchToBuild')}
+                className={cn(
+                  'flex items-center gap-1 px-2 py-1 typography-meta font-medium rounded transition-colors',
+                  'bg-primary/10 text-primary hover:bg-primary/20',
+                  'disabled:opacity-50 disabled:cursor-not-allowed'
+                )}
+              >
+                <Icon name="hammer" className="h-3 w-3" />
+                {t('chat.questionCard.submitAndSwitchToBuild')}
+              </button>
+            ) : null}
 
             <button
               type="button"

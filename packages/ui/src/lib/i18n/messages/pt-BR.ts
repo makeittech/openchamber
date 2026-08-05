@@ -1992,6 +1992,7 @@ export const dict: Record<I18nKey, string> = {
   "chat.questionCard.other": "Outro…",
   "chat.questionCard.yourAnswer": "Sua resposta",
   "chat.questionCard.submit": "Enviar",
+  "chat.questionCard.submitAndSwitchToBuild": "Enviar e alternar para Build",
   "chat.questionCard.next": "Próximo",
   "chat.questionCard.dismiss": "Descartar",
   "chat.questionCard.copyMarkdown": "Copiar como Markdown",

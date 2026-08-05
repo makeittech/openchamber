@@ -1992,6 +1992,7 @@ export const dict: Record<I18nKey, string> = {
   "chat.questionCard.other": "Інше…",
   "chat.questionCard.yourAnswer": "Ваша відповідь",
   "chat.questionCard.submit": "Надіслати",
+  "chat.questionCard.submitAndSwitchToBuild": "Надіслати та перемкнутися на Build",
   "chat.questionCard.next": "Далі",
   "chat.questionCard.dismiss": "Відхилити",
   "chat.questionCard.copyMarkdown": "Скопіювати як Markdown",

@@ -1801,6 +1801,7 @@ export const dict = {
   'chat.questionCard.other': 'Autre…',
   'chat.questionCard.yourAnswer': 'Votre Réponse',
   'chat.questionCard.submit': 'Soumettre',
+  'chat.questionCard.submitAndSwitchToBuild': 'Soumettre et passer en Build',
   'chat.questionCard.next': 'Suivant',
   'chat.questionCard.dismiss': 'Ignorer',
   'chat.questionCard.copyMarkdown': 'Copier en Markdown',
