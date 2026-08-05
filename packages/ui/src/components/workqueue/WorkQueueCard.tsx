@@ -94,6 +94,8 @@ export const WorkQueueCard = React.forwardRef<HTMLDivElement, WorkQueueCardProps
       <div
         ref={ref}
         style={style}
+        data-wq-card
+        data-wq-card-id={item.id}
         role="button"
         tabIndex={0}
         onClick={() => onSelect(item)}

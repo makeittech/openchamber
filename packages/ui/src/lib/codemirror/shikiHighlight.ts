@@ -4,6 +4,7 @@ import { Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate
 
 import { highlightTokensInWorker } from '@/components/chat/markdown/markdown-worker';
 import type { MarkdownTokenRun } from '@/components/chat/markdown/markdown-worker-protocol';
+import { isViewDestroyed } from './viewDestroyed';
 
 // Shiki-powered syntax highlighting for CodeMirror, matching the Shiki file
 // view exactly: tokenize the whole document in the markdown Shiki worker (off
@@ -113,8 +114,10 @@ const shikiHighlightPlugin = (options: ShikiHighlightOptions) =>
         const text = view.state.doc.toString();
         const lines = await highlightTokensInWorker(text, options.language, options.themeName, options.theme);
         if (!lines) return;
-        // Drop if a newer tokenization started or the doc length changed since.
+        // Drop if a newer tokenization started, the view was torn down, or the
+        // doc length changed while the worker was running.
         if (generation !== this.generation) return;
+        if (isViewDestroyed(view)) return;
         if (view.state.doc.length !== text.length) return;
         view.dispatch({ effects: setShikiDecorations.of(buildDecorations(view, lines)) });
       }

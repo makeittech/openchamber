@@ -1118,7 +1118,9 @@ Object.defineProperties(openCodeLifecycleState, {
 // warms these right after readiness — before the UI's first interactive
 // request would otherwise pay that cost. The session-assist startup recovery
 // scans the same list for sessions stranded by a serve restart.
-const getWarmupDirectories = async () => {
+// Function declaration (hoisted): createSessionAssistRuntime reads this at
+// module top-level before the old const initializer would have run (TDZ).
+async function getWarmupDirectories() {
   const settings = await readSettingsFromDiskMigrated().catch(() => null);
   if (!settings) return [];
   const directories = [];
@@ -1133,7 +1135,7 @@ const getWarmupDirectories = async () => {
     }
   }
   return [...new Set(directories)];
-};
+}
 
 const openCodeLifecycleRuntime = createOpenCodeLifecycleRuntime({
   state: openCodeLifecycleState,

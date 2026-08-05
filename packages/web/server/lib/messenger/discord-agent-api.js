@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { buildSessionReferenceForId, readSessionTranscript, resolveSessionReference } from './session-reference.js';
+import { readSessionTranscript, resolveSessionReference } from './session-reference.js';
 
 /**
  * Agent-facing Discord API.
@@ -536,19 +536,6 @@ export function createDiscordAgentRouter({
       input: reference,
       format: format === 'json' ? 'json' : 'markdown',
       maxMessages: typeof maxMessages === 'number' ? maxMessages : 500,
-      ...sessionReferenceDeps(),
-    });
-    if (!result.ok) return res.status(404).json(result);
-    res.json(result);
-  });
-
-  router.get('/session-reference/:sessionId', async (req, res) => {
-    const sessionId = String(req.params?.sessionId ?? '').trim();
-    if (!sessionId) {
-      return res.status(400).json({ ok: false, error: 'sessionId is required' });
-    }
-    const result = await buildSessionReferenceForId({
-      sessionId,
       ...sessionReferenceDeps(),
     });
     if (!result.ok) return res.status(404).json(result);

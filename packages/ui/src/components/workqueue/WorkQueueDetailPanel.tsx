@@ -4,6 +4,7 @@ import { Input } from '@/components/ui/input';
 import { toast } from '@/components/ui';
 import { Icon } from '@/components/icon/Icon';
 import { useI18n } from '@/lib/i18n';
+import { getCurrentIntlLocale } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { useProjectsStore } from '@/stores/useProjectsStore';
@@ -14,8 +15,10 @@ import { useWorkQueueStore } from '@/stores/useWorkQueueStore';
 import { ModelSelector } from '@/components/sections/agents/ModelSelector';
 import { parseModelIdentifier } from '@/lib/modelIdentifier';
 import { runtimeFetch } from '@/lib/runtime-fetch';
+import { SimpleMarkdownRenderer } from '@/components/chat/MarkdownRenderer';
 import type { WorkQueueCloseReason, WorkQueueItem, WorkQueueStalenessResult } from '@/lib/api/types';
-import { WorkQueueComplexityBadge, WorkQueueEnvBadges, WorkQueuePriorityBadge } from './workQueueBadges';
+import { WorkQueueComplexityBadge, WorkQueueEnvBadges, WorkQueueIssueTypeBadge, WorkQueuePriorityBadge } from './workQueueBadges';
+import { deriveIssueType } from './deriveIssueType';
 import { WorkQueueCloudAgentDialog } from './WorkQueueCloudAgentDialog';
 import { WorkQueueFinishDialog } from './WorkQueueFinishDialog';
 
@@ -37,6 +40,9 @@ const buildItemContextText = (item: WorkQueueItem): string => {
 interface WorkQueueDetailPanelProps {
   item: WorkQueueItem;
   onClose: () => void;
+  /** Fired when a cloud agent dispatch completes successfully — the parent
+      shows a popup with a prominent "open the run" action. */
+  onCloudAgentLaunched?: (item: WorkQueueItem) => void;
 }
 
 // Pull requests get an extra Review tab for the automated PR review comments,
@@ -52,7 +58,20 @@ const FINISH_TOAST_KEY_BY_CLOSE_REASON: Record<
   not_planned: 'workQueue.detail.toast.closedNotPlanned',
 };
 
-export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item, onClose }) => {
+// Locale-aware, module-scope formatter (panels re-render on every tab/input
+// change, so creating one per render would be wasteful).
+const CREATED_DATE_FORMATTERS = new Map<string, Intl.DateTimeFormat>();
+const formatCreatedDate = (timestamp: number): string => {
+  const locale = getCurrentIntlLocale();
+  let formatter = CREATED_DATE_FORMATTERS.get(locale);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' });
+    CREATED_DATE_FORMATTERS.set(locale, formatter);
+  }
+  return formatter.format(new Date(timestamp));
+};
+
+export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item, onClose, onCloudAgentLaunched }) => {
   const { t } = useI18n();
   const { workQueue } = useRuntimeAPIs();
   const moveItem = useWorkQueueStore((state) => state.moveItem);
@@ -60,13 +79,13 @@ export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item
   const finishItem = useWorkQueueStore((state) => state.finishItem);
   const launchCloudAgent = useWorkQueueStore((state) => state.launchCloudAgent);
   const attachPr = useWorkQueueStore((state) => state.attachPr);
+  const pendingIds = useWorkQueueStore((state) => state.pendingIds);
   const projects = useProjectsStore((state) => state.projects);
   const activeProject = useProjectsStore((state) => state.getActiveProject());
   const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
 
   const [tab, setTab] = React.useState<DetailTab>('overview');
   const [isAnalyzing, setIsAnalyzing] = React.useState(false);
-  const [isLaunchingCloud, setIsLaunchingCloud] = React.useState(false);
   const [isFinishing, setIsFinishing] = React.useState(false);
   const [isCloudDialogOpen, setIsCloudDialogOpen] = React.useState(false);
   const [isFinishDialogOpen, setIsFinishDialogOpen] = React.useState(false);
@@ -267,7 +286,6 @@ export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item
 
   const handleLaunchCloudAgent = async (options: { prompt: string; model: string; repository: string }) => {
     if (!workQueue) return;
-    setIsLaunchingCloud(true);
     try {
       await launchCloudAgent(workQueue, item.id, options);
       const failure = useWorkQueueStore.getState().error;
@@ -275,13 +293,14 @@ export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item
         toast.error(t('workQueue.detail.toast.cloudAgentFailed'), { description: failure });
         return;
       }
-      toast.success(t('workQueue.detail.toast.cloudAgentLaunched'));
+      // The store already applied the launched item (with cloudAgent) —
+      // read it back so the popup can link straight to the run.
+      const launchedItem = useWorkQueueStore.getState().itemsById[item.id] ?? item;
+      onCloudAgentLaunched?.(launchedItem);
     } catch (error) {
       toast.error(t('workQueue.detail.toast.cloudAgentFailed'), {
         description: error instanceof Error ? error.message : String(error),
       });
-    } finally {
-      setIsLaunchingCloud(false);
     }
   };
 
@@ -301,27 +320,69 @@ export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item
     }
   };
 
+  const analysis = item.aiAnalysis;
+  const issueType = deriveIssueType(item);
+  const issueNumber = item.source === 'github' ? (item.sourceId.match(/#\d+$/)?.[0] ?? '') : item.identifier;
+  const isLaunchingCloud = pendingIds.has(item.id);
+
   return (
-    <div className="flex h-full w-full flex-col border-l border-border/50 bg-background">
-      <div className="flex items-center justify-between gap-2 border-b border-border/50 px-4 py-3">
-        <div className="flex items-center gap-2 min-w-0">
-          {item.aiAnalysis && <WorkQueuePriorityBadge priority={item.aiAnalysis.priority} />}
+    <div className="flex h-full w-full flex-col bg-background">
+      {/* Header: identity line — what this card is, where it lives. */}
+      <div className="flex items-center justify-between gap-2 border-b border-border/50 px-4 py-2.5">
+        <div className="flex min-w-0 items-center gap-2">
+          {item.type === 'pr' ? (
+            <Icon name="git-pull-request" className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+          ) : (
+            <Icon name="bug" className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+          )}
           <span className="typography-micro text-muted-foreground truncate">{item.repo || item.team}</span>
+          {issueNumber && (
+            <>
+              <span aria-hidden="true" className="text-muted-foreground/40">&middot;</span>
+              <span className="typography-micro text-muted-foreground flex-shrink-0">{issueNumber}</span>
+            </>
+          )}
+          {analysis && <WorkQueuePriorityBadge priority={analysis.priority} />}
         </div>
-        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose} aria-label={t('workQueue.detail.close')}>
+        <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0" onClick={onClose} aria-label={t('workQueue.detail.close')} data-wq-panel-close>
           <Icon name="close" className="h-4 w-4" />
         </Button>
       </div>
 
-      <div className="px-4 pt-3">
-        <h2 className="typography-ui-title font-semibold text-foreground">{item.title}</h2>
+      {/* Title — the single most important line. */}
+      <div className="px-4 pt-3 pb-2">
+        <h2 className="typography-ui-title font-semibold text-foreground leading-snug">{item.title}</h2>
       </div>
 
-      <div className="flex items-center gap-1 border-b border-border/50 px-4 pt-3">
+      {/* Quick meta chips: analysis verdict at a glance, no tab needed. */}
+      {analysis && (
+        <div className="flex flex-wrap items-center gap-1.5 px-4 pb-2">
+          <WorkQueueIssueTypeBadge issueType={issueType} />
+          <WorkQueueComplexityBadge complexity={analysis.complexity} />
+          {typeof analysis.estimateMinutes === 'number' && (
+            <span className="inline-flex items-center gap-1 typography-micro text-muted-foreground">
+              <Icon name="time" className="h-3 w-3" />
+              {t('workQueue.card.estimateMinutes', { minutes: analysis.estimateMinutes })}
+            </span>
+          )}
+          <span className="inline-flex items-center gap-1 typography-micro text-muted-foreground/70">
+            <Icon name="sparkling" className="h-3 w-3" />
+            {t('workQueue.card.confidence', { confidence: analysis.confidence })}
+          </span>
+          <WorkQueueEnvBadges
+            needsHeadless={analysis.needsHeadless}
+            needsBrowser={analysis.needsBrowser}
+            needsDocker={analysis.needsDocker}
+          />
+        </div>
+      )}
+
+      <div className="flex items-center gap-1 border-b border-border/50 px-4">
         {tabs.map((tabKey) => (
           <button
             key={tabKey}
             type="button"
+            aria-pressed={tab === tabKey}
             onClick={() => setTab(tabKey)}
             className={cn(
               'px-2.5 py-2 typography-ui-label border-b-2 -mb-px transition-colors',
@@ -333,49 +394,56 @@ export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item
         ))}
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
+      <div data-wq-panel-scroll className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
         {tab === 'overview' && (
           <div className="space-y-4">
-            {item.aiAnalysis?.summary && (
-              <p className="typography-ui-label text-foreground/90 leading-relaxed">{item.aiAnalysis.summary}</p>
+            {analysis?.summary && (
+              <div className="rounded-md border border-primary/25 bg-primary/5 px-3 py-2.5">
+                <div className="flex items-start gap-2">
+                  <Icon name="sparkling" className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-primary" />
+                  <p className="typography-ui-label text-foreground/90 leading-relaxed">{analysis.summary}</p>
+                </div>
+              </div>
             )}
 
             {/* Source description: available straight after sync, so Overview
-                is never empty while an item is still waiting on analysis. */}
+                is never empty while an item is still waiting on analysis.
+                Rendered as markdown (not a raw <pre>) so bodies with lists,
+                code, and links stay readable and compact. */}
             <div className="space-y-1.5">
               <div className="typography-micro font-medium uppercase tracking-wide text-muted-foreground/60">
                 {t('workQueue.detail.field.description')}
               </div>
               {item.body ? (
-                <pre className="whitespace-pre-wrap break-words rounded-md border border-border/50 bg-muted/20 p-2.5 typography-micro text-foreground/90 max-h-72 overflow-y-auto">
-                  {item.body}
-                </pre>
+                <div className="rounded-md border border-border/50 bg-muted/20 px-3 py-2.5">
+                  <SimpleMarkdownRenderer content={item.body} className="typography-ui-label" enableFileReferences={false} />
+                </div>
               ) : (
                 <p className="typography-ui-label text-muted-foreground">{t('workQueue.detail.noDescription')}</p>
               )}
             </div>
 
             <dl className="grid grid-cols-2 gap-x-3 gap-y-2 typography-ui-label">
-              {item.aiAnalysis && (
+              {analysis && (
                 <>
                   <dt className="text-muted-foreground">{t('workQueue.detail.field.priority')}</dt>
-                  <dd><WorkQueuePriorityBadge priority={item.aiAnalysis.priority} /></dd>
+                  <dd><WorkQueuePriorityBadge priority={analysis.priority} /></dd>
                   <dt className="text-muted-foreground">{t('workQueue.detail.field.complexity')}</dt>
-                  <dd><WorkQueueComplexityBadge complexity={item.aiAnalysis.complexity} /></dd>
+                  <dd><WorkQueueComplexityBadge complexity={analysis.complexity} /></dd>
                   <dt className="text-muted-foreground">{t('workQueue.detail.field.confidence')}</dt>
-                  <dd>{t('workQueue.card.confidence', { confidence: item.aiAnalysis.confidence })}</dd>
-                  {typeof item.aiAnalysis.estimateMinutes === 'number' && (
+                  <dd>{t('workQueue.card.confidence', { confidence: analysis.confidence })}</dd>
+                  {typeof analysis.estimateMinutes === 'number' && (
                     <>
                       <dt className="text-muted-foreground">{t('workQueue.detail.field.estimate')}</dt>
-                      <dd>{t('workQueue.card.estimateMinutes', { minutes: item.aiAnalysis.estimateMinutes })}</dd>
+                      <dd>{t('workQueue.card.estimateMinutes', { minutes: analysis.estimateMinutes })}</dd>
                     </>
                   )}
                   <dt className="text-muted-foreground">{t('workQueue.detail.field.environment')}</dt>
                   <dd>
                     <WorkQueueEnvBadges
-                      needsHeadless={item.aiAnalysis.needsHeadless}
-                      needsBrowser={item.aiAnalysis.needsBrowser}
-                      needsDocker={item.aiAnalysis.needsDocker}
+                      needsHeadless={analysis.needsHeadless}
+                      needsBrowser={analysis.needsBrowser}
+                      needsDocker={analysis.needsDocker}
                     />
                   </dd>
                 </>
@@ -386,6 +454,8 @@ export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item
                   <dd>{item.author}</dd>
                 </>
               )}
+              <dt className="text-muted-foreground">{t('workQueue.detail.field.created')}</dt>
+              <dd>{formatCreatedDate(item.createdAt)}</dd>
               {item.labels.length > 0 && (
                 <>
                   <dt className="text-muted-foreground">{t('workQueue.detail.field.labels')}</dt>
@@ -433,9 +503,9 @@ export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item
                       </a>
                     )}
                   </div>
-                  <pre className="whitespace-pre-wrap break-words rounded-md border border-border/50 bg-muted/20 p-2.5 typography-micro text-foreground/90">
-                    {comment.body}
-                  </pre>
+                  <div className="rounded-md border border-border/50 bg-muted/20 px-3 py-2.5">
+                    <SimpleMarkdownRenderer content={comment.body} className="typography-micro" enableFileReferences={false} />
+                  </div>
                 </div>
               ))
             )}
@@ -549,7 +619,7 @@ export const WorkQueueDetailPanel: React.FC<WorkQueueDetailPanelProps> = ({ item
                 <div className="typography-micro font-medium uppercase tracking-wide text-muted-foreground/60">
                   {t('workQueue.detail.field.generatedPrompt')}
                 </div>
-                <pre className="whitespace-pre-wrap rounded-md border border-border/50 bg-muted/20 p-2.5 typography-micro text-foreground/90">
+                <pre className="whitespace-pre-wrap rounded-md border border-border/50 bg-muted/20 p-2.5 typography-micro text-foreground/90 max-h-64 overflow-y-auto">
                   {item.aiAnalysis.generatedPrompt}
                 </pre>
               </div>

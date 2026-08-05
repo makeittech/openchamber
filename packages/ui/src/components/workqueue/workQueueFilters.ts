@@ -1,7 +1,24 @@
+import type { IconName } from '@/components/icon/icons';
 import type { WorkQueueItem } from '@/lib/api/types';
-import type { WorkQueueNavSection } from './WorkQueueSidebarNav';
 import type { WorkQueueFilters } from './WorkQueueToolbar';
 import { deriveIssueType } from './deriveIssueType';
+
+export type WorkQueueNavSection = 'queue' | 'recommended' | 'critical' | 'in_progress' | 'cloud_agents' | 'done';
+
+// Section constants live here (not in WorkQueueSidebarNav.tsx) because
+// react-refresh/only-export-components forbids non-component exports from a
+// component file; the sidebar, the mobile strip, and the filters all share
+// them.
+export const SECTION_ICONS: Record<WorkQueueNavSection, IconName> = {
+  queue: 'list-unordered',
+  recommended: 'sparkling',
+  critical: 'bug',
+  in_progress: 'time',
+  cloud_agents: 'cloud',
+  done: 'check',
+};
+
+export const SECTIONS: WorkQueueNavSection[] = ['queue', 'recommended', 'critical', 'in_progress', 'cloud_agents', 'done'];
 
 export const matchesSection = (item: WorkQueueItem, section: WorkQueueNavSection): boolean => {
   switch (section) {
@@ -20,6 +37,24 @@ export const matchesSection = (item: WorkQueueItem, section: WorkQueueNavSection
     default:
       return true;
   }
+};
+
+/**
+ * Per-section counts after the shared facet filters, so a badge count always
+ * matches what the section would actually show. Used by the sidebar nav and
+ * the mobile section strip.
+ */
+export const countItemsBySection = (
+  items: WorkQueueItem[],
+  filters: Pick<WorkQueueFilters, 'repo' | 'assignee' | 'type' | 'issueType' | 'priority' | 'complexity' | 'search'>,
+  sections: WorkQueueNavSection[],
+): Record<WorkQueueNavSection, number> => {
+  const facetMatched = items.filter((item) => matchesFacetFilters(item, filters));
+  const result = {} as Record<WorkQueueNavSection, number>;
+  for (const sectionKey of sections) {
+    result[sectionKey] = facetMatched.filter((item) => matchesSection(item, sectionKey)).length;
+  }
+  return result;
 };
 
 /**

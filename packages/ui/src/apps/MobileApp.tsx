@@ -10,6 +10,11 @@ import { ChatView } from '@/components/views/ChatView';
 import { PlanView } from '@/components/views/PlanView';
 import { SettingsView } from '@/components/views/SettingsView';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
+import { lazyWithChunkRecovery } from '@/lib/chunkLoadRecovery';
+
+const WorkQueueViewLazy = lazyWithChunkRecovery(() =>
+  import('@/components/workqueue/WorkQueueView').then((m) => ({ default: m.WorkQueueView })),
+);
 import { RuntimeAPIProvider } from '@/contexts/RuntimeAPIProvider';
 import { registerRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -33,21 +38,17 @@ import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useFeatureFlagsStore } from '@/stores/useFeatureFlagsStore';
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
 
-import { useGitStatus, useGitStore, useIsGitRepo } from '@/stores/useGitStore';
-import { useHarnessStore } from '@/stores/useHarnessStore';
+import { useGitStore } from '@/stores/useGitStore';
 
 import { useMcpConfigStore, type McpDraft } from '@/stores/useMcpConfigStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 
-import { useQuotaAutoRefresh, useQuotaStore } from '@/stores/useQuotaStore';
-import { resolveActiveModelLimits } from '@/lib/harness/active-model-limits';
 import {
   listProjectWorktrees,
   partitionWorktreesByRegisteredProject,
   worktreeMapsEqual,
 } from '@/lib/worktrees/worktreeManager';
-import type { QuotaProviderId, UsageWindow } from '@/types';
-import { useUIStore, type TimeFormatPreference } from '@/stores/useUIStore';
+import { useUIStore } from '@/stores/useUIStore';
 
 import { useUpdateStore } from '@/stores/useUpdateStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
@@ -108,7 +109,7 @@ const NATIVE_RESUME_SYNC_EVENT_THROTTLE_MS = 1_000;
     footer. Exactly one can be open at a time — opening another replaces it,
     closing returns to the chat. The sessions drawer and the workspace drawer
     (Changes / Files / Terminal / Notes / MCP) are separate layers. */
-type MobileSurface = 'instances' | 'settings' | 'update';
+type MobileSurface = 'instances' | 'settings' | 'update' | 'workqueue';
 
 const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onActiveConnectionDeleted }) => {
   const { t } = useI18n();
@@ -339,6 +340,7 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
     () => ({
       instanceLabel: showCapacitorOnlyFeatures ? getAutoConnectTargetLabel() : null,
       onOpenInstances: showCapacitorOnlyFeatures ? () => openSurface('instances') : undefined,
+      onOpenWorkQueue: () => openSurface('workqueue'),
       onOpenSettings: () => openSettingsSurface('nav'),
       onOpenUpdate: showUpdateItem ? () => openSurface('update') : undefined,
     }),
@@ -615,6 +617,23 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
               <div className="h-full overflow-auto px-5 py-4">
                 <AboutSettings initialUpdateDialogOpen />
               </div>
+            </ErrorBoundary>
+          </MobileFullscreenSurface>
+        ) : null}
+
+        {activeSurface === 'workqueue' ? (
+          <MobileFullscreenSurface
+            open
+            variant={surfaceVariant}
+            dialogAlign="app"
+            onClose={closeSurface}
+            ariaLabel={t('sessions.sidebar.footer.actions.workQueue')}
+            headerless
+          >
+            <ErrorBoundary>
+              <React.Suspense fallback={null}>
+                <WorkQueueViewLazy onClose={closeSurface} />
+              </React.Suspense>
             </ErrorBoundary>
           </MobileFullscreenSurface>
         ) : null}
