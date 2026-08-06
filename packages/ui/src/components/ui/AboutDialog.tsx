@@ -11,6 +11,12 @@ import { Icon } from "@/components/icon/Icon";
 import { useI18n } from '@/lib/i18n';
 import { getDesktopAppVersion } from '@/lib/desktopNative';
 import { runtimeFetch } from '@/lib/runtime-fetch';
+import { subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
+import { InstanceServiceUrls } from '@/components/sections/openchamber/InstanceServiceUrls';
+import {
+  parseInstanceServiceInfo,
+  type InstanceServiceInfo,
+} from '@/components/sections/openchamber/instanceServiceUrlModel';
 
 interface AboutDialogProps {
   open: boolean;
@@ -25,6 +31,8 @@ export const AboutDialog: React.FC<AboutDialogProps> = ({
   const showDiagnostics = import.meta.env.DEV;
   const [version, setVersion] = React.useState<string | null>(null);
   const [openCodeVersion, setOpenCodeVersion] = React.useState<string | null>(null);
+  const [serviceInfo, setServiceInfo] = React.useState<InstanceServiceInfo | null>(null);
+  const [serviceInfoEpoch, setServiceInfoEpoch] = React.useState(0);
   const [isCopyingDiagnostics, setIsCopyingDiagnostics] = React.useState(false);
   const [copiedDiagnostics, setCopiedDiagnostics] = React.useState(false);
   const [diagnosticsReport, setDiagnosticsReport] = React.useState<string | null>(null);
@@ -62,26 +70,51 @@ export const AboutDialog: React.FC<AboutDialogProps> = ({
 
   React.useEffect(() => {
     if (!open) return;
+    return subscribeRuntimeEndpointChanged(() => {
+      setServiceInfoEpoch((current) => current + 1);
+    });
+  }, [open]);
 
-    const fetchVersion = async () => {
+  React.useEffect(() => {
+    if (!open) return;
+
+    let cancelled = false;
+    const fetchSystemInfo = async () => {
       try {
-        const response = await runtimeFetch('/api/system/info');
+        const response = await runtimeFetch('/api/system/info', {
+          headers: { Accept: 'application/json' },
+        });
         if (response.ok) {
-          const data = await response.json();
-          if (typeof data.openchamberVersion === 'string' && data.openchamberVersion.trim()) {
-            setVersion(data.openchamberVersion);
+          const data = await response.json().catch(() => null);
+          if (cancelled) return;
+          setServiceInfo(parseInstanceServiceInfo(data));
+          if (
+            data
+            && typeof data === 'object'
+            && typeof (data as { openchamberVersion?: unknown }).openchamberVersion === 'string'
+            && (data as { openchamberVersion: string }).openchamberVersion.trim()
+          ) {
+            setVersion((data as { openchamberVersion: string }).openchamberVersion.trim());
             return;
           }
+        } else if (!cancelled) {
+          setServiceInfo(null);
         }
       } catch {
         // Fall back to the native shell version when the web server is unavailable.
+        if (!cancelled) setServiceInfo(null);
       }
 
-      setVersion(await getDesktopAppVersion());
+      if (!cancelled) {
+        setVersion(await getDesktopAppVersion());
+      }
     };
 
-    void fetchVersion();
-  }, [open]);
+    void fetchSystemInfo();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, serviceInfoEpoch]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -142,7 +175,7 @@ export const AboutDialog: React.FC<AboutDialogProps> = ({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xs p-6">
+      <DialogContent className="max-w-sm p-6">
         <div className="flex flex-col items-center text-center space-y-4">
           <OpenChamberLogo width={64} height={64} />
 
@@ -157,6 +190,8 @@ export const AboutDialog: React.FC<AboutDialogProps> = ({
               )}
             </div>
           </div>
+
+          <InstanceServiceUrls info={serviceInfo} className="justify-center" />
 
           {showDiagnostics && (
             <div className="flex flex-col items-center gap-2 pt-2">

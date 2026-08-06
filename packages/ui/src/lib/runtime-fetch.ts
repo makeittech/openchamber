@@ -231,7 +231,7 @@ const resolveRuntimeFetchInput = (input: string | URL | Request, query?: Runtime
 // as soon as the request settles, so this only ever shares overlapping in-flight
 // requests — it never serves a stale/cached response.
 // ---------------------------------------------------------------------------
-const COALESCE_READ_PATH = /\/api\/(config|path|app\/agents|agent|project|command)(\b|\/|\?|$)/;
+const COALESCE_READ_PATH = /\/api\/(config|path|app\/agents|agent|project|command|system\/info)(\b|\/|\?|$)/;
 const READ_COALESCE = new Map<string, Promise<Response>>();
 
 const coalesceReadKey = (method: string, url: string, hasSignal: boolean): string | null => {
