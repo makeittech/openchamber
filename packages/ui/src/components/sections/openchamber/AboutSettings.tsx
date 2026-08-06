@@ -9,7 +9,12 @@ import { Icon } from "@/components/icon/Icon";
 import { OpenChamberLogo } from '@/components/ui/OpenChamberLogo';
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
+import { subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 import { InstanceServiceUrls } from './InstanceServiceUrls';
+import {
+  parseInstanceServiceInfo,
+  type InstanceServiceInfo,
+} from './instanceServiceUrlModel';
 import {
   SettingsSection,
   SETTINGS_BRAND_TITLE_CLASS,
@@ -32,6 +37,8 @@ export const AboutSettings: React.FC<AboutSettingsProps> = ({ initialUpdateDialo
   const [showChecking, setShowChecking] = React.useState(false);
   const [openChamberVersion, setOpenChamberVersion] = React.useState<string | null>(null);
   const [openCodeVersion, setOpenCodeVersion] = React.useState<string | null>(null);
+  const [serviceInfo, setServiceInfo] = React.useState<InstanceServiceInfo | null>(null);
+  const [serviceInfoEpoch, setServiceInfoEpoch] = React.useState(0);
   const updateStore = useUpdateStore(useShallow((s) => ({
     info: s.info,
     checking: s.checking,
@@ -50,31 +57,51 @@ export const AboutSettings: React.FC<AboutSettingsProps> = ({ initialUpdateDialo
   const currentVersion = openChamberVersion || updateStore.info?.currentVersion || 'unknown';
 
   React.useEffect(() => {
+    return subscribeRuntimeEndpointChanged(() => {
+      setServiceInfoEpoch((current) => current + 1);
+    });
+  }, []);
+
+  React.useEffect(() => {
     let cancelled = false;
 
-    const loadOpenChamberVersion = async () => {
+    const loadSystemInfo = async () => {
       try {
         const response = await runtimeFetch('/api/system/info', {
           method: 'GET',
           headers: { Accept: 'application/json' },
         });
-        if (!response.ok) return;
-        const data = await response.json().catch(() => null) as { openchamberVersion?: unknown } | null;
-        const version = typeof data?.openchamberVersion === 'string' && data.openchamberVersion.trim().length > 0
-          ? data.openchamberVersion.trim()
+        if (!response.ok) {
+          if (!cancelled) {
+            setOpenChamberVersion(null);
+            setServiceInfo(null);
+          }
+          return;
+        }
+        const data = await response.json().catch(() => null);
+        if (cancelled) return;
+        const version = data
+          && typeof data === 'object'
+          && typeof (data as { openchamberVersion?: unknown }).openchamberVersion === 'string'
+          && (data as { openchamberVersion: string }).openchamberVersion.trim().length > 0
+          ? (data as { openchamberVersion: string }).openchamberVersion.trim()
           : null;
-        if (!cancelled) setOpenChamberVersion(version);
+        setOpenChamberVersion(version);
+        setServiceInfo(parseInstanceServiceInfo(data));
       } catch {
-        if (!cancelled) setOpenChamberVersion(null);
+        if (!cancelled) {
+          setOpenChamberVersion(null);
+          setServiceInfo(null);
+        }
       }
     };
 
-    void loadOpenChamberVersion();
+    void loadSystemInfo();
 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [serviceInfoEpoch]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -136,7 +163,7 @@ export const AboutSettings: React.FC<AboutSettingsProps> = ({ initialUpdateDialo
             <p>{t('aboutDialog.openChamberVersionLabel', { version: currentVersion })}</p>
             <p>{t('aboutDialog.openCodeVersionLabel', { version: openCodeVersion || t('settings.openchamber.about.state.unknown') })}</p>
           </div>
-          <InstanceServiceUrls />
+          <InstanceServiceUrls info={serviceInfo} className="justify-center" />
         </div>
 
         <div className="flex justify-center">
@@ -282,7 +309,7 @@ export const AboutSettings: React.FC<AboutSettingsProps> = ({ initialUpdateDialo
 
         <div className="flex flex-col gap-2 border-b border-border/40 px-4 py-3 @xl:flex-row @xl:items-center @xl:justify-between">
           <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.openchamber.about.field.instanceUrls')}</span>
-          <InstanceServiceUrls />
+          <InstanceServiceUrls info={serviceInfo} />
         </div>
 
         <div className="flex items-center gap-4 px-4 py-4">

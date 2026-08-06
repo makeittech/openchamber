@@ -1,19 +1,26 @@
 import React from 'react';
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
+import { subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 import { openExternalUrl } from '@/lib/url';
+import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Icon } from '@/components/icon/Icon';
+import {
+  buildInstanceServices,
+  parseInstanceServiceInfo,
+  type InstanceServiceInfo,
+} from './instanceServiceUrlModel';
 
-type InstanceServiceInfo = {
-  port: number | null;
-  tunnelUrl: string | null;
-};
-
-type InstanceService = {
-  key: string;
-  label: string;
-  url: string;
+type InstanceServiceUrlsProps = {
+  /**
+   * Pre-fetched `/api/system/info` fields. When provided (including `null`
+   * while loading/failed), this component does not fetch on its own — callers
+   * that already load system info should pass the parsed payload to avoid a
+   * duplicate GET.
+   */
+  info?: InstanceServiceInfo | null;
+  className?: string;
 };
 
 /**
@@ -24,14 +31,25 @@ type InstanceService = {
  * distinguishable in the UI without reading terminal output.
  *
  * The section stays hidden when the endpoint is unavailable or reports no
- * port/tunnel (e.g. VS Code runtime), so a failed fetch never renders stale
- * or wrong URLs.
+ * usable local/tunnel URL (e.g. VS Code runtime or remote viewers without a
+ * tunnel), so a failed fetch never renders stale or wrong URLs.
  */
-export const InstanceServiceUrls: React.FC = () => {
+export const InstanceServiceUrls: React.FC<InstanceServiceUrlsProps> = ({ info: infoProp, className }) => {
   const { t } = useI18n();
-  const [info, setInfo] = React.useState<InstanceServiceInfo | null>(null);
+  const managed = infoProp !== undefined;
+  const [fetchedInfo, setFetchedInfo] = React.useState<InstanceServiceInfo | null>(null);
+  const [endpointEpoch, setEndpointEpoch] = React.useState(0);
 
   React.useEffect(() => {
+    if (managed) return;
+    return subscribeRuntimeEndpointChanged(() => {
+      setEndpointEpoch((current) => current + 1);
+    });
+  }, [managed]);
+
+  React.useEffect(() => {
+    if (managed) return;
+
     let cancelled = false;
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : undefined;
 
@@ -41,17 +59,17 @@ export const InstanceServiceUrls: React.FC = () => {
           signal: controller?.signal,
           headers: { Accept: 'application/json' },
         });
-        if (!response.ok) return;
-        const data = await response.json().catch(() => null) as { port?: unknown; tunnelUrl?: unknown } | null;
-        if (!data || cancelled) return;
-        const port = typeof data.port === 'number' && Number.isFinite(data.port) && data.port > 0 ? data.port : null;
-        const tunnelUrl = typeof data.tunnelUrl === 'string' && data.tunnelUrl.trim().length > 0
-          ? data.tunnelUrl.trim()
-          : null;
-        setInfo({ port, tunnelUrl });
+        if (!response.ok) {
+          if (!cancelled) setFetchedInfo(null);
+          return;
+        }
+        const data = await response.json().catch(() => null);
+        if (cancelled) return;
+        setFetchedInfo(parseInstanceServiceInfo(data));
       } catch {
         // Best-effort: a failed fetch keeps the section hidden instead of
         // showing data we cannot verify.
+        if (!cancelled) setFetchedInfo(null);
       }
     };
 
@@ -61,30 +79,20 @@ export const InstanceServiceUrls: React.FC = () => {
       cancelled = true;
       controller?.abort();
     };
-  }, []);
+  }, [managed, endpointEpoch]);
 
-  const services: InstanceService[] = [];
-  if (info?.port !== null && info?.port !== undefined) {
-    services.push({
-      key: 'application',
-      label: t('settings.openchamber.about.field.applicationUrl'),
-      url: `http://localhost:${info.port}/`,
-    });
-  }
-  if (info?.tunnelUrl) {
-    services.push({
-      key: 'tunnel',
-      label: t('settings.openchamber.about.field.tunnelUrl'),
-      url: info.tunnelUrl,
-    });
-  }
+  const info = managed ? infoProp : fetchedInfo;
+  const services = buildInstanceServices(info, {
+    application: t('settings.openchamber.about.field.applicationUrl'),
+    tunnel: t('settings.openchamber.about.field.tunnelUrl'),
+  });
 
   if (services.length === 0) {
     return null;
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className={cn('flex flex-wrap items-center gap-2', className)}>
       {services.map((service) => (
         <Button
           key={service.key}

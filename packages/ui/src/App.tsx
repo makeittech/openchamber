@@ -926,10 +926,12 @@ function App({ apis }: AppProps) {
                   <OpenCodeUpdateToast />
                   <MainLayout />
                   <Toaster />
+                  {/* About must stay reachable from the sidebar footer even while
+                      boot/init is incomplete (e.g. OpenCode unavailable). */}
+                  <AboutDialogWrapper />
                   {!isBootShell && (
                     <>
                       <ConfigUpdateOverlay />
-                      <AboutDialogWrapper />
                       {showMemoryDebug && (
                         <MemoryDebugPanel onClose={() => setShowMemoryDebug(false)} />
                       )}
