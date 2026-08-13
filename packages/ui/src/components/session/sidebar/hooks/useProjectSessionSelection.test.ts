@@ -1,7 +1,35 @@
-import { describe, expect, test } from 'bun:test';
+import React, { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, describe, expect, mock, test } from 'bun:test';
 import type { Session } from '@opencode-ai/sdk/v2';
 import type { SessionGroup, SessionNode } from '../types';
-import { resolveMissingProjectSessionSelection } from './useProjectSessionSelection';
+
+let currentSessionId: string | null = null;
+let newSessionDraftOpen = false;
+let isNewWorktreeDialogOpen = false;
+
+mock.module('@/stores/useUIStore', () => ({
+  useUIStore: Object.assign(
+    (selector: (state: { isNewWorktreeDialogOpen: boolean }) => unknown) =>
+      selector({ isNewWorktreeDialogOpen }),
+    { getState: () => ({ isNewWorktreeDialogOpen }) },
+  ),
+}));
+
+mock.module('@/sync/session-ui-store', () => ({
+  useSessionUIStore: (selector: (state: {
+    currentSessionId: string | null;
+    newSessionDraft: { open: boolean };
+  }) => unknown) => selector({
+    currentSessionId,
+    newSessionDraft: { open: newSessionDraftOpen },
+  }),
+}));
+
+const {
+  resolveMissingProjectSessionSelection,
+  ProjectSessionSelectionEffect,
+} = await import('./useProjectSessionSelection');
 
 // ---------------------------------------------------------------------------
 // Helper: simulate the projectSessionMeta computation from the hook
@@ -328,5 +356,192 @@ describe('resolveMissingProjectSessionSelection', () => {
       rememberedSessionId: undefined,
       fallbackSessionId: null,
     })).toEqual({ kind: 'open-draft' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hook-level: ProjectSessionSelectionEffect recovery / preserve
+// ---------------------------------------------------------------------------
+
+const installMinimalDom = () => {
+  const descriptors = new Map<string, PropertyDescriptor | undefined>();
+  const setGlobal = (name: string, value: unknown) => {
+    descriptors.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+  };
+  class ElementStub {}
+  const documentStub: Record<string, unknown> = {
+    nodeType: 9,
+    defaultView: globalThis,
+    activeElement: null,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  };
+  const container = {
+    nodeType: 1,
+    tagName: 'DIV',
+    nodeName: 'DIV',
+    namespaceURI: 'http://www.w3.org/1999/xhtml',
+    ownerDocument: documentStub,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  };
+  documentStub.documentElement = container;
+  documentStub.body = container;
+  setGlobal('document', documentStub);
+  setGlobal('window', globalThis);
+  setGlobal('location', { search: '', protocol: 'http:', hostname: 'localhost' });
+  setGlobal('Element', ElementStub);
+  setGlobal('HTMLElement', ElementStub);
+  setGlobal('HTMLIFrameElement', ElementStub);
+  setGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  setGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 0));
+  setGlobal('cancelAnimationFrame', (id: ReturnType<typeof setTimeout>) => clearTimeout(id));
+  return {
+    container: container as unknown as Element,
+    restore: () => {
+      for (const [name, descriptor] of descriptors) {
+        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+        else Reflect.deleteProperty(globalThis, name);
+      }
+    },
+  };
+};
+
+type SelectionEffectProps = React.ComponentProps<typeof ProjectSessionSelectionEffect>;
+
+const bothProjectSections: ProjectSection[] = [staleSections[0]!, project2Sections[0]!];
+
+function mountSelectionEffect(initial: {
+  activeProjectId: string;
+  projectSections: ProjectSection[];
+  sessionId: string | null;
+  sessionOwnerBySessionId?: ReadonlyMap<string, { projectId: string }>;
+  rememberedByProject?: Map<string, string>;
+}) {
+  currentSessionId = initial.sessionId;
+  newSessionDraftOpen = false;
+  isNewWorktreeDialogOpen = false;
+
+  const sessionSelectCalls: Array<[string, string | null]> = [];
+  const draftCalls: Array<{ selectedProjectId?: string | null; directoryOverride?: string | null } | undefined> = [];
+  const dom = installMinimalDom();
+  const root: Root = createRoot(dom.container);
+
+  const props: SelectionEffectProps = {
+    projectSections: initial.projectSections,
+    activeProjectId: initial.activeProjectId,
+    initialActiveSessionByProject: initial.rememberedByProject ?? new Map(),
+    persistActiveSessionByProject: () => undefined,
+    handleSessionSelect: (sessionId, sessionDirectory) => {
+      sessionSelectCalls.push([sessionId, sessionDirectory]);
+    },
+    mobileVariant: false,
+    openNewSessionDraft: (options) => {
+      draftCalls.push(options);
+    },
+    setActiveMainTab: () => undefined,
+    setSessionSwitcherOpen: () => undefined,
+    sessionOwnerBySessionId: initial.sessionOwnerBySessionId,
+  };
+
+  act(() => {
+    root.render(React.createElement(ProjectSessionSelectionEffect, props));
+  });
+
+  return {
+    sessionSelectCalls,
+    draftCalls,
+    rerender: (next: Partial<SelectionEffectProps> & { sessionId?: string | null }) => {
+      const { sessionId, ...effectProps } = next;
+      if (sessionId !== undefined) currentSessionId = sessionId;
+      Object.assign(props, effectProps);
+      act(() => {
+        root.render(React.createElement(ProjectSessionSelectionEffect, props));
+      });
+    },
+    teardown: () => {
+      act(() => {
+        root.unmount();
+      });
+      dom.restore();
+    },
+  };
+}
+
+describe('ProjectSessionSelectionEffect — ownership recovery', () => {
+  let teardown: (() => void) | null = null;
+
+  afterEach(() => {
+    teardown?.();
+    teardown = null;
+    currentSessionId = null;
+    newSessionDraftOpen = false;
+    isNewWorktreeDialogOpen = false;
+  });
+
+  test('A → B with later foreign ownership selects B remembered session', () => {
+    const missingASessionId = 'session-a-missing-from-maps';
+    const mounted = mountSelectionEffect({
+      activeProjectId: 'project-1',
+      projectSections: bothProjectSections,
+      sessionId: missingASessionId,
+      sessionOwnerBySessionId: new Map([[missingASessionId, { projectId: 'project-1' }]]),
+      rememberedByProject: new Map([['project-2', 'project-2-session-2']]),
+    });
+    teardown = mounted.teardown;
+
+    expect(mounted.sessionSelectCalls).toEqual([]);
+
+    mounted.rerender({
+      activeProjectId: 'project-2',
+      sessionOwnerBySessionId: new Map(),
+    });
+    expect(mounted.sessionSelectCalls).toEqual([]);
+
+    mounted.rerender({
+      sessionOwnerBySessionId: new Map([[missingASessionId, { projectId: 'project-1' }]]),
+    });
+    expect(mounted.sessionSelectCalls).toEqual([
+      ['project-2-session-2', '/workspace/project-2'],
+    ]);
+  });
+
+  test('A → B with known foreign ownership selects B remembered session', () => {
+    const mounted = mountSelectionEffect({
+      activeProjectId: 'project-1',
+      projectSections: bothProjectSections,
+      sessionId: 'root-session-1',
+      sessionOwnerBySessionId: new Map([['root-session-1', { projectId: 'project-1' }]]),
+      rememberedByProject: new Map([['project-2', 'project-2-session-2']]),
+    });
+    teardown = mounted.teardown;
+
+    expect(mounted.sessionSelectCalls).toEqual([]);
+
+    mounted.rerender({ activeProjectId: 'project-2' });
+    expect(mounted.sessionSelectCalls).toEqual([
+      ['project-2-session-2', '/workspace/project-2'],
+    ]);
+  });
+
+  test('stale same-project worktree selection stays put when ownership arrives', () => {
+    const mounted = mountSelectionEffect({
+      activeProjectId: 'project-1',
+      projectSections: staleSections,
+      sessionId: 'wt-session-1',
+      sessionOwnerBySessionId: new Map(),
+      rememberedByProject: new Map([['project-1', 'root-session-1']]),
+    });
+    teardown = mounted.teardown;
+
+    expect(mounted.sessionSelectCalls).toEqual([]);
+    expect(mounted.draftCalls).toEqual([]);
+
+    mounted.rerender({
+      sessionOwnerBySessionId: new Map([['wt-session-1', { projectId: 'project-1' }]]),
+    });
+    expect(mounted.sessionSelectCalls).toEqual([]);
+    expect(mounted.draftCalls).toEqual([]);
   });
 });
