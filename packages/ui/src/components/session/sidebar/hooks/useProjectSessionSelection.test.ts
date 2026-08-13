@@ -1,10 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import type { Session } from '@opencode-ai/sdk/v2';
 import type { SessionGroup, SessionNode } from '../types';
+import { resolveMissingProjectSessionSelection } from './useProjectSessionSelection';
 
 // ---------------------------------------------------------------------------
 // Helper: simulate the projectSessionMeta computation from the hook
-// (same visitNodes logic as useProjectSessionSelection.ts lines 46-71)
+// (same visitNodes logic as useProjectSessionSelection.ts)
 // ---------------------------------------------------------------------------
 
 type ProjectSection = {
@@ -182,24 +183,6 @@ describe('useProjectSessionSelection — worktree session click race', () => {
     expect(projectMap?.has('wt-session-1')).toBe(true);
   });
 
-  test('guard preserves currentSessionId when projectMap is stale (the bug fix)', () => {
-    const { metaByProject, firstSessionByProject } = computeProjectMeta(staleSections);
-    const projectMap = metaByProject.get('project-1')!;
-    const currentSessionId = 'wt-session-1';
-
-    // Path A fails: currentSessionId is set but not in stale projectMap
-    const pathAHit = Boolean(currentSessionId && projectMap?.has(currentSessionId));
-    expect(pathAHit).toBe(false);
-
-    // Guard: if (currentSessionId) return;
-    // This is what prevents the fallthrough to Path C (auto-select wrong session)
-    // Without the guard, Path C would select firstSessionByProject = root-session-1
-    // instead of preserving the user's wt-session-1 selection
-    const fallback = firstSessionByProject.get('project-1')?.id ?? null;
-    expect(fallback).toBe('root-session-1');
-    expect(fallback).not.toBe(currentSessionId);
-  });
-
   test('second click works correctly when projectSections is updated', () => {
     const { metaByProject } = computeProjectMeta(updatedSections);
     const projectMap = metaByProject.get('project-1')!;
@@ -210,53 +193,140 @@ describe('useProjectSessionSelection — worktree session click race', () => {
     expect(pathAHit).toBe(true);
   });
 
-  test('project switch: guard does NOT fire when currentSessionId matches new project', () => {
-    // Simulates: user clicks a session in project-2 (normal click, not worktree)
+  test('project switch: Path A succeeds when currentSessionId matches the new project', () => {
     const { metaByProject } = computeProjectMeta(project2Sections);
     const projectMap = metaByProject.get('project-2')!;
     const currentSessionId = 'project-2-session-1';
 
-    // Path A succeeds — the session is in the new project's projectMap
     const pathAHit = Boolean(currentSessionId && projectMap?.has(currentSessionId));
     expect(pathAHit).toBe(true);
+  });
+});
 
-    // Guard condition only fires when Path A fails — should not fire here
-    const guardWouldFire = Boolean(currentSessionId && !(projectMap?.has(currentSessionId)));
-    expect(guardWouldFire).toBe(false);
+describe('resolveMissingProjectSessionSelection', () => {
+  test('A → B selects B remembered session when the current session is owned by A', () => {
+    const projectBMap = new Map([
+      ['project-b-first-session', null],
+      ['project-b-remembered-session', null],
+    ]);
+
+    expect(resolveMissingProjectSessionSelection({
+      activeProjectId: 'project-b',
+      currentSessionId: 'stale-worktree-session-a',
+      currentSessionOwnerProjectId: 'project-a',
+      projectMap: projectBMap,
+      metaByProject: new Map([['project-b', projectBMap]]),
+      rememberedSessionId: 'project-b-remembered-session',
+      fallbackSessionId: 'project-b-first-session',
+    })).toEqual({ kind: 'select-session', sessionId: 'project-b-remembered-session' });
   });
 
-  test('guard does NOT fire when currentSessionId is null (deleted/archived session)', () => {
-    const { metaByProject } = computeProjectMeta(staleSections);
-    const projectMap = metaByProject.get('project-1')!;
-    const currentSessionId = null;
+  test('A → B falls back to B first session when none is remembered', () => {
+    const projectAMap = new Map([['project-a-session', null]]);
+    const projectBMap = new Map([['project-b-first-session', null]]);
+    const metaByProject = new Map([
+      ['project-a', projectAMap],
+      ['project-b', projectBMap],
+    ]);
 
-    // Path A: currentSessionId is null → skipped
-    const pathAHit = Boolean(currentSessionId && projectMap?.has(currentSessionId));
-    expect(pathAHit).toBe(false);
-
-    // Guard: currentSessionId is null → skipped, falls through to Path B/C
-    const guardWouldFire = currentSessionId !== null && !pathAHit;
-    expect(guardWouldFire).toBe(false);
+    expect(resolveMissingProjectSessionSelection({
+      activeProjectId: 'project-b',
+      currentSessionId: 'project-a-session',
+      currentSessionOwnerProjectId: 'project-a',
+      projectMap: projectBMap,
+      metaByProject,
+      rememberedSessionId: undefined,
+      fallbackSessionId: 'project-b-first-session',
+    })).toEqual({ kind: 'select-session', sessionId: 'project-b-first-session' });
   });
 
-  test('guard does NOT fire for empty projects — falls through to Path B (open draft)', () => {
-    // Empty project: no groups/sessions in projectSections
-    const emptySections: ProjectSection[] = [
-      {
-        project: { id: 'empty-project', normalizedPath: '/workspace/empty' },
-        groups: [],
-      },
-    ];
-    const { metaByProject } = computeProjectMeta(emptySections);
-    const projectMap = metaByProject.get('empty-project');
-    const currentSessionId = 'some-session-id';
+  test('A → B opens a B-scoped draft when B is empty', () => {
+    expect(resolveMissingProjectSessionSelection({
+      activeProjectId: 'project-b',
+      currentSessionId: 'project-a-session',
+      currentSessionOwnerProjectId: 'project-a',
+      projectMap: undefined,
+      metaByProject: new Map([['project-a', new Map([['project-a-session', null]])]]),
+      rememberedSessionId: undefined,
+      fallbackSessionId: null,
+    })).toEqual({ kind: 'open-draft' });
+  });
 
-    // projectMap is undefined for empty project
-    expect(projectMap).toBe(undefined);
+  test('preserves a same-project worktree session missing from a stale projectMap', () => {
+    const projectMap = new Map([['root-session-1', null]]);
+    const metaByProject = new Map([['project-1', projectMap]]);
 
-    // Guard: projectMap is undefined → skipped, falls through to Path B
-    // which opens a new session draft for the empty project
-    const guardWouldFire = Boolean(currentSessionId && projectMap);
-    expect(guardWouldFire).toBe(false);
+    expect(resolveMissingProjectSessionSelection({
+      activeProjectId: 'project-1',
+      currentSessionId: 'wt-session-1',
+      currentSessionOwnerProjectId: 'project-1',
+      projectMap,
+      metaByProject,
+      rememberedSessionId: undefined,
+      fallbackSessionId: 'root-session-1',
+    })).toEqual({ kind: 'preserve-current' });
+  });
+
+  test('preserves an unknown session while worktree metadata may still be loading', () => {
+    const projectMap = new Map([['root-session-1', null]]);
+    const metaByProject = new Map([['project-1', projectMap]]);
+
+    expect(resolveMissingProjectSessionSelection({
+      activeProjectId: 'project-1',
+      currentSessionId: 'wt-session-1',
+      currentSessionOwnerProjectId: null,
+      projectMap,
+      metaByProject,
+      rememberedSessionId: undefined,
+      fallbackSessionId: 'root-session-1',
+    })).toEqual({ kind: 'preserve-current' });
+  });
+
+  test('unknown ownership still switches when the session already appears under another project', () => {
+    const projectAMap = new Map([['project-a-session', null]]);
+    const projectBMap = new Map([
+      ['project-b-first-session', null],
+      ['project-b-remembered-session', null],
+    ]);
+    const metaByProject = new Map([
+      ['project-a', projectAMap],
+      ['project-b', projectBMap],
+    ]);
+
+    expect(resolveMissingProjectSessionSelection({
+      activeProjectId: 'project-b',
+      currentSessionId: 'project-a-session',
+      currentSessionOwnerProjectId: null,
+      projectMap: projectBMap,
+      metaByProject,
+      rememberedSessionId: 'project-b-remembered-session',
+      fallbackSessionId: 'project-b-first-session',
+    })).toEqual({ kind: 'select-session', sessionId: 'project-b-remembered-session' });
+  });
+
+  test('deleted or missing currentSessionId falls through to remembered/fallback selection', () => {
+    const projectMap = new Map([['root-session-1', null]]);
+
+    expect(resolveMissingProjectSessionSelection({
+      activeProjectId: 'project-1',
+      currentSessionId: null,
+      currentSessionOwnerProjectId: null,
+      projectMap,
+      metaByProject: new Map([['project-1', projectMap]]),
+      rememberedSessionId: undefined,
+      fallbackSessionId: 'root-session-1',
+    })).toEqual({ kind: 'select-session', sessionId: 'root-session-1' });
+  });
+
+  test('empty projects resolve to opening a draft', () => {
+    expect(resolveMissingProjectSessionSelection({
+      activeProjectId: 'empty-project',
+      currentSessionId: 'some-session-id',
+      currentSessionOwnerProjectId: null,
+      projectMap: undefined,
+      metaByProject: new Map<string, Map<string, null>>(),
+      rememberedSessionId: undefined,
+      fallbackSessionId: null,
+    })).toEqual({ kind: 'open-draft' });
   });
 });
