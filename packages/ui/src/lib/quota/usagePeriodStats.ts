@@ -1,19 +1,17 @@
-import type { QuotaProviderId } from '@/types';
-import { resolveQuotaProviderId } from './providerAliases';
+import { resolveUsageProviderId } from './providerAliases';
 
 export type UsageMetricMode = 'tokens' | 'cost' | 'requests';
-export type UsagePeriodDays = 7 | 30;
 
-export interface SessionUsageSource {
-  cost?: number | null;
-  tokens?: {
-    input?: number;
-    output?: number;
-    reasoning?: number;
-    cache?: { read?: number; write?: number };
-  } | null;
-  model?: { providerID?: string | null } | null;
-  time?: { updated?: number | null; created?: number | null } | null;
+export type UsagePeriodSelection =
+  | { kind: 'days'; days: number }
+  | { kind: 'range'; startDay: string; endDay: string };
+
+export interface UsageHistoryRecord {
+  dayKey: string;
+  providerId: string;
+  cost: number;
+  tokens: number;
+  requests: number;
 }
 
 export interface DailyUsagePoint {
@@ -25,14 +23,14 @@ export interface DailyUsagePoint {
   byProvider: Record<string, { cost: number; tokens: number; requests: number }>;
 }
 
-export interface ProviderPeriodTotals {
-  providerId: QuotaProviderId;
+interface ProviderPeriodTotals {
+  providerId: string;
   cost: number;
   tokens: number;
   requests: number;
 }
 
-export interface PeriodUsageSummary {
+interface PeriodUsageSummary {
   rangeStartMs: number;
   rangeEndMs: number;
   previousStartMs: number;
@@ -43,7 +41,9 @@ export interface PeriodUsageSummary {
   byProvider: ProviderPeriodTotals[];
 }
 
-const dayKeyFromMs = (ms: number): string => {
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export const dayKeyFromMs = (ms: number): string => {
   const date = new Date(ms);
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -57,7 +57,63 @@ const startOfLocalDay = (ms: number): number => {
   return date.getTime();
 };
 
-export const sessionTokenTotal = (tokens: SessionUsageSource['tokens']): number => {
+const addLocalDays = (ms: number, days: number): number => {
+  const date = new Date(ms);
+  date.setDate(date.getDate() + days);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+};
+
+const endOfLocalDay = (ms: number): number => addLocalDays(ms, 1) - 1;
+
+const parseLocalDay = (value: string | null | undefined): number | null => {
+  if (!value) return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+  return startOfLocalDay(date.getTime());
+};
+
+const localDayOrdinal = (ms: number): number => {
+  const date = new Date(ms);
+  return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / DAY_MS;
+};
+
+const countDaysInclusive = (startMs: number, endMs: number): number =>
+  localDayOrdinal(endMs) - localDayOrdinal(startMs) + 1;
+
+export const resolveUsagePeriod = (
+  period: UsagePeriodSelection,
+  nowMs: number,
+  minimumDayKey?: string,
+): { startMs: number; endMs: number; days: number } => {
+  const nowDay = startOfLocalDay(nowMs);
+  const minDay = Math.min(parseLocalDay(minimumDayKey) ?? Number.NEGATIVE_INFINITY, nowDay);
+  const clamp = (ms: number) => Math.max(minDay, Math.min(ms, nowDay));
+
+  if (period.kind === 'range') {
+    const rawStart = parseLocalDay(period.startDay) ?? nowDay;
+    const rawEnd = parseLocalDay(period.endDay) ?? nowDay;
+    const startMs = clamp(Math.min(rawStart, rawEnd));
+    const endMs = clamp(Math.max(rawStart, rawEnd));
+    return { startMs, endMs, days: countDaysInclusive(startMs, endMs) };
+  }
+
+  const days = Number.isFinite(period.days) ? Math.max(1, Math.round(period.days)) : 1;
+  const startMs = addLocalDays(nowDay, -(days - 1));
+  return { startMs, endMs: nowDay, days: countDaysInclusive(startMs, nowDay) };
+};
+
+export const sessionTokenTotal = (tokens: {
+  input?: number;
+  output?: number;
+  reasoning?: number;
+  cache?: { read?: number; write?: number };
+} | null | undefined): number => {
   if (!tokens) return 0;
   const cacheRead = tokens.cache?.read ?? 0;
   const cacheWrite = tokens.cache?.write ?? 0;
@@ -87,99 +143,125 @@ const emptyDay = (dayStartMs: number): DailyUsagePoint => ({
   byProvider: {},
 });
 
-const accumulateSession = (
+const accumulateInto = (
   target: { cost: number; tokens: number; requests: number },
-  session: SessionUsageSource,
+  record: Pick<UsageHistoryRecord, 'cost' | 'tokens' | 'requests'>,
 ) => {
-  const cost = typeof session.cost === 'number' && Number.isFinite(session.cost) ? Math.max(0, session.cost) : 0;
-  const tokens = Math.max(0, sessionTokenTotal(session.tokens));
-  target.cost += cost;
-  target.tokens += tokens;
-  target.requests += 1;
-  return { cost, tokens };
+  target.cost += record.cost;
+  target.tokens += record.tokens;
+  target.requests += record.requests;
 };
 
 export const buildPeriodUsageSummary = (
-  sessions: readonly SessionUsageSource[],
+  records: readonly UsageHistoryRecord[],
   options: {
-    periodDays: UsagePeriodDays;
+    period: UsagePeriodSelection;
     nowMs?: number;
-    providerFilter?: QuotaProviderId | null;
+    providerFilter?: string | null;
+    minimumDayKey?: string;
   },
 ): PeriodUsageSummary => {
   const nowMs = options.nowMs ?? Date.now();
-  const rangeEndMs = nowMs;
-  const rangeStartMs = startOfLocalDay(nowMs) - (options.periodDays - 1) * 24 * 60 * 60 * 1000;
+  const { startMs: rangeStartMs, endMs: rangeEndDayMs, days } = resolveUsagePeriod(
+    options.period,
+    nowMs,
+    options.minimumDayKey,
+  );
+  const rangeEndMs = Math.min(endOfLocalDay(rangeEndDayMs), nowMs);
   const previousEndMs = rangeStartMs;
-  const previousStartMs = rangeStartMs - options.periodDays * 24 * 60 * 60 * 1000;
+  const previousStartMs = addLocalDays(rangeStartMs, -days);
 
-  const days: DailyUsagePoint[] = [];
+  const points: DailyUsagePoint[] = [];
   const dayIndex = new Map<string, DailyUsagePoint>();
-  for (let offset = 0; offset < options.periodDays; offset += 1) {
-    const dayStartMs = rangeStartMs + offset * 24 * 60 * 60 * 1000;
+  for (let offset = 0; offset < days; offset += 1) {
+    const dayStartMs = addLocalDays(rangeStartMs, offset);
     const point = emptyDay(dayStartMs);
-    days.push(point);
+    points.push(point);
     dayIndex.set(point.dayKey, point);
   }
 
   const totals = { cost: 0, tokens: 0, requests: 0 };
   const previousTotals = { cost: 0, tokens: 0, requests: 0 };
-  const providerTotals = new Map<QuotaProviderId, ProviderPeriodTotals>();
+  const providerTotals = new Map<string, ProviderPeriodTotals>();
+  const providerFilter = resolveUsageProviderId(options.providerFilter);
 
-  for (const session of sessions) {
-    const stamp = session.time?.updated ?? session.time?.created ?? null;
-    if (typeof stamp !== 'number' || !Number.isFinite(stamp)) continue;
+  for (const record of records) {
+    const dayMs = parseLocalDay(record.dayKey);
+    if (dayMs === null) continue;
+    const providerId = resolveUsageProviderId(record.providerId);
+    if (!providerId) continue;
+    if (providerFilter && providerId !== providerFilter) continue;
 
-    const providerId = resolveQuotaProviderId(session.model?.providerID ?? null);
-    if (options.providerFilter && providerId !== options.providerFilter) continue;
-
-    if (stamp >= rangeStartMs && stamp <= rangeEndMs) {
-      const { cost, tokens } = accumulateSession(totals, session);
-      const key = dayKeyFromMs(stamp);
-      const day = dayIndex.get(key);
+    if (dayMs >= rangeStartMs && dayMs <= rangeEndDayMs) {
+      accumulateInto(totals, record);
+      const day = dayIndex.get(record.dayKey);
       if (day) {
-        day.cost += cost;
-        day.tokens += tokens;
-        day.requests += 1;
-        if (providerId) {
-          const bucket = day.byProvider[providerId] ?? { cost: 0, tokens: 0, requests: 0 };
-          bucket.cost += cost;
-          bucket.tokens += tokens;
-          bucket.requests += 1;
-          day.byProvider[providerId] = bucket;
+        day.cost += record.cost;
+        day.tokens += record.tokens;
+        day.requests += record.requests;
+        const bucket = day.byProvider[providerId] ?? { cost: 0, tokens: 0, requests: 0 };
+        bucket.cost += record.cost;
+        bucket.tokens += record.tokens;
+        bucket.requests += record.requests;
+        day.byProvider[providerId] = bucket;
 
-          const provider = providerTotals.get(providerId) ?? {
-            providerId,
-            cost: 0,
-            tokens: 0,
-            requests: 0,
-          };
-          provider.cost += cost;
-          provider.tokens += tokens;
-          provider.requests += 1;
-          providerTotals.set(providerId, provider);
-        }
+        const provider = providerTotals.get(providerId) ?? { providerId, cost: 0, tokens: 0, requests: 0 };
+        provider.cost += record.cost;
+        provider.tokens += record.tokens;
+        provider.requests += record.requests;
+        providerTotals.set(providerId, provider);
       }
       continue;
     }
 
-    if (stamp >= previousStartMs && stamp < previousEndMs) {
-      accumulateSession(previousTotals, session);
+    if (dayMs >= previousStartMs && dayMs < previousEndMs) {
+      accumulateInto(previousTotals, record);
     }
   }
 
-  const byProvider = Array.from(providerTotals.values()).sort((left, right) => right.cost - left.cost || right.tokens - left.tokens);
+  const byProvider = Array.from(providerTotals.values())
+    .sort((left, right) => right.cost - left.cost || right.tokens - left.tokens);
 
   return {
     rangeStartMs,
     rangeEndMs,
     previousStartMs,
     previousEndMs,
-    days,
+    days: points,
     totals,
     previousTotals,
     byProvider,
   };
+};
+
+/** Aggregate per-provider (day, provider) records; keeps the first provider display name. */
+export const aggregateUsageRecords = (
+  rows: readonly { dayKey: string; providerId: string; providerName?: string; cost: number; tokens: number; requests: number }[],
+): { records: UsageHistoryRecord[]; providerNames: Map<string, string> } => {
+  const byKey = new Map<string, UsageHistoryRecord>();
+  const providerNames = new Map<string, string>();
+  for (const row of rows) {
+    const providerId = resolveUsageProviderId(row.providerId);
+    const dayMs = parseLocalDay(row.dayKey);
+    if (!providerId || dayMs === null) continue;
+    const cost = Number.isFinite(row.cost) ? Math.max(0, row.cost) : 0;
+    const tokens = Number.isFinite(row.tokens) ? Math.max(0, row.tokens) : 0;
+    const requests = Number.isFinite(row.requests) ? Math.max(0, row.requests) : 0;
+    if (cost === 0 && tokens === 0 && requests === 0) continue;
+    const key = `${row.dayKey}::${providerId}`;
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.cost += cost;
+      existing.tokens += tokens;
+      existing.requests += requests;
+    } else {
+      byKey.set(key, { dayKey: row.dayKey, providerId, cost, tokens, requests });
+    }
+    if (!providerNames.has(providerId)) {
+      providerNames.set(providerId, row.providerName ?? row.providerId);
+    }
+  }
+  return { records: Array.from(byKey.values()), providerNames };
 };
 
 export const formatCompactNumber = (value: number): string => {
@@ -193,9 +275,10 @@ export const formatCompactNumber = (value: number): string => {
   return value.toFixed(2);
 };
 
-export const formatUsd = (value: number, digits = 2): string => {
+export const formatUsd = (value: number, digits?: number): string => {
   if (!Number.isFinite(value)) return '—';
-  return `$${value.toFixed(digits)}`;
+  const precision = digits ?? (value !== 0 && Math.abs(value) < 0.01 ? 4 : 2);
+  return `$${value.toFixed(precision)}`;
 };
 
 export const formatSignedUsd = (value: number): string => {

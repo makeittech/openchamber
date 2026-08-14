@@ -3,7 +3,7 @@ import { Icon } from '@/components/icon/Icon';
 import { Button } from '@/components/ui/button';
 import { ProviderLogo } from '@/components/ui/ProviderLogo';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
-import { SettingsSection } from '@/components/sections/shared/SettingsSection';
+import { SETTINGS_ICON_BUTTON_CLASS, SettingsSection } from '@/components/sections/shared/SettingsSection';
 import { useI18n } from '@/lib/i18n';
 import { QUOTA_PROVIDERS, USAGE_ADD_PROVIDER_ID, collectConnectedQuotaProviderIds } from '@/lib/quota';
 import { useQuotaStore } from '@/stores/useQuotaStore';
@@ -83,7 +83,7 @@ export const UsageAddProvider: React.FC = () => {
         <Button
           size="sm"
           variant="ghost"
-          className="h-8 w-8 px-0"
+          className={SETTINGS_ICON_BUTTON_CLASS}
           aria-label={t('settings.usage.add.backAria')}
           onClick={() => setSelectedProvider(null)}
         >

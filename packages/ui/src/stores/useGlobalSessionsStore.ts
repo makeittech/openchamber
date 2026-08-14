@@ -61,14 +61,12 @@ let inflightLoad: Promise<LoadResult> | null = null;
 // not apply its (stale) snapshot after the reset.
 let loadGeneration = 0;
 
-export const resolveGlobalSessionDirectory = (session: Session): string | null => {
-  const record = session as Session & {
-    directory?: string | null;
-    project?: { worktree?: string | null } | null;
-  };
-
-  return normalizePath(record.directory ?? null)
-    ?? normalizePath(record.project?.worktree ?? null);
+export const resolveGlobalSessionDirectory = (session: {
+  directory?: string | null;
+  project?: { worktree?: string | null } | null;
+}): string | null => {
+  return normalizePath(session.directory ?? null)
+    ?? normalizePath(session.project?.worktree ?? null);
 };
 
 export const mergeSessionDirectoryMetadata = (incoming: Session, existing?: Session | null): Session => {

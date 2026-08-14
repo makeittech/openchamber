@@ -576,13 +576,26 @@ class OpencodeService {
     return unwrapSdkData(response, 'session.update');
   }
 
-  async getSessionMessages(id: string, limit?: number): Promise<{ info: Message; parts: Part[] }[]> {
+  async getSessionMessagesPage(
+    id: string,
+    options: { limit?: number; before?: string; directory?: string | null } = {},
+  ): Promise<{ messages: { info: Message; parts: Part[] }[]; cursor: string | undefined }> {
+    const requestDirectory = this.normalizeCandidatePath(options.directory) ?? this.currentDirectory;
     const response = await this.client.session.messages({
       sessionID: id,
-      ...(this.currentDirectory ? { directory: this.currentDirectory } : {}),
-      ...(typeof limit === 'number' ? { limit } : {}),
+      ...(requestDirectory ? { directory: requestDirectory } : {}),
+      ...(typeof options.limit === 'number' ? { limit: options.limit } : {}),
+      ...(typeof options.before === 'string' ? { before: options.before } : {}),
     });
-    return unwrapSdkData(response, 'session.messages');
+    return {
+      messages: unwrapSdkData(response, 'session.messages'),
+      cursor: response.response?.headers?.get?.('x-next-cursor') ?? undefined,
+    };
+  }
+
+  async getSessionMessages(id: string, limit?: number, directory?: string | null): Promise<{ info: Message; parts: Part[] }[]> {
+    const page = await this.getSessionMessagesPage(id, { limit, directory });
+    return page.messages;
   }
 
   async getSessionTodos(sessionId: string): Promise<Array<{ id: string; content: string; status: string; priority: string }>> {

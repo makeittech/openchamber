@@ -9,19 +9,21 @@ The Usage page shows how much of each provider's plan you've used, so you can se
 
 ## What you see
 
-For each connected provider, OpenChamber shows:
+The overview builds statistics from persisted OpenCode session history for every provider that produced an assistant response, including providers added by plugins or custom API configuration. You can inspect the last 7, 30, or 90 days, or choose a custom date range. Each provider also has its own filtered statistics page.
+
+For each connected provider with quota support, OpenChamber also shows:
 
 - how much of the current window you've used, as a bar
 - a breakdown by model
 - a pace indicator, so you can tell if you're on track to run out
 
-You can choose which providers appear, and the same summary is available from a dropdown in the app header.
+Hover or focus a chart to inspect the exact value for each day or provider. You can choose which quota providers appear, and the same quota summary is available from a dropdown in the app header.
 
 ## Supported providers
 
-Usage works for the providers that publish a quota, including Claude, Codex, GitHub Copilot, Google, OpenRouter, Kimi, NanoGPT, z.ai, Zhipu, MiniMax, Ollama Cloud, and Wafer.
+Historical statistics work for all providers recorded in your sessions. Quota and remaining-limit details are available for providers that publish a quota, including Claude, Codex, GitHub Copilot, Google, OpenRouter, Kimi, NanoGPT, z.ai, Zhipu, MiniMax, Ollama Cloud, and Wafer.
 
-A provider only shows usage once you've signed in to it on the [Providers](/providers/) page. A few providers need an extra step — for example, Ollama Cloud reads a session file you set up separately. If a provider shows no data, it usually means that extra credential is missing.
+Connected providers appear after you configure them on the [Providers](/providers/) page, while historical statistics can remain after a provider is disconnected. A few quota integrations need an extra step — for example, Ollama Cloud reads a session file you set up separately. If remaining-limit data is missing, check that provider's quota credentials.
 
 ## Related
 

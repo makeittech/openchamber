@@ -1,5 +1,4 @@
 import React from 'react';
-import type { Session } from '@opencode-ai/sdk/v2/client';
 import { UsageCard } from './UsageCard';
 import { QuotaCredentials } from './QuotaCredentials';
 import { UsageAreaChart } from './UsageAreaChart';
@@ -8,11 +7,16 @@ import {
   buildPeriodUsageSummary,
   collectConnectedQuotaProviderIds,
   colorForProviderIndex,
+  dayKeyFromMs,
   formatCompactNumber,
   formatUsd,
+  isQuotaProviderId,
+  resolveUsageProviderId,
+  resolveUsagePeriod,
   type UsageMetricMode,
-  type UsagePeriodDays,
+  type UsagePeriodSelection,
 } from '@/lib/quota';
+import { useUsageHistory, useUsageSessions } from '@/lib/quota/useUsageHistory';
 import { useQuotaAutoRefresh, useQuotaStore } from '@/stores/useQuotaStore';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { updateDesktopSettings } from '@/lib/persistence';
@@ -22,7 +26,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
-import type { UsageWindows, QuotaProviderId } from '@/types';
+import type { UsageWindows } from '@/types';
 import { getAllModelFamilies, getDisplayModelName, sortModelFamilies, groupModelsByFamilyWithGetter } from '@/lib/quota/model-families';
 import { Icon } from '@/components/icon/Icon';
 import { Button } from '@/components/ui/button';
@@ -34,8 +38,9 @@ import {
   SettingsSection,
   SettingsCheckboxRow,
   SettingsChipGroup,
+  SETTINGS_ICON_BUTTON_CLASS,
 } from '@/components/sections/shared/SettingsSection';
-import { getAllSyncSessions } from '@/sync/sync-refs';
+import { UsagePeriodSelector } from './UsagePeriodSelector';
 
 const formatTime = (timestamp: number | null, timeFormatPreference: TimeFormatPreference) => {
   if (!timestamp) return '-';
@@ -52,11 +57,11 @@ interface ModelInfo {
 }
 
 interface UsageProviderDetailProps {
-  providerId: QuotaProviderId;
+  providerId: string;
 }
 
 export const UsageProviderDetail: React.FC<UsageProviderDetailProps> = ({ providerId }) => {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const timeFormatPreference = useUIStore((state) => state.timeFormatPreference);
   const results = useQuotaStore((state) => state.results);
   const setSelectedProvider = useQuotaStore((state) => state.setSelectedProvider);
@@ -64,7 +69,6 @@ export const UsageProviderDetail: React.FC<UsageProviderDetailProps> = ({ provid
   const fetchAllQuotas = useQuotaStore((state) => state.fetchAllQuotas);
   const isLoading = useQuotaStore((state) => state.isLoading);
   const lastUpdated = useQuotaStore((state) => state.lastUpdated);
-  const error = useQuotaStore((state) => state.error);
   const dropdownProviderIds = useQuotaStore((state) => state.dropdownProviderIds);
   const setDropdownProviderIds = useQuotaStore((state) => state.setDropdownProviderIds);
   const hideUsageProvider = useQuotaStore((state) => state.hideUsageProvider);
@@ -73,7 +77,7 @@ export const UsageProviderDetail: React.FC<UsageProviderDetailProps> = ({ provid
   const applyDefaultSelections = useQuotaStore((state) => state.applyDefaultSelections);
   const configProviders = useConfigStore((state) => state.providers);
 
-  const [periodDays, setPeriodDays] = React.useState<UsagePeriodDays>(7);
+  const [period, setPeriod] = React.useState<UsagePeriodSelection>({ kind: 'days', days: 7 });
   const [metric, setMetric] = React.useState<UsageMetricMode>('tokens');
   const [sessionTick, setSessionTick] = React.useState(0);
 
@@ -84,29 +88,49 @@ export const UsageProviderDetail: React.FC<UsageProviderDetailProps> = ({ provid
     void fetchAllQuotas();
   }, [loadSettings, fetchAllQuotas]);
 
+  React.useEffect(() => {
+    const timer = window.setInterval(() => setSessionTick((value) => value + 1), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const usageProviderId = React.useMemo(
+    () => resolveUsageProviderId(providerId) ?? providerId,
+    [providerId],
+  );
+  const quotaProviderId = isQuotaProviderId(usageProviderId) ? usageProviderId : null;
+
   const connectedQuotaIds = React.useMemo(
     () => collectConnectedQuotaProviderIds(configProviders.map((provider) => provider.id)),
     [configProviders],
   );
 
-  const selectedResult = results.find((entry) => entry.providerId === providerId) ?? null;
-  const providerMeta = QUOTA_PROVIDERS.find((provider) => provider.id === providerId);
-  const providerName = providerMeta?.name ?? providerId;
+  const selectedResult = quotaProviderId
+    ? results.find((entry) => entry.providerId === quotaProviderId) ?? null
+    : null;
+  const providerMeta = quotaProviderId
+    ? QUOTA_PROVIDERS.find((provider) => provider.id === quotaProviderId)
+    : undefined;
+  const configProviderName = configProviders.find(
+    (provider) => resolveUsageProviderId(provider.id) === usageProviderId,
+  )?.name;
   const usage = selectedResult?.usage;
-  const selectedProviderError = selectedResult?.configured && !selectedResult.ok
+  const selectedProviderError = selectedResult && !selectedResult.ok
     ? selectedResult.error
     : null;
-  const showInDropdown = dropdownProviderIds.includes(providerId);
-  const hasCredentialsForm = providerId === 'ollama-cloud' || providerId === 'cursor';
-  const isOpenCodeConnected = connectedQuotaIds.has(providerId);
+  const showInDropdown = quotaProviderId ? dropdownProviderIds.includes(quotaProviderId) : false;
+  const hasCredentialsForm = quotaProviderId === 'ollama-cloud' || quotaProviderId === 'cursor';
+  const isOpenCodeConnected = quotaProviderId
+    ? connectedQuotaIds.has(quotaProviderId)
+    : configProviders.some((provider) => resolveUsageProviderId(provider.id) === usageProviderId);
 
   const handleDropdownToggle = React.useCallback((enabled: boolean) => {
+    if (!quotaProviderId) return;
     const next = enabled
-      ? Array.from(new Set([...dropdownProviderIds, providerId]))
-      : dropdownProviderIds.filter((id) => id !== providerId);
+      ? Array.from(new Set([...dropdownProviderIds, quotaProviderId]))
+      : dropdownProviderIds.filter((id) => id !== quotaProviderId);
     setDropdownProviderIds(next);
     void updateDesktopSettings({ usageDropdownProviders: next });
-  }, [dropdownProviderIds, providerId, setDropdownProviderIds]);
+  }, [dropdownProviderIds, quotaProviderId, setDropdownProviderIds]);
 
   const providerModels = React.useMemo((): ModelInfo[] => {
     if (!usage?.models) return [];
@@ -117,25 +141,25 @@ export const UsageProviderDetail: React.FC<UsageProviderDetailProps> = ({ provid
 
   React.useEffect(() => {
     if (providerModels.length > 0) {
-      applyDefaultSelections(providerId, providerModels.map((m) => m.name));
+      applyDefaultSelections(usageProviderId, providerModels.map((m) => m.name));
     }
-  }, [providerId, providerModels, applyDefaultSelections]);
+  }, [applyDefaultSelections, providerModels, usageProviderId]);
 
   const modelsByFamily = React.useMemo(() => {
-    if (providerModels.length === 0) {
+    if (providerModels.length === 0 || !quotaProviderId) {
       return new Map<string | null, ModelInfo[]>();
     }
     return groupModelsByFamilyWithGetter(
       providerModels,
       (model) => model.name,
-      providerId,
+      quotaProviderId,
     );
-  }, [providerModels, providerId]);
+  }, [providerModels, quotaProviderId]);
 
   const sortedFamilies = React.useMemo(() => {
-    const families = getAllModelFamilies(providerId);
+    const families = quotaProviderId ? getAllModelFamilies(quotaProviderId) : [];
     return sortModelFamilies(families);
-  }, [providerId]);
+  }, [quotaProviderId]);
 
   const [collapsedFamilies, setCollapsedFamilies] = React.useState<Record<string, boolean>>({});
 
@@ -147,38 +171,71 @@ export const UsageProviderDetail: React.FC<UsageProviderDetailProps> = ({ provid
   }, []);
 
   const handleModelToggle = React.useCallback((modelName: string) => {
-    toggleModelSelected(providerId, modelName);
-    const currentSelected = selectedModels[providerId] ?? [];
+    toggleModelSelected(usageProviderId, modelName);
+    const currentSelected = selectedModels[usageProviderId] ?? [];
     const isSelected = currentSelected.includes(modelName);
     const nextSelected = isSelected
       ? currentSelected.filter((m) => m !== modelName)
       : [...currentSelected, modelName];
-    const nextSettings: Record<string, string[]> = { ...selectedModels, [providerId]: nextSelected };
+    const nextSettings: Record<string, string[]> = { ...selectedModels, [usageProviderId]: nextSelected };
     void updateDesktopSettings({ usageSelectedModels: nextSettings });
-  }, [providerId, selectedModels, toggleModelSelected]);
+  }, [selectedModels, toggleModelSelected, usageProviderId]);
 
-  const providerSelectedModels = selectedModels[providerId] ?? [];
+  const providerSelectedModels = selectedModels[usageProviderId] ?? [];
 
-  const periodSummary = React.useMemo(() => {
+  const {
+    sessions,
+    status: sessionSourceStatus,
+    minimumDayKey,
+    refresh: refreshSessions,
+  } = useUsageSessions(sessionTick);
+  const analysisNowMs = React.useMemo(() => {
     void sessionTick;
-    const sessions = getAllSyncSessions() as Session[];
-    return buildPeriodUsageSummary(sessions, { periodDays, providerFilter: providerId });
-  }, [periodDays, providerId, sessionTick]);
+    return Date.now();
+  }, [sessionTick]);
+  const resolvedPeriod = React.useMemo(
+    () => resolveUsagePeriod(period, analysisNowMs, minimumDayKey),
+    [analysisNowMs, minimumDayKey, period],
+  );
+  const historyMinDayKey = React.useMemo(() => {
+    const previousStart = new Date(resolvedPeriod.startMs);
+    previousStart.setDate(previousStart.getDate() - resolvedPeriod.days);
+    return dayKeyFromMs(previousStart.getTime());
+  }, [resolvedPeriod]);
+  const history = useUsageHistory(sessions, {
+    minDayKey: historyMinDayKey,
+    refreshKey: sessionTick,
+    sourceStatus: sessionSourceStatus,
+  });
+  const providerName = providerMeta?.name
+    ?? configProviderName
+    ?? history.providerNames.get(usageProviderId)
+    ?? providerId;
 
-  // Prefer cost chart when the provider has spend in the window; otherwise tokens.
-  React.useEffect(() => {
-    if (periodSummary.totals.cost > 0) {
-      setMetric('cost');
-    } else {
-      setMetric('tokens');
-    }
-  }, [providerId]); // eslint-disable-line react-hooks/exhaustive-deps -- seed once per provider
+  const periodSummary = React.useMemo(
+    () => buildPeriodUsageSummary(history.records, {
+      period,
+      nowMs: analysisNowMs,
+      providerFilter: usageProviderId,
+      minimumDayKey,
+    }),
+    [analysisNowMs, history.records, minimumDayKey, period, usageProviderId],
+  );
+
+  const preciseNumberFormatter = React.useMemo(() => new Intl.NumberFormat(locale), [locale]);
+  const formatMetricValue = React.useCallback((value: number) => (
+    metric === 'cost' ? formatUsd(value, 4) : preciseNumberFormatter.format(value)
+  ), [metric, preciseNumberFormatter]);
+  const formatDay = React.useCallback(
+    (ms: number) => new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric' }).format(new Date(ms)),
+    [locale],
+  );
 
   const chartSeries = React.useMemo(() => ([{
-    id: providerId,
+    id: usageProviderId,
     label: providerName,
     color: colorForProviderIndex(0),
-  }]), [providerId, providerName]);
+  }]), [usageProviderId, providerName]);
 
   return (
     <SettingsPageLayout
@@ -188,17 +245,17 @@ export const UsageProviderDetail: React.FC<UsageProviderDetailProps> = ({ provid
           <Button
             size="sm"
             variant="ghost"
-            className="h-8 w-8 px-0"
+            className={SETTINGS_ICON_BUTTON_CLASS}
             aria-label={t('settings.usage.page.backToOverviewAria')}
             onClick={() => setSelectedProvider(null)}
           >
             <Icon name="arrow-left-s" className="h-4 w-4" />
           </Button>
-          <ProviderLogo providerId={providerId} className="h-5 w-5 shrink-0" />
+          <ProviderLogo providerId={usageProviderId} className="h-5 w-5 shrink-0" />
         </div>
       )}
       description={
-        isLoading ? (
+        isLoading || (history.status === 'loading' && history.records.length === 0) ? (
           <span className="animate-pulse typography-settings-description text-muted-foreground">{t('settings.usage.page.header.refreshing')}</span>
         ) : (
           t('settings.usage.page.header.lastUpdated', { time: formatTime(lastUpdated, timeFormatPreference) })
@@ -206,35 +263,38 @@ export const UsageProviderDetail: React.FC<UsageProviderDetailProps> = ({ provid
       }
       showSaveStatus
     >
-      <SettingsSection divider={false} settingsItem="usage.work-status-panel">
-        <SettingsCheckboxRow
-          checked={showInDropdown}
-          onChange={handleDropdownToggle}
-          label={t('settings.usage.page.options.showInWorkStatus')}
-          ariaLabel={t('settings.usage.page.options.showInWorkStatusAria')}
-          info={t('settings.usage.page.options.showInWorkStatusTooltip')}
-        />
-        <div className="mt-3">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => hideUsageProvider(providerId)}
-          >
-            {t('settings.usage.page.actions.removeFromUsage')}
-          </Button>
-        </div>
-      </SettingsSection>
+      {quotaProviderId && (
+        <SettingsSection divider={false} settingsItem="usage.work-status-panel">
+          <SettingsCheckboxRow
+            checked={showInDropdown}
+            onChange={handleDropdownToggle}
+            label={t('settings.usage.page.options.showInWorkStatus')}
+            ariaLabel={t('settings.usage.page.options.showInWorkStatusAria')}
+            info={t('settings.usage.page.options.showInWorkStatusTooltip')}
+          />
+          <div className="mt-3">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => hideUsageProvider(quotaProviderId)}
+            >
+              {t('settings.usage.page.actions.removeFromUsage')}
+            </Button>
+          </div>
+        </SettingsSection>
+      )}
 
-      <SettingsSection title={t('settings.usage.page.section.periodUsage')} settingsItem="usage.period-stats">
+      <SettingsSection
+        title={t('settings.usage.page.section.periodUsage')}
+        settingsItem="usage.period-stats"
+        divider={Boolean(quotaProviderId)}
+      >
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <SettingsChipGroup
-            aria-label={t('settings.usage.overview.period.aria')}
-            value={String(periodDays)}
-            onChange={(value) => setPeriodDays(Number(value) as UsagePeriodDays)}
-            options={[
-              { value: '7', label: t('settings.usage.overview.period.7d') },
-              { value: '30', label: t('settings.usage.overview.period.30d') },
-            ]}
+          <UsagePeriodSelector
+            period={period}
+            onChange={setPeriod}
+            minDayKey={minimumDayKey}
+            maxDayKey={dayKeyFromMs(analysisNowMs)}
           />
           <SettingsChipGroup
             aria-label={t('settings.usage.overview.chart.metricAria')}
@@ -249,11 +309,16 @@ export const UsageProviderDetail: React.FC<UsageProviderDetailProps> = ({ provid
           <Button
             size="sm"
             variant="ghost"
-            className="h-8 w-8 px-0"
+            className={SETTINGS_ICON_BUTTON_CLASS}
             aria-label={t('settings.usage.sidebar.actions.refreshAria')}
-            onClick={() => setSessionTick((value) => value + 1)}
+            onClick={() => {
+              void fetchAllQuotas();
+              void refreshSessions();
+              setSessionTick((value) => value + 1);
+            }}
+            disabled={isLoading}
           >
-            <Icon name="refresh" className="h-3.5 w-3.5" />
+            <Icon name="refresh" className={`h-3.5 w-3.5${isLoading ? ' animate-spin' : ''}`} />
           </Button>
         </div>
 
@@ -272,27 +337,39 @@ export const UsageProviderDetail: React.FC<UsageProviderDetailProps> = ({ provid
           </div>
         </div>
 
-        <UsageAreaChart
-          days={periodSummary.days}
-          metric={metric}
-          series={chartSeries}
-          ariaLabel={t('settings.usage.overview.chart.usageOverTime')}
-          emptyLabel={t('settings.usage.overview.chart.empty')}
-        />
+        {history.status === 'loading' && history.records.length === 0 ? (
+          <div className="flex h-[180px] items-center justify-center typography-meta text-muted-foreground">
+            {t('settings.usage.overview.history.loading')}
+          </div>
+        ) : (
+          <UsageAreaChart
+            days={periodSummary.days}
+            metric={metric}
+            series={chartSeries}
+            ariaLabel={t('settings.usage.overview.chart.usageOverTime')}
+            emptyLabel={t('settings.usage.overview.chart.empty')}
+            formatValue={formatMetricValue}
+            formatDay={formatDay}
+          />
+        )}
       </SettingsSection>
 
-      {!selectedResult && (
-        <p className="typography-ui-label text-foreground pb-8">{t('settings.usage.page.state.noData')}</p>
-      )}
-
-      {(error || selectedProviderError) && (
-        <div className="mb-8 rounded-lg border border-[var(--status-error-border)] bg-[var(--status-error-background)] px-4 py-3">
-          <p className="typography-ui-label font-medium text-[var(--status-error)]">{t('settings.usage.page.state.refreshFailedTitle')}</p>
-          <p className="typography-meta text-[var(--status-error)]/80 mt-1">{error ?? selectedProviderError}</p>
+      {(history.status === 'partial' || history.status === 'error') && (
+        <div className="mb-8 rounded-lg border border-[var(--status-warning-border)] bg-[var(--status-warning-background)] px-4 py-3">
+          <p className="typography-meta text-[var(--status-warning)]">
+            {t(history.status === 'error' ? 'settings.usage.overview.history.error' : 'settings.usage.overview.history.partial')}
+          </p>
         </div>
       )}
 
-      {selectedResult && !selectedResult.configured && !hasCredentialsForm && !isOpenCodeConnected && (
+      {selectedProviderError && (
+        <div className="mb-8 rounded-lg border border-[var(--status-error-border)] bg-[var(--status-error-background)] px-4 py-3">
+          <p className="typography-ui-label font-medium text-[var(--status-error)]">{t('settings.usage.page.state.refreshFailedTitle')}</p>
+          <p className="typography-meta text-[var(--status-error)]/80 mt-1">{selectedProviderError}</p>
+        </div>
+      )}
+
+      {selectedResult?.ok && !selectedResult.configured && !hasCredentialsForm && !isOpenCodeConnected && (
         <div className="mb-8 rounded-lg border border-[var(--status-warning-border)] bg-[var(--status-warning-background)] px-4 py-3">
           <p className="typography-ui-label font-medium text-[var(--status-warning)]">{t('settings.usage.page.state.providerNotConfiguredTitle')}</p>
           <p className="typography-meta text-[var(--status-warning)]/80 mt-1">
@@ -301,8 +378,8 @@ export const UsageProviderDetail: React.FC<UsageProviderDetailProps> = ({ provid
         </div>
       )}
 
-      {(providerId === 'ollama-cloud' || providerId === 'cursor') && (
-        <QuotaCredentials providerId={providerId} providerName={providerName} />
+      {(quotaProviderId === 'ollama-cloud' || quotaProviderId === 'cursor') && (
+        <QuotaCredentials providerId={quotaProviderId} providerName={providerName} />
       )}
 
       {usage?.windows && Object.keys(usage.windows).length > 0 && (

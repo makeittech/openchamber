@@ -9,12 +9,19 @@ let configCalls = 0;
 let runtimeKey = 'test-runtime';
 const promptAsyncCalls: unknown[][] = [];
 const promptAsyncResults: Array<unknown> = [];
+const sessionMessagesCalls: unknown[][] = [];
+const sessionMessagesResults: Array<unknown> = [];
 
 const promptAsyncMock = mock(async (...args: unknown[]) => {
   promptAsyncCalls.push(args);
   const next = promptAsyncResults.shift();
   if (next instanceof Error) throw next;
   return next ?? { response: new Response(null, { status: 200 }) };
+});
+
+const sessionMessagesMock = mock(async (...args: unknown[]) => {
+  sessionMessagesCalls.push(args);
+  return sessionMessagesResults.shift() ?? { data: [], response: new Response() };
 });
 
 mock.module('@opencode-ai/sdk/v2', () => ({
@@ -29,6 +36,7 @@ mock.module('@opencode-ai/sdk/v2', () => ({
     },
     session: {
       promptAsync: promptAsyncMock,
+      messages: sessionMessagesMock,
     },
   })),
 }));
@@ -64,6 +72,35 @@ beforeEach(() => {
   runtimeKey = 'test-runtime';
   promptAsyncCalls.length = 0;
   promptAsyncResults.length = 0;
+  sessionMessagesCalls.length = 0;
+  sessionMessagesResults.length = 0;
+});
+
+describe('opencodeClient session message pages', () => {
+  test('preserves directory and cursor and returns the next-page header', async () => {
+    const message = { info: { id: 'msg_1' }, parts: [] };
+    sessionMessagesResults.push({
+      data: [message],
+      response: new Response(null, { headers: { 'x-next-cursor': 'msg_0' } }),
+    });
+
+    const page = await opencodeClient.getSessionMessagesPage('ses_1', {
+      directory: '/repo',
+      limit: 100,
+      before: 'msg_2',
+    });
+
+    expect(sessionMessagesCalls).toEqual([[
+      {
+        sessionID: 'ses_1',
+        directory: '/repo',
+        limit: 100,
+        before: 'msg_2',
+      },
+    ]]);
+    expect(page.messages).toEqual([message]);
+    expect(page.cursor).toBe('msg_0');
+  });
 });
 
 describe('opencodeClient getConfig cache', () => {

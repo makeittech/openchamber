@@ -13,6 +13,7 @@ interface UsageDonutChartProps {
   centerValue: string;
   emptyLabel: string;
   ariaLabel: string;
+  formatValue: (value: number) => string;
 }
 
 const polar = (cx: number, cy: number, radius: number, angle: number) => {
@@ -36,7 +37,9 @@ export const UsageDonutChart: React.FC<UsageDonutChartProps> = ({
   centerValue,
   emptyLabel,
   ariaLabel,
+  formatValue,
 }) => {
+  const [activeId, setActiveId] = React.useState<string | null>(null);
   const total = slices.reduce((sum, slice) => sum + Math.max(0, slice.value), 0);
   const size = 180;
   const cx = size / 2;
@@ -50,13 +53,17 @@ export const UsageDonutChart: React.FC<UsageDonutChartProps> = ({
     .map((slice) => {
       const portion = total <= 0 ? 0 : (slice.value / total) * 360;
       const start = angle;
-      const end = angle + Math.max(portion, portion > 0 ? 0.5 : 0);
-      angle = end;
+      const rawEnd = angle + portion;
+      // SVG arcs with identical 0°/360° endpoints collapse instead of drawing a full circle.
+      const end = rawEnd >= 360 ? 359.999 : rawEnd;
+      angle = rawEnd;
       return { ...slice, start, end };
     });
+  const activeArc = arcs.find((arc) => arc.id === activeId) ?? null;
+  const activeShare = activeArc && total > 0 ? Math.round((activeArc.value / total) * 100) : null;
 
   return (
-    <div className="flex flex-col items-center gap-4" role="img" aria-label={ariaLabel}>
+    <div className="flex flex-col items-center gap-4" role="group" aria-label={ariaLabel}>
       {total <= 0 ? (
         <div className="flex h-[180px] w-[180px] items-center justify-center rounded-full border border-dashed border-[var(--interactive-border)] typography-meta text-muted-foreground">
           {emptyLabel}
@@ -80,12 +87,29 @@ export const UsageDonutChart: React.FC<UsageDonutChartProps> = ({
                 stroke={arc.color}
                 strokeWidth={stroke}
                 strokeLinecap="butt"
-              />
+                opacity={activeArc && activeArc.id !== arc.id ? 0.35 : 1}
+                className="transition-opacity"
+                role="img"
+                aria-label={`${arc.label}: ${formatValue(arc.value)}`}
+                tabIndex={0}
+                onPointerEnter={() => setActiveId(arc.id)}
+                onPointerLeave={() => setActiveId(null)}
+                onFocus={() => setActiveId(arc.id)}
+                onBlur={() => setActiveId(null)}
+              >
+                <title>{`${arc.label}: ${formatValue(arc.value)}`}</title>
+              </path>
             ))}
           </svg>
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center">
-            <span className="typography-micro text-muted-foreground">{centerLabel}</span>
-            <span className="typography-ui-header font-medium text-foreground tabular-nums">{centerValue}</span>
+            <span className="max-w-24 truncate typography-micro text-muted-foreground">
+              {activeArc?.label ?? centerLabel}
+            </span>
+            <span className="typography-ui-header font-medium text-foreground tabular-nums">
+              {activeArc && activeShare !== null
+                ? `${formatValue(activeArc.value)} (${activeShare}%)`
+                : centerValue}
+            </span>
           </div>
         </div>
       )}

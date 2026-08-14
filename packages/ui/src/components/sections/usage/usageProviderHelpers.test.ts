@@ -1,10 +1,39 @@
 import { describe, expect, test } from 'bun:test';
 import type { ProviderResult } from '@/types';
 import {
+  buildUsageProviderCatalog,
   getProviderRemainingDisplay,
+  getProviderUsedPercent,
   isIncludedUsageProvider,
-  isVisibleUsageProvider,
 } from './usageProviderHelpers';
+
+describe('buildUsageProviderCatalog', () => {
+  test('includes plugin providers and merges known aliases', () => {
+    expect(buildUsageProviderCatalog({
+      configProviders: [
+        { id: 'codecommander', name: 'Configured CodeCommander' },
+        { id: 'anthropic', name: 'Anthropic' },
+        { id: 'openrouter', name: 'OpenRouter API' },
+      ],
+      quotaResults: [],
+      usageProviderNames: new Map([['codecommander', 'Historical CodeCommander'], ['claude', 'Claude']]),
+    })).toEqual([
+      { id: 'codecommander', name: 'Configured CodeCommander', quotaProviderId: null, connected: true },
+      { id: 'claude', name: 'Claude', quotaProviderId: 'claude', connected: true },
+      { id: 'openrouter', name: 'OpenRouter', quotaProviderId: 'openrouter', connected: true },
+    ]);
+  });
+
+  test('retains historical providers that are no longer connected', () => {
+    expect(buildUsageProviderCatalog({
+      configProviders: [],
+      quotaResults: [],
+      usageProviderNames: new Map([['former-plugin', 'former-plugin']]),
+    })).toEqual([
+      { id: 'former-plugin', name: 'former-plugin', quotaProviderId: null, connected: false },
+    ]);
+  });
+});
 
 describe('isIncludedUsageProvider', () => {
   test('includes quota-configured providers', () => {
@@ -22,43 +51,6 @@ describe('isIncludedUsageProvider', () => {
     expect(isIncludedUsageProvider('claude', {
       configured: false,
       connectedQuotaProviderIds: new Set(['google']),
-    })).toBe(false);
-  });
-});
-
-describe('isVisibleUsageProvider', () => {
-  test('shows configured providers by default', () => {
-    expect(isVisibleUsageProvider('claude', {
-      configured: true,
-      hiddenProviderIds: [],
-    })).toBe(true);
-  });
-
-  test('shows connected providers even when quota is not configured', () => {
-    expect(isVisibleUsageProvider('github-copilot', {
-      configured: false,
-      connectedQuotaProviderIds: ['github-copilot'],
-      hiddenProviderIds: [],
-    })).toBe(true);
-  });
-
-  test('hides included providers on the denylist', () => {
-    expect(isVisibleUsageProvider('claude', {
-      configured: true,
-      hiddenProviderIds: ['claude'],
-    })).toBe(false);
-    expect(isVisibleUsageProvider('google', {
-      configured: false,
-      connectedQuotaProviderIds: new Set(['google']),
-      hiddenProviderIds: new Set(['google']),
-    })).toBe(false);
-  });
-
-  test('never shows providers that are neither configured nor connected', () => {
-    expect(isVisibleUsageProvider('claude', {
-      configured: false,
-      connectedQuotaProviderIds: [],
-      hiddenProviderIds: [],
     })).toBe(false);
   });
 });
@@ -96,6 +88,23 @@ describe('getProviderRemainingDisplay', () => {
         valueLabel: '$12.35',
       },
     }))).toEqual({ kind: 'amount', label: '$12.35' });
+  });
+
+  test('uses authoritative remaining percent when used percent is unavailable', () => {
+    const remainingOnly = usage({
+      credits: {
+        usedPercent: null,
+        remainingPercent: 42,
+        windowSeconds: null,
+        resetAfterSeconds: null,
+        resetAt: null,
+        resetAtFormatted: null,
+        resetAfterFormatted: null,
+        valueLabel: null,
+      },
+    });
+    expect(getProviderRemainingDisplay(remainingOnly)).toEqual({ kind: 'percent', percent: 42 });
+    expect(getProviderUsedPercent(remainingOnly)).toBe(58);
   });
 
   test('prefers credits_balance window for cost remaining', () => {

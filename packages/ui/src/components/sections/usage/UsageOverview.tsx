@@ -1,35 +1,40 @@
 import React from 'react';
-import type { Session } from '@opencode-ai/sdk/v2/client';
 import { Icon } from '@/components/icon/Icon';
 import { Button } from '@/components/ui/button';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
-import { SettingsChipGroup, SettingsSection } from '@/components/sections/shared/SettingsSection';
+import {
+  SETTINGS_ICON_BUTTON_CLASS,
+  SettingsChipGroup,
+  SettingsSection,
+} from '@/components/sections/shared/SettingsSection';
 import { useI18n } from '@/lib/i18n';
 import {
   averageCostPer1kTokens,
   buildPeriodUsageSummary,
-  collectConnectedQuotaProviderIds,
   colorForProviderIndex,
+  dayKeyFromMs,
   formatCompactNumber,
   formatPercentDelta,
   formatSignedCompact,
   formatSignedUsd,
   formatUsd,
   percentChange,
-  QUOTA_PROVIDERS,
+  resolveUsagePeriod,
   type UsageMetricMode,
-  type UsagePeriodDays,
+  type UsagePeriodSelection,
 } from '@/lib/quota';
-import { getAllSyncSessions } from '@/sync/sync-refs';
+import { useUsageHistory, useUsageSessions } from '@/lib/quota/useUsageHistory';
 import { useQuotaAutoRefresh, useQuotaStore } from '@/stores/useQuotaStore';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { cn } from '@/lib/utils';
-import type { ProviderResult, QuotaProviderId } from '@/types';
+import type { DailyUsagePoint } from '@/lib/quota/usagePeriodStats';
 import { UsageAreaChart } from './UsageAreaChart';
 import { UsageDonutChart } from './UsageDonutChart';
-import { isVisibleUsageProvider } from './usageProviderHelpers';
+import { UsagePeriodSelector } from './UsagePeriodSelector';
+import { buildUsageProviderCatalog, getProviderRemainingDisplay } from './usageProviderHelpers';
 
-const PERIOD_OPTIONS: UsagePeriodDays[] = [7, 30];
+const OTHER_SERIES_ID = '__other__';
+const MAX_PROVIDER_SERIES = 5;
 
 const DeltaBadge: React.FC<{
   delta: number | null;
@@ -39,27 +44,26 @@ const DeltaBadge: React.FC<{
   if (delta === null) {
     return <span className="typography-micro text-muted-foreground">{label}</span>;
   }
-  const improved = invert ? delta < 0 : delta > 0;
-  const worsened = invert ? delta > 0 : delta < 0;
   // For spend/tokens/requests, increases are "worse" (red); cost-per-token decreases are better (green).
   const toneClass = invert
-    ? (improved ? 'text-[var(--status-success)]' : worsened ? 'text-[var(--status-error)]' : 'text-muted-foreground')
+    ? (delta < 0 ? 'text-[var(--status-success)]' : delta > 0 ? 'text-[var(--status-error)]' : 'text-muted-foreground')
     : (delta > 0 ? 'text-[var(--status-error)]' : delta < 0 ? 'text-[var(--status-success)]' : 'text-muted-foreground');
   return <span className={cn('typography-micro tabular-nums', toneClass)}>{label}</span>;
 };
 
 export const UsageOverview: React.FC = () => {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const results = useQuotaStore((state) => state.results);
   const hiddenProviderIds = useQuotaStore((state) => state.hiddenProviderIds);
   const fetchAllQuotas = useQuotaStore((state) => state.fetchAllQuotas);
   const isLoading = useQuotaStore((state) => state.isLoading);
   const loadSettings = useQuotaStore((state) => state.loadSettings);
+  const setSelectedProvider = useQuotaStore((state) => state.setSelectedProvider);
   const configProviders = useConfigStore((state) => state.providers);
 
-  const [periodDays, setPeriodDays] = React.useState<UsagePeriodDays>(7);
+  const [period, setPeriod] = React.useState<UsagePeriodSelection>({ kind: 'days', days: 7 });
   const [metric, setMetric] = React.useState<UsageMetricMode>('cost');
-  const [sessionTick, setSessionTick] = React.useState(0);
+  const [tick, setTick] = React.useState(0);
 
   useQuotaAutoRefresh();
 
@@ -69,66 +73,103 @@ export const UsageOverview: React.FC = () => {
   }, [loadSettings, fetchAllQuotas]);
 
   React.useEffect(() => {
-    const timer = window.setInterval(() => setSessionTick((value) => value + 1), 30_000);
+    const timer = window.setInterval(() => setTick((value) => value + 1), 30_000);
     return () => window.clearInterval(timer);
   }, []);
 
-  const hiddenSet = React.useMemo(() => new Set(hiddenProviderIds), [hiddenProviderIds]);
-  const connectedQuotaIds = React.useMemo(
-    () => collectConnectedQuotaProviderIds(configProviders.map((provider) => provider.id)),
-    [configProviders],
+  const {
+    sessions,
+    status: sessionSourceStatus,
+    minimumDayKey,
+    refresh: refreshSessions,
+  } = useUsageSessions(tick);
+  const analysisNowMs = React.useMemo(() => {
+    void tick;
+    return Date.now();
+  }, [tick]);
+  const resolvedPeriod = React.useMemo(
+    () => resolveUsagePeriod(period, analysisNowMs, minimumDayKey),
+    [analysisNowMs, minimumDayKey, period],
+  );
+  const historyMinDayKey = React.useMemo(() => {
+    const previousStart = new Date(resolvedPeriod.startMs);
+    previousStart.setDate(previousStart.getDate() - resolvedPeriod.days);
+    return dayKeyFromMs(previousStart.getTime());
+  }, [resolvedPeriod]);
+  const history = useUsageHistory(sessions, {
+    minDayKey: historyMinDayKey,
+    refreshKey: tick,
+    sourceStatus: sessionSourceStatus,
+  });
+  const hiddenSet = React.useMemo(() => new Set<string>(hiddenProviderIds), [hiddenProviderIds]);
+  const visibleHistoryRecords = React.useMemo(
+    () => history.records.filter((record) => !hiddenSet.has(record.providerId)),
+    [hiddenSet, history.records],
   );
 
-  const activeResults = React.useMemo(() => {
-    return QUOTA_PROVIDERS.flatMap((meta): ProviderResult[] => {
-      const result = results.find((entry) => entry.providerId === meta.id);
-      if (!isVisibleUsageProvider(meta.id, {
-        configured: result?.configured,
-        connectedQuotaProviderIds: connectedQuotaIds,
-        hiddenProviderIds: hiddenSet,
-      })) {
-        return [];
-      }
-      return [result ?? {
-        providerId: meta.id,
-        providerName: meta.name,
-        ok: true,
-        configured: false,
-        usage: null,
-        fetchedAt: 0,
-      }];
-    });
-  }, [connectedQuotaIds, hiddenSet, results]);
+  const periodSummary = React.useMemo(
+    () => buildPeriodUsageSummary(visibleHistoryRecords, {
+      period,
+      nowMs: analysisNowMs,
+      minimumDayKey,
+    }),
+    [analysisNowMs, minimumDayKey, period, visibleHistoryRecords],
+  );
 
-  const periodSummary = React.useMemo(() => {
-    void sessionTick;
-    const sessions = getAllSyncSessions() as Session[];
-    return buildPeriodUsageSummary(sessions, { periodDays });
-  }, [periodDays, sessionTick]);
+  const catalog = React.useMemo(() => buildUsageProviderCatalog({
+    configProviders,
+    quotaResults: results,
+    usageProviderNames: history.providerNames,
+  }), [configProviders, results, history.providerNames]);
+
+  const catalogById = React.useMemo(() => new Map(catalog.map((entry) => [entry.id, entry])), [catalog]);
 
   const providerColorById = React.useMemo(() => {
-    const map = new Map<QuotaProviderId, string>();
-    activeResults.forEach((result, index) => {
-      map.set(result.providerId, colorForProviderIndex(index));
-    });
+    const map = new Map<string, string>();
     periodSummary.byProvider.forEach((entry, index) => {
-      if (!map.has(entry.providerId)) {
-        map.set(entry.providerId, colorForProviderIndex(activeResults.length + index));
-      }
+      map.set(entry.providerId, colorForProviderIndex(index));
     });
     return map;
-  }, [activeResults, periodSummary.byProvider]);
+  }, [periodSummary.byProvider]);
 
-  const chartSeries = React.useMemo(() => {
-    const ids = periodSummary.byProvider.map((entry) => entry.providerId);
-    const fallbackIds = activeResults.map((result) => result.providerId);
-    const ordered = (ids.length > 0 ? ids : fallbackIds).slice(0, 5);
-    return ordered.map((id) => ({
+  const chartData = React.useMemo(() => {
+    const topIds = [...periodSummary.byProvider]
+      .sort((left, right) => right[metric] - left[metric])
+      .slice(0, MAX_PROVIDER_SERIES)
+      .map((entry) => entry.providerId);
+    const topSet = new Set(topIds);
+    const days: DailyUsagePoint[] = periodSummary.days.map((day) => {
+      let otherCost = 0;
+      let otherTokens = 0;
+      let otherRequests = 0;
+      for (const [providerId, bucket] of Object.entries(day.byProvider)) {
+        if (topSet.has(providerId)) continue;
+        otherCost += bucket.cost;
+        otherTokens += bucket.tokens;
+        otherRequests += bucket.requests;
+      }
+      const byProvider = topIds.length === 0 || (otherCost === 0 && otherTokens === 0 && otherRequests === 0)
+        ? day.byProvider
+        : {
+            ...day.byProvider,
+            [OTHER_SERIES_ID]: { cost: otherCost, tokens: otherTokens, requests: otherRequests },
+          };
+      return { ...day, byProvider };
+    });
+    const hasOther = days.some((day) => {
+      const bucket = day.byProvider[OTHER_SERIES_ID];
+      return bucket !== undefined && (bucket.cost > 0 || bucket.tokens > 0 || bucket.requests > 0);
+    });
+    const ids = hasOther ? [...topIds, OTHER_SERIES_ID] : topIds;
+    const series = ids.map((id, index) => ({
       id,
-      label: QUOTA_PROVIDERS.find((provider) => provider.id === id)?.name ?? id,
-      color: providerColorById.get(id) ?? colorForProviderIndex(0),
+      label: id === OTHER_SERIES_ID ? t('settings.usage.overview.providers.other') : catalogById.get(id)?.name ?? id,
+      color: id === OTHER_SERIES_ID
+        ? 'var(--muted-foreground)'
+        : colorForProviderIndex(index),
     }));
-  }, [activeResults, periodSummary.byProvider, providerColorById]);
+    return { days, series };
+  }, [catalogById, metric, periodSummary.byProvider, periodSummary.days, t]);
 
   const spendDelta = periodSummary.totals.cost - periodSummary.previousTotals.cost;
   const spendDeltaPct = percentChange(periodSummary.totals.cost, periodSummary.previousTotals.cost);
@@ -140,22 +181,56 @@ export const UsageOverview: React.FC = () => {
   const prevAvgCost = averageCostPer1kTokens(periodSummary.previousTotals.cost, periodSummary.previousTotals.tokens);
   const avgCostDelta = avgCost !== null && prevAvgCost !== null ? avgCost - prevAvgCost : null;
   const avgCostDeltaPct = avgCost !== null && prevAvgCost !== null ? percentChange(avgCost, prevAvgCost) : null;
+  const previousPeriodLabel = t('settings.usage.overview.metric.vsPrevious');
+
+  const dayFormatter = React.useMemo(
+    () => new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric' }),
+    [locale],
+  );
+  const preciseNumberFormatter = React.useMemo(() => new Intl.NumberFormat(locale), [locale]);
+  const formatDay = React.useCallback((ms: number) => dayFormatter.format(new Date(ms)), [dayFormatter]);
 
   const rangeLabel = React.useMemo(() => {
-    const start = new Date(periodSummary.rangeStartMs);
-    const end = new Date(periodSummary.rangeEndMs);
-    const format = (date: Date) => date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    return `${format(start)} – ${format(end)}`;
-  }, [periodSummary.rangeEndMs, periodSummary.rangeStartMs]);
+    const withYear = new Date(periodSummary.rangeStartMs).getFullYear() !== new Date(periodSummary.rangeEndMs).getFullYear();
+    const format = withYear
+      ? new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', year: 'numeric' })
+      : dayFormatter;
+    return `${format.format(new Date(periodSummary.rangeStartMs))} – ${format.format(new Date(periodSummary.rangeEndMs))}`;
+  }, [dayFormatter, locale, periodSummary.rangeEndMs, periodSummary.rangeStartMs]);
+
+  const formatMetricValue = React.useCallback((value: number) => (
+    metric === 'cost' ? formatUsd(value, 4) : preciseNumberFormatter.format(value)
+  ), [metric, preciseNumberFormatter]);
 
   const donutSlices = periodSummary.byProvider
     .filter((entry) => entry.cost > 0)
     .map((entry) => ({
       id: entry.providerId,
-      label: QUOTA_PROVIDERS.find((provider) => provider.id === entry.providerId)?.name ?? entry.providerId,
+      label: catalogById.get(entry.providerId)?.name ?? entry.providerId,
       value: entry.cost,
       color: providerColorById.get(entry.providerId) ?? colorForProviderIndex(0),
     }));
+
+  const tableRows = React.useMemo(() => {
+    const totalsById = new Map(periodSummary.byProvider.map((entry) => [entry.providerId, entry]));
+    const ids = new Set<string>([...catalog.map((entry) => entry.id), ...totalsById.keys()]);
+    return Array.from(ids)
+      .filter((id) => !hiddenSet.has(id))
+      .map((id) => {
+        const meta = catalogById.get(id);
+        const totals = totalsById.get(id) ?? { cost: 0, tokens: 0, requests: 0 };
+        const quotaResult = meta?.quotaProviderId
+          ? results.find((entry) => entry.providerId === meta.quotaProviderId) ?? null
+          : null;
+        return {
+          id,
+          name: meta?.name ?? id,
+          totals,
+          remaining: getProviderRemainingDisplay(quotaResult?.usage),
+        };
+      })
+      .sort((left, right) => right.totals.cost - left.totals.cost || right.totals.tokens - left.totals.tokens);
+  }, [catalog, catalogById, hiddenSet, periodSummary.byProvider, results]);
 
   return (
     <SettingsPageLayout
@@ -164,23 +239,21 @@ export const UsageOverview: React.FC = () => {
       description={t('settings.usage.overview.description')}
       headerEnd={(
         <div className="flex flex-wrap items-center gap-2">
-          <SettingsChipGroup
-            aria-label={t('settings.usage.overview.period.aria')}
-            value={String(periodDays)}
-            onChange={(value) => setPeriodDays(Number(value) as UsagePeriodDays)}
-            options={PERIOD_OPTIONS.map((days) => ({
-              value: String(days),
-              label: t(days === 7 ? 'settings.usage.overview.period.7d' : 'settings.usage.overview.period.30d'),
-            }))}
+          <UsagePeriodSelector
+            period={period}
+            onChange={setPeriod}
+            minDayKey={minimumDayKey}
+            maxDayKey={dayKeyFromMs(analysisNowMs)}
           />
           <span className="typography-meta text-muted-foreground tabular-nums">{rangeLabel}</span>
           <Button
             size="sm"
             variant="ghost"
-            className="h-8 w-8 px-0"
+            className={SETTINGS_ICON_BUTTON_CLASS}
             onClick={() => {
               void fetchAllQuotas();
-              setSessionTick((value) => value + 1);
+              void refreshSessions();
+              setTick((value) => value + 1);
             }}
             aria-label={t('settings.usage.sidebar.actions.refreshAria')}
             title={t('settings.usage.sidebar.actions.refreshTitle')}
@@ -192,6 +265,13 @@ export const UsageOverview: React.FC = () => {
       )}
       showSaveStatus
     >
+      {(history.status === 'partial' || history.status === 'error') && (
+        <div className="mb-4 rounded-lg border border-[var(--status-warning-border)] bg-[var(--status-warning-background)] px-4 py-3">
+          <p className="typography-meta text-[var(--status-warning)]">
+            {t(history.status === 'error' ? 'settings.usage.overview.history.error' : 'settings.usage.overview.history.partial')}
+          </p>
+        </div>
+      )}
       <SettingsSection divider={false} settingsItem="usage.overview">
         <div className="grid gap-3 @xl:grid-cols-2 @3xl:grid-cols-4">
           {[
@@ -200,7 +280,7 @@ export const UsageOverview: React.FC = () => {
               icon: 'donut-chart' as const,
               label: t('settings.usage.overview.metric.totalSpend'),
               value: formatUsd(periodSummary.totals.cost),
-              deltaLabel: `${formatSignedUsd(spendDelta)} (${formatPercentDelta(spendDeltaPct)})`,
+              deltaLabel: `${formatSignedUsd(spendDelta)} (${formatPercentDelta(spendDeltaPct)}) ${previousPeriodLabel}`,
               delta: spendDeltaPct,
               invert: false,
             },
@@ -209,7 +289,7 @@ export const UsageOverview: React.FC = () => {
               icon: 'stack' as const,
               label: t('settings.usage.overview.metric.totalTokens'),
               value: formatCompactNumber(periodSummary.totals.tokens),
-              deltaLabel: `${formatSignedCompact(tokenDelta)} (${formatPercentDelta(tokenDeltaPct)})`,
+              deltaLabel: `${formatSignedCompact(tokenDelta)} (${formatPercentDelta(tokenDeltaPct)}) ${previousPeriodLabel}`,
               delta: tokenDeltaPct,
               invert: false,
             },
@@ -218,7 +298,7 @@ export const UsageOverview: React.FC = () => {
               icon: 'chat-3' as const,
               label: t('settings.usage.overview.metric.requests'),
               value: formatCompactNumber(periodSummary.totals.requests),
-              deltaLabel: `${formatSignedCompact(requestDelta)} (${formatPercentDelta(requestDeltaPct)})`,
+              deltaLabel: `${formatSignedCompact(requestDelta)} (${formatPercentDelta(requestDeltaPct)}) ${previousPeriodLabel}`,
               delta: requestDeltaPct,
               invert: false,
             },
@@ -229,7 +309,7 @@ export const UsageOverview: React.FC = () => {
               value: avgCost === null ? '—' : formatUsd(avgCost),
               deltaLabel: avgCostDelta === null
                 ? '—'
-                : `${formatSignedUsd(avgCostDelta)} (${formatPercentDelta(avgCostDeltaPct)})`,
+                : `${formatSignedUsd(avgCostDelta)} (${formatPercentDelta(avgCostDeltaPct)}) ${previousPeriodLabel}`,
               delta: avgCostDeltaPct,
               invert: true,
             },
@@ -269,16 +349,24 @@ export const UsageOverview: React.FC = () => {
                 ]}
               />
             </div>
-            <UsageAreaChart
-              days={periodSummary.days}
-              metric={metric}
-              series={chartSeries}
-              ariaLabel={t('settings.usage.overview.chart.usageOverTime')}
-              emptyLabel={t('settings.usage.overview.chart.empty')}
-            />
-            {chartSeries.length > 0 && (
+            {history.status === 'loading' && history.records.length === 0 ? (
+              <div className="flex h-[180px] items-center justify-center typography-meta text-muted-foreground">
+                {t('settings.usage.overview.history.loading')}
+              </div>
+            ) : (
+              <UsageAreaChart
+                days={chartData.days}
+                metric={metric}
+                series={chartData.series}
+                ariaLabel={t('settings.usage.overview.chart.usageOverTime')}
+                emptyLabel={t('settings.usage.overview.chart.empty')}
+                formatValue={formatMetricValue}
+                formatDay={formatDay}
+              />
+            )}
+            {chartData.series.length > 0 && (
               <div className="mt-3 flex flex-wrap gap-3">
-                {chartSeries.map((entry) => (
+                {chartData.series.map((entry) => (
                   <div key={entry.id} className="flex items-center gap-1.5 typography-micro text-muted-foreground">
                     <span className="h-2 w-2 rounded-full" style={{ backgroundColor: entry.color }} />
                     <span>{entry.label}</span>
@@ -298,6 +386,7 @@ export const UsageOverview: React.FC = () => {
               centerValue={formatUsd(periodSummary.totals.cost)}
               emptyLabel={t('settings.usage.overview.chart.empty')}
               ariaLabel={t('settings.usage.overview.chart.topProviders')}
+              formatValue={(value) => formatUsd(value, 4)}
             />
             <div className="mt-4 space-y-2">
               {donutSlices.map((slice) => {
@@ -319,6 +408,59 @@ export const UsageOverview: React.FC = () => {
             </div>
           </div>
         </div>
+      </SettingsSection>
+
+      <SettingsSection title={t('settings.usage.overview.providers.title')}>
+        {tableRows.length === 0 ? (
+          <p className="typography-meta text-muted-foreground">{t('settings.usage.overview.empty.description')}</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[32rem] typography-meta">
+              <thead>
+                <tr className="border-b border-[var(--surface-subtle)] text-left text-muted-foreground">
+                  <th className="py-2 pr-3 font-medium">{t('settings.usage.overview.providers.col.provider')}</th>
+                  <th className="py-2 pr-3 text-right font-medium">{t('settings.usage.overview.providers.col.spend')}</th>
+                  <th className="py-2 pr-3 text-right font-medium">{t('settings.usage.overview.providers.col.tokens')}</th>
+                  <th className="py-2 pr-3 text-right font-medium">{t('settings.usage.overview.providers.col.requests')}</th>
+                  <th className="py-2 text-right font-medium">{t('settings.usage.overview.providers.col.remaining')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tableRows.map((row) => {
+                  const hasUsage = row.totals.cost > 0 || row.totals.tokens > 0 || row.totals.requests > 0;
+                  return (
+                    <tr
+                      key={row.id}
+                      className="border-b border-[var(--surface-subtle)] last:border-0"
+                    >
+                      <td className="py-2 pr-3">
+                        <button
+                          type="button"
+                          className="flex max-w-full items-center gap-2 text-left text-foreground hover:underline"
+                          aria-label={t('settings.usage.overview.providers.openDetailAria', { provider: row.name })}
+                          onClick={() => setSelectedProvider(row.id)}
+                        >
+                          <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: providerColorById.get(row.id) ?? 'var(--surface-subtle)' }} />
+                          <span className="truncate">{row.name}</span>
+                        </button>
+                      </td>
+                      <td className="py-2 pr-3 text-right tabular-nums text-foreground">{hasUsage ? formatUsd(row.totals.cost) : t('settings.usage.overview.providers.noUsage')}</td>
+                      <td className="py-2 pr-3 text-right tabular-nums text-muted-foreground">{hasUsage ? formatCompactNumber(row.totals.tokens) : '—'}</td>
+                      <td className="py-2 pr-3 text-right tabular-nums text-muted-foreground">{hasUsage ? formatCompactNumber(row.totals.requests) : '—'}</td>
+                      <td className="py-2 text-right tabular-nums text-muted-foreground">
+                        {row.remaining?.kind === 'percent'
+                          ? t('settings.usage.overview.providers.remainingPct', { percent: row.remaining.percent })
+                          : row.remaining?.kind === 'amount'
+                            ? row.remaining.label
+                            : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </SettingsSection>
     </SettingsPageLayout>
   );

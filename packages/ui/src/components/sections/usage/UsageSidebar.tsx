@@ -15,10 +15,10 @@ import { useConfigStore } from '@/stores/useConfigStore';
 import { useI18n } from '@/lib/i18n';
 import { SETTINGS_PANEL_TITLE_CLASS } from '@/components/sections/shared/SettingsSection';
 import {
+  buildUsageProviderCatalog,
   getProviderRemainingDisplay,
   getProviderUsedPercent,
   isIncludedUsageProvider,
-  isVisibleUsageProvider,
 } from './usageProviderHelpers';
 
 interface UsageSidebarProps {
@@ -41,24 +41,15 @@ export const UsageSidebar: React.FC<UsageSidebarProps> = ({ onItemSelect }) => {
     void loadUsageSettings();
   }, [loadUsageSettings]);
 
-  const hiddenSet = React.useMemo(() => new Set(hiddenProviderIds), [hiddenProviderIds]);
-  const connectedQuotaIds = React.useMemo(
-    () => collectConnectedQuotaProviderIds(configProviders.map((provider) => provider.id)),
-    [configProviders],
-  );
+  const hiddenSet = React.useMemo(() => new Set<string>(hiddenProviderIds), [hiddenProviderIds]);
 
   const visibleProviders = React.useMemo(() => {
-    return QUOTA_PROVIDERS.filter((provider) => {
-      const result = results.find((entry) => entry.providerId === provider.id);
-      return isVisibleUsageProvider(provider.id, {
-        configured: result?.configured,
-        connectedQuotaProviderIds: connectedQuotaIds,
-        hiddenProviderIds: hiddenSet,
-      });
-    });
-  }, [connectedQuotaIds, hiddenSet, results]);
+    return buildUsageProviderCatalog({ configProviders, quotaResults: results })
+      .filter((provider) => provider.connected && !hiddenSet.has(provider.id));
+  }, [configProviders, hiddenSet, results]);
 
   const availableCount = React.useMemo(() => {
+    const connectedQuotaIds = collectConnectedQuotaProviderIds(configProviders.map((provider) => provider.id));
     return QUOTA_PROVIDERS.filter((provider) => {
       const result = results.find((entry) => entry.providerId === provider.id);
       const included = isIncludedUsageProvider(provider.id, {
@@ -68,7 +59,7 @@ export const UsageSidebar: React.FC<UsageSidebarProps> = ({ onItemSelect }) => {
       if (!included) return true;
       return hiddenSet.has(provider.id);
     }).length;
-  }, [connectedQuotaIds, hiddenSet, results]);
+  }, [configProviders, hiddenSet, results]);
 
   const isOverviewSelected = selectedProviderId === null;
   const isAddSelected = selectedProviderId === USAGE_ADD_PROVIDER_ID;
@@ -126,11 +117,13 @@ export const UsageSidebar: React.FC<UsageSidebarProps> = ({ onItemSelect }) => {
           const tone = resolveUsageTone(usedPercent);
           const isSelected = provider.id === selectedProviderId;
 
-          const statusStyle = tone === 'critical'
-            ? { backgroundColor: 'var(--status-error)' }
-            : tone === 'warn'
-              ? { backgroundColor: 'var(--status-warning)' }
-              : { backgroundColor: 'var(--status-success)' };
+          const statusStyle = usedPercent === null
+            ? { backgroundColor: 'var(--muted-foreground)' }
+            : tone === 'critical'
+              ? { backgroundColor: 'var(--status-error)' }
+              : tone === 'warn'
+                ? { backgroundColor: 'var(--status-warning)' }
+                : { backgroundColor: 'var(--status-success)' };
 
           return (
             <div
@@ -167,16 +160,18 @@ export const UsageSidebar: React.FC<UsageSidebarProps> = ({ onItemSelect }) => {
                   </span>
                 )}
               </button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 w-7 px-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-                aria-label={t('settings.usage.sidebar.removeProviderAria', { provider: provider.name })}
-                title={t('settings.usage.sidebar.removeProviderTitle')}
-                onClick={() => hideUsageProvider(provider.id)}
-              >
-                <Icon name="close" className="h-3.5 w-3.5" />
-              </Button>
+              {provider.quotaProviderId && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 w-7 px-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                  aria-label={t('settings.usage.sidebar.removeProviderAria', { provider: provider.name })}
+                  title={t('settings.usage.sidebar.removeProviderTitle')}
+                  onClick={() => hideUsageProvider(provider.quotaProviderId!)}
+                >
+                  <Icon name="close" className="h-3.5 w-3.5" />
+                </Button>
+              )}
             </div>
           );
         })}

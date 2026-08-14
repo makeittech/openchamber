@@ -116,6 +116,7 @@ Use `useGlobalSessionsStore` when the UI needs a **shared global session cache**
 Current consumers:
 
 - `useSessionAutoCleanup.ts`
+- `lib/quota/useUsageHistory.ts` for complete persisted usage coverage; initialized directory stores override matching global session snapshots with fresher timestamps
 
 ### Live cross-directory session/status view
 
@@ -184,6 +185,8 @@ Rules:
 8. The ref-stable loader is disposed only after the current task when its provider unmounts. This lets React Strict Mode's development setup → cleanup → setup probe retain a usable loader for child effects, while real disposal still invalidates the preceding lifecycle's work.
 
 Initial loads use smaller pages on constrained VS Code/mobile surfaces. Prefetch resolves only the initial renderable page; it does not eagerly download older history. The mounted chat timeline requests older pages when its viewport is underfilled or the user scrolls toward history, while mobile uses its explicit load-older action. Timeline caches, pending work, prepend snapshots, and stale checks use runtime + directory + session identity so equal session IDs in different worktrees cannot share lifecycle state. Older pages are fetched through the same loader and merged with optimistic records before publication.
+
+Usage analytics is the one bulk-read exception to child-store message materialization. `lib/quota/useUsageHistory.ts` walks the official cursor-paginated `session.messages` endpoint through the directory-aware OpenCode client and shared background-network gate, then retains only compact per-session daily provider totals. Materializing every active and archived session into child stores would violate their UI lifecycle and memory ownership. The analytics cache is runtime-scoped, serializes reconciliation so stale loads cannot resurrect removed sessions, and preserves prior complete rows when one session fetch fails.
 
 ## Loading diagnostics
 

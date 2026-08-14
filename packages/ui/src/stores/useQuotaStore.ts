@@ -24,7 +24,7 @@ interface QuotaSettingsState {
 
 interface QuotaStore extends QuotaSettingsState {
   results: ProviderResult[];
-  /** null = Usage Overview; `__add_provider__` = add flow; otherwise a quota provider detail. */
+  /** null = Usage Overview; `__add_provider__` = add flow; otherwise a provider detail. */
   selectedProviderId: UsageSelectionId | null;
   isLoading: boolean;
   isFetchingProvider: Record<string, boolean>;

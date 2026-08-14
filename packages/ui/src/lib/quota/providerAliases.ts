@@ -16,6 +16,7 @@ const OPENCODE_PROVIDER_ALIASES: Record<string, QuotaProviderId> = {
   copilot: 'github-copilot',
   google: 'google',
   'google.oauth': 'google',
+  gemini: 'google',
   'kimi-for-coding': 'kimi-for-coding',
   kimi: 'kimi-for-coding',
   'nano-gpt': 'nano-gpt',
@@ -45,6 +46,9 @@ const OPENCODE_PROVIDER_ALIASES: Record<string, QuotaProviderId> = {
 
 const knownQuotaIds = new Set<string>(QUOTA_PROVIDERS.map((provider) => provider.id));
 
+export const isQuotaProviderId = (providerId: string | null | undefined): providerId is QuotaProviderId =>
+  Boolean(providerId && knownQuotaIds.has(providerId));
+
 export const resolveQuotaProviderId = (openCodeProviderId: string | null | undefined): QuotaProviderId | null => {
   if (!openCodeProviderId) return null;
   const normalized = openCodeProviderId.trim().toLowerCase();
@@ -53,6 +57,17 @@ export const resolveQuotaProviderId = (openCodeProviderId: string | null | undef
   if (mapped) return mapped;
   if (knownQuotaIds.has(normalized)) return normalized as QuotaProviderId;
   return null;
+};
+
+/**
+ * Canonical provider ID for usage history. Known aliases share their quota
+ * provider page; plugin/custom providers keep their own normalized ID.
+ */
+export const resolveUsageProviderId = (openCodeProviderId: string | null | undefined): string | null => {
+  if (!openCodeProviderId) return null;
+  const normalized = openCodeProviderId.trim().toLowerCase();
+  if (!normalized) return null;
+  return OPENCODE_PROVIDER_ALIASES[normalized] ?? normalized;
 };
 
 /**
@@ -72,4 +87,4 @@ export const collectConnectedQuotaProviderIds = (
 };
 
 export const USAGE_ADD_PROVIDER_ID = '__add_provider__' as const;
-export type UsageSelectionId = QuotaProviderId | typeof USAGE_ADD_PROVIDER_ID;
+export type UsageSelectionId = string | typeof USAGE_ADD_PROVIDER_ID;
