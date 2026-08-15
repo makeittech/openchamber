@@ -168,6 +168,23 @@ function getPrimaryUserConfigPath(userPaths) {
   return CONFIG_FILE;
 }
 
+function formatJsoncParseError(filePath, errors) {
+  const first = Array.isArray(errors) && errors.length > 0 ? errors[0] : null;
+  const location = first && Number.isFinite(first.offset)
+    ? ` (first error at offset ${first.offset})`
+    : '';
+  return `OpenCode configuration at ${filePath} contains invalid JSONC and cannot be loaded safely${location}`;
+}
+
+function parseConfigObject(content, filePath) {
+  const errors = [];
+  const parsed = parseJsonc(content, errors, { allowTrailingComma: true });
+  if (errors.length > 0 || !parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(formatJsoncParseError(filePath, errors));
+  }
+  return parsed;
+}
+
 function readConfigFile(filePath) {
   if (!filePath || !fs.existsSync(filePath)) {
     return {};
@@ -178,8 +195,13 @@ function readConfigFile(filePath) {
     if (!normalized) {
       return {};
     }
-    return parseJsonc(normalized, [], { allowTrailingComma: true });
+    // Refuse partial jsonc-parser trees. Ignoring errors previously let mutations
+    // rewrite a truncated object (often only `$schema`) over the full config.
+    return parseConfigObject(normalized, filePath);
   } catch (error) {
+    if (typeof error?.message === 'string' && error.message.includes('cannot be loaded safely')) {
+      throw error;
+    }
     console.error(`Failed to read config file: ${filePath}`, error);
     throw new Error('Failed to read OpenCode configuration');
   }
@@ -246,6 +268,12 @@ function getConfigForPath(layers, targetPath) {
 function writeConfig(config, filePath = CONFIG_FILE) {
   try {
     if (fs.existsSync(filePath)) {
+      // Defense in depth: never overwrite a file we cannot fully parse.
+      const existing = fs.readFileSync(filePath, 'utf8').trim();
+      if (existing) {
+        parseConfigObject(existing, filePath);
+      }
+
       const backupFile = `${filePath}.openchamber.backup`;
       fs.copyFileSync(filePath, backupFile);
       console.log(`Created config backup: ${backupFile}`);
@@ -255,6 +283,9 @@ function writeConfig(config, filePath = CONFIG_FILE) {
     fs.writeFileSync(filePath, JSON.stringify(config, null, 2), 'utf8');
     console.log(`Successfully wrote config file: ${filePath}`);
   } catch (error) {
+    if (typeof error?.message === 'string' && error.message.includes('cannot be loaded safely')) {
+      throw error;
+    }
     console.error(`Failed to write config file: ${filePath}`, error);
     throw new Error('Failed to write OpenCode configuration');
   }
