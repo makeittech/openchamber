@@ -38,7 +38,6 @@ import { composerLanguage, setLanguageContext } from './composerLanguage';
 import type { ComposerEditorViewStore } from './viewStore';
 import { composerEditorTheme, composerNativeSelectionExtension } from './theme';
 import { handleComposerHostMouseDown } from './hostMouseDown';
-import { shouldDeferComposerWriteback } from './writeback';
 
 export interface ComposerSelection {
     start: number;
@@ -170,7 +169,6 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
 
         const hostRef = React.useRef<HTMLDivElement | null>(null);
         const viewRef = React.useRef<EditorView | null>(null);
-        const localReportedValueRef = React.useRef<string | null>(null);
 
         // The real keydown's shift state for the LAST Enter that reached the
         // editor. CodeMirror defers Enter on iOS (and Chrome Android) and
@@ -189,7 +187,6 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
         const store = props.viewStore ?? null;
         if (store && !store.handlers) store.handlers = { current: props };
         const handlersRef = store?.handlers ?? localHandlersRef;
-        const reportedValueRef = store?.reportedValue ?? localReportedValueRef;
         handlersRef.current = props;
 
         // A layout effect, not a passive one: the mobile composer expands with
@@ -264,7 +261,6 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
                             const selection = readSelection(update.state);
 
                             if (update.docChanged) {
-                                const nextValue = update.state.doc.toString();
                                 const fromPaste = update.transactions.some(
                                     (transaction) => transaction.isUserEvent('input.paste'),
                                 );
@@ -272,9 +268,8 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
                                 for (const transaction of update.transactions) {
                                     insertedText += insertedTextOf(transaction);
                                 }
-                                reportedValueRef.current = nextValue;
                                 handlers.onChange({
-                                    value: nextValue,
+                                    value: update.state.doc.toString(),
                                     selection,
                                     fromPaste,
                                     insertedText,
@@ -349,16 +344,10 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
             if (!view) return;
             const current = view.state.doc.toString();
             if (current === value) return;
-            // React echoes editor changes through value. During IME composition
-            // that echo can temporarily differ from CodeMirror's document, so
-            // writing it back would interrupt the composition and move the
-            // caret. Genuine external values remain authoritative and must not
-            // be dropped just because Android started a composition on focus.
-            if (shouldDeferComposerWriteback(
-                view.compositionStarted,
-                value,
-                reportedValueRef.current,
-            )) return;
+            // Skip every controlled writeback while the browser is composing.
+            // A stale value echo can differ from CodeMirror's newer document,
+            // and replacing it would interrupt the IME session and move the caret.
+            if (view.compositionStarted) return;
             view.dispatch({
                 changes: { from: 0, to: current.length, insert: value },
                 // An external rewrite (draft restore, history navigation,
@@ -385,7 +374,7 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
                     view.scrollDOM.scrollTop = view.scrollDOM.scrollHeight;
                 });
             });
-        }, [reportedValueRef, value]);
+        }, [value]);
 
         React.useEffect(() => {
             viewRef.current?.dispatch({ effects: setLanguageContext.of(languageContext) });
