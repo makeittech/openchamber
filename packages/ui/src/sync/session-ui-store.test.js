@@ -8,6 +8,8 @@ import { setActionRefs, setOptimisticRefs } from './session-actions';
 import { useSkillsStore } from '@/stores/useSkillsStore';
 import { useCommandsStore } from '@/stores/useCommandsStore';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { getRuntimeKey } from '@/lib/runtime-switch';
+import { getDeferredSafeStorage } from '@/stores/utils/safeStorage';
 
 /**
  * Unit tests for session worktree routing through the authoritative store.
@@ -228,6 +230,85 @@ describe('routeMessage directory scoping', () => {
   });
 });
 
+describe('sendMessage captured target', () => {
+  let originalSendMessage;
+  const calls = [];
+
+  beforeEach(() => {
+    calls.length = 0;
+    const childStore = {
+      getState: () => ({ session: [], message: {}, part: {}, session_status: {} }),
+      setState: () => {},
+    };
+    const childStores = {
+      children: new Map(),
+      ensureChild: () => childStore,
+      getChild: () => childStore,
+    };
+    setActionRefs(opencodeClient, childStores, () => '/current/project');
+    setOptimisticRefs(() => {}, () => {});
+    useConfigStore.setState({ isConnected: true });
+    useSessionUIStore.setState({
+      currentSessionId: 'session-current',
+      currentSessionDirectory: '/current/project',
+      newSessionDraft: { open: false, directoryOverride: null, parentID: null },
+    });
+
+    originalSendMessage = opencodeClient.sendMessage;
+    opencodeClient.sendMessage = async (params) => {
+      calls.push(params);
+      return 'msg';
+    };
+  });
+
+  afterEach(() => {
+    opencodeClient.sendMessage = originalSendMessage;
+  });
+
+  const sendToTarget = (target) => useSessionUIStore.getState().sendMessage(
+    'queued message',
+    'provider-a',
+    'model-a',
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    'normal',
+    { target },
+  );
+
+  test('uses the target captured before the active session changes', async () => {
+    await sendToTarget({
+      runtimeKey: getRuntimeKey(),
+      sessionId: 'session-captured',
+      directory: '/captured/project',
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].runtimeKey).toBe(getRuntimeKey());
+    expect(calls[0].id).toBe('session-captured');
+    expect(calls[0].directory).toBe('/captured/project');
+  });
+
+  test('does not send a captured target through a different runtime', async () => {
+    let error = null;
+    try {
+      await sendToTarget({
+        runtimeKey: `${getRuntimeKey()}-stale`,
+        sessionId: 'session-captured',
+        directory: '/captured/project',
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain('runtime changed');
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe('slash-command goal objectives', () => {
   test('expands every $ARGUMENTS reference from the authoritative command template', () => {
     expect(expandSlashCommandGoalObjective('/issue--to-pr LIN-123 --draft', [{
@@ -328,9 +409,21 @@ describe('openNewSessionDraft project binding', () => {
 
 describe('createSession draft lifecycle', () => {
   let originalCreateSession;
+  let originalGetDirectoryAvailability;
+  let originalProjects;
+  let originalActiveProjectId;
+  let originalDirectoryState;
+  let originalClientDirectory;
+  let originalLastDirectory;
 
   beforeEach(() => {
     originalCreateSession = opencodeClient.createSession;
+    originalGetDirectoryAvailability = opencodeClient.getDirectoryAvailability;
+    originalProjects = useProjectsStore.getState().projects;
+    originalActiveProjectId = useProjectsStore.getState().activeProjectId;
+    originalDirectoryState = useDirectoryStore.getState();
+    originalClientDirectory = opencodeClient.getDirectory();
+    originalLastDirectory = getDeferredSafeStorage().getItem('lastDirectory');
     useSessionUIStore.setState({
       currentSessionId: null,
       currentSessionDirectory: null,
@@ -340,6 +433,15 @@ describe('createSession draft lifecycle', () => {
 
   afterEach(() => {
     opencodeClient.createSession = originalCreateSession;
+    opencodeClient.getDirectoryAvailability = originalGetDirectoryAvailability;
+    useProjectsStore.setState({ projects: originalProjects, activeProjectId: originalActiveProjectId });
+    useDirectoryStore.setState(originalDirectoryState, true);
+    opencodeClient.setDirectory(originalClientDirectory ?? undefined);
+    if (originalLastDirectory === null) {
+      getDeferredSafeStorage().removeItem('lastDirectory');
+    } else {
+      getDeferredSafeStorage().setItem('lastDirectory', originalLastDirectory);
+    }
   });
 
   test('keeps the draft open when session creation fails', async () => {
@@ -352,6 +454,273 @@ describe('createSession draft lifecycle', () => {
     expect(session).toBeNull();
     expect(useSessionUIStore.getState().newSessionDraft.open).toBe(true);
     expect(useSessionUIStore.getState().newSessionDraft.title).toBe('Draft title');
+  });
+
+  test('rewrites an implicit new-chat draft to the active project before the session is created', async () => {
+    useProjectsStore.setState({
+      projects: [{ id: 'project-main', path: '/projects/main', label: 'Main' }],
+      activeProjectId: 'project-main',
+    });
+    useDirectoryStore.getState().setDirectory('/private/deleted-worktree', { showOverlay: false });
+    opencodeClient.getDirectoryAvailability = async () => 'missing';
+
+    useSessionUIStore.getState().openNewSessionDraft();
+    await Bun.sleep(0);
+
+    expect(useSessionUIStore.getState().newSessionDraft.directoryOverride).toBe('/projects/main');
+    expect(useSessionUIStore.getState().newSessionDraft.selectedProjectId).toBe('project-main');
+    expect(getDeferredSafeStorage().getItem('lastDirectory')).toBe('/private/deleted-worktree');
+  });
+
+  test('falls back to the current active project when a regular new-chat directory is missing', async () => {
+    const createSessionCalls = [];
+    useProjectsStore.setState({
+      projects: [
+        { id: 'project-draft', path: '/projects/draft', label: 'Draft' },
+        { id: 'project-active', path: '/projects/active', label: 'Active' },
+      ],
+      activeProjectId: 'project-active',
+    });
+    useDirectoryStore.getState().setDirectory('/private/deleted-worktree', { showOverlay: false });
+    useSessionUIStore.getState().openNewSessionDraft();
+    opencodeClient.getDirectoryAvailability = async () => 'missing';
+    opencodeClient.createSession = async (_params, directory) => {
+      createSessionCalls.push(directory);
+      return { id: 'session-fallback', directory };
+    };
+
+    await useSessionUIStore.getState().createSession('Draft title', '/private/deleted-worktree');
+
+    expect(createSessionCalls).toEqual(['/projects/active']);
+    expect(useDirectoryStore.getState().currentDirectory).toBe('/projects/active');
+    expect(getDeferredSafeStorage().getItem('lastDirectory')).toBe('/projects/active');
+  });
+
+  test('keeps an explicitly pinned worktree directory unchanged', async () => {
+    const createSessionCalls = [];
+    useProjectsStore.setState({
+      projects: [{ id: 'project-main', path: '/projects/main', label: 'Main' }],
+      activeProjectId: 'project-main',
+    });
+    useSessionUIStore.getState().openNewSessionDraft({ directoryOverride: '/private/deleted-worktree', preserveDirectoryOverride: true });
+    expect(useSessionUIStore.getState().newSessionDraft.preserveDirectoryOverride).toBe(true);
+    opencodeClient.getDirectoryAvailability = async () => 'missing';
+    opencodeClient.createSession = async (_params, directory) => {
+      createSessionCalls.push(directory);
+      return { id: 'session-pinned', directory };
+    };
+
+    await useSessionUIStore.getState().createSession('Draft title', '/private/deleted-worktree');
+
+    expect(createSessionCalls).toEqual(['/private/deleted-worktree']);
+  });
+
+  test('keeps a ChatInput-style current-directory draft recoverable when that path is missing', async () => {
+    const createSessionCalls = [];
+    useProjectsStore.setState({
+      projects: [{ id: 'project-main', path: '/projects/main', label: 'Main' }],
+      activeProjectId: 'project-main',
+    });
+    useDirectoryStore.getState().setDirectory('/private/deleted-worktree', { showOverlay: false });
+    useSessionUIStore.getState().openNewSessionDraft({ directoryOverride: '/private/deleted-worktree' });
+    expect(useSessionUIStore.getState().newSessionDraft.preserveDirectoryOverride).not.toBe(true);
+    opencodeClient.getDirectoryAvailability = async () => 'missing';
+    opencodeClient.createSession = async (_params, directory) => {
+      createSessionCalls.push(directory);
+      return { id: 'session-chat-input', directory };
+    };
+
+    await useSessionUIStore.getState().createSession('Draft title', '/private/deleted-worktree');
+
+    expect(createSessionCalls).toEqual(['/projects/main']);
+  });
+
+  test('keeps the stale directory when its availability cannot be confirmed', async () => {
+    const createSessionCalls = [];
+    useProjectsStore.setState({
+      projects: [{ id: 'project-main', path: '/projects/main', label: 'Main' }],
+      activeProjectId: 'project-main',
+    });
+    useDirectoryStore.getState().setDirectory('/private/unavailable-worktree', { showOverlay: false });
+    useSessionUIStore.getState().openNewSessionDraft();
+    opencodeClient.getDirectoryAvailability = async () => 'unknown';
+    opencodeClient.createSession = async (_params, directory) => {
+      createSessionCalls.push(directory);
+      return { id: 'session-unavailable', directory };
+    };
+
+    await useSessionUIStore.getState().createSession('Draft title', '/private/unavailable-worktree');
+
+    expect(createSessionCalls).toEqual(['/private/unavailable-worktree']);
+    expect(useDirectoryStore.getState().currentDirectory).toBe('/private/unavailable-worktree');
+  });
+
+  test('still creates against the active project when the draft is rewritten during the create probe', async () => {
+    const createSessionCalls = [];
+    const availabilityResolvers = [];
+    useProjectsStore.setState({
+      projects: [{ id: 'project-main', path: '/projects/main', label: 'Main' }],
+      activeProjectId: 'project-main',
+    });
+    useDirectoryStore.getState().setDirectory('/private/deleted-worktree', { showOverlay: false });
+    opencodeClient.getDirectoryAvailability = () => new Promise((resolve) => {
+      availabilityResolvers.push(resolve);
+    });
+    opencodeClient.createSession = async (_params, directory) => {
+      createSessionCalls.push(directory);
+      return { id: 'session-race', directory };
+    };
+
+    useSessionUIStore.getState().openNewSessionDraft();
+    const createPromise = useSessionUIStore.getState().createSession('Draft title', '/private/deleted-worktree');
+    expect(availabilityResolvers.length).toBe(2);
+
+    availabilityResolvers[0]('missing');
+    await Bun.sleep(0);
+    expect(useSessionUIStore.getState().newSessionDraft.directoryOverride).toBe('/projects/main');
+
+    availabilityResolvers[1]('missing');
+    const session = await createPromise;
+
+    expect(session).not.toBeNull();
+    expect(createSessionCalls).toEqual(['/projects/main']);
+  });
+
+  test('does not persist a fallback when session creation fails', async () => {
+    useProjectsStore.setState({
+      projects: [{ id: 'project-main', path: '/projects/main', label: 'Main' }],
+      activeProjectId: 'project-main',
+    });
+    useDirectoryStore.getState().setDirectory('/private/deleted-worktree', { showOverlay: false });
+    useSessionUIStore.getState().openNewSessionDraft();
+    opencodeClient.getDirectoryAvailability = async () => 'missing';
+    opencodeClient.createSession = async () => {
+      throw new Error('offline');
+    };
+
+    const session = await useSessionUIStore.getState().createSession('Draft title', '/private/deleted-worktree');
+
+    expect(session).toBeNull();
+    expect(useDirectoryStore.getState().currentDirectory).toBe('/private/deleted-worktree');
+    expect(getDeferredSafeStorage().getItem('lastDirectory')).toBe('/private/deleted-worktree');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issues #2222 and #2315 — send target must be snapshotted at submit time so a
+// later sidebar/project selection cannot reroute a pending draft or session
+// send to whichever session happens to be current when the async work resumes.
+// ---------------------------------------------------------------------------
+describe('sendMessage draft snapshot (issues #2222 / #2315)', () => {
+  const sendMessageCalls = [];
+  const createSessionCalls = [];
+  let originalSendMessage;
+  let originalCreateSession;
+
+  beforeEach(() => {
+    sendMessageCalls.length = 0;
+    createSessionCalls.length = 0;
+
+    const childStore = {
+      getState: () => ({ session: [], message: {}, part: {}, session_status: {} }),
+      setState: () => {},
+    };
+    const childStores = {
+      children: new Map(),
+      ensureChild: () => childStore,
+      getChild: () => childStore,
+    };
+    setActionRefs(opencodeClient, childStores, () => '/projects/alpha');
+    setOptimisticRefs(() => {}, () => {});
+    useConfigStore.setState({ isConnected: true });
+
+    originalSendMessage = opencodeClient.sendMessage;
+    originalCreateSession = opencodeClient.createSession;
+    opencodeClient.sendMessage = async (params) => {
+      sendMessageCalls.push(params);
+      return 'msg';
+    };
+    opencodeClient.createSession = async (_params, directory) => {
+      createSessionCalls.push(directory);
+      return { id: 'session-materialized', directory: directory ?? '/projects/alpha' };
+    };
+  });
+
+  afterEach(() => {
+    opencodeClient.sendMessage = originalSendMessage;
+    opencodeClient.createSession = originalCreateSession;
+    useSessionUIStore.setState({
+      currentSessionId: null,
+      currentSessionDirectory: null,
+      newSessionDraft: { open: false, directoryOverride: null, parentID: null },
+    });
+  });
+
+  test('draft send snapshots the draft; switching to another project mid-flight still targets the materialized session', async () => {
+    const draftSnapshot = {
+      open: true,
+      directoryOverride: '/projects/alpha',
+      parentID: null,
+      title: 'Project A draft',
+    };
+    useSessionUIStore.setState({
+      currentSessionId: null,
+      currentSessionDirectory: null,
+      newSessionDraft: draftSnapshot,
+    });
+
+    const sendPromise = useSessionUIStore.getState().sendMessage(
+      'message for project A',
+      'provider-a',
+      'model-a',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'normal',
+      { draftSnapshot },
+    );
+
+    // A sidebar switch while the send is still in flight must not reroute it.
+    useSessionUIStore.getState().setCurrentSession('session-project-b', '/projects/beta');
+
+    await sendPromise;
+
+    expect(createSessionCalls).toHaveLength(1);
+    expect(createSessionCalls[0]).toBe('/projects/alpha');
+    expect(sendMessageCalls).toHaveLength(1);
+    expect(sendMessageCalls[0].id).toBe('session-materialized');
+    expect(sendMessageCalls[0].directory).toBe('/projects/alpha');
+  });
+
+  test('existing-session send keeps the submit-time target even when selection changes', async () => {
+    useSessionUIStore.setState({
+      currentSessionId: 'session-project-a',
+      currentSessionDirectory: '/projects/alpha',
+      newSessionDraft: { open: false, directoryOverride: null, parentID: null },
+    });
+
+    const sendPromise = useSessionUIStore.getState().sendMessage(
+      'message for project A',
+      'provider-a',
+      'model-a',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'normal',
+      { target: { runtimeKey: getRuntimeKey(), sessionId: 'session-project-a', directory: '/projects/alpha' } },
+    );
+
+    useSessionUIStore.getState().setCurrentSession('session-project-b', '/projects/beta');
+
+    await sendPromise;
+
+    expect(sendMessageCalls).toHaveLength(1);
+    expect(sendMessageCalls[0].id).toBe('session-project-a');
+    expect(sendMessageCalls[0].directory).toBe('/projects/alpha');
   });
 });
 
@@ -370,7 +739,12 @@ describe('routeMessage skill invocation', () => {
 
     // Minimal optimistic + connection machinery so routeMessage can dispatch.
     const childStore = {
-      getState: () => ({ session_status: {} }),
+      getState: () => ({
+        session: [],
+        message: {},
+        part: {},
+        session_status: {},
+      }),
       setState: () => {},
     };
     const childStores = {
