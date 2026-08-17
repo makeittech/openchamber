@@ -25,8 +25,10 @@ export interface ComposerEditorViewStore {
      * whichever instance is currently mounted, never a dead one.
      */
     handlers: { current: ComposerEditorProps } | null;
+    /** Latest document value emitted through onChange by the kept view. */
+    reportedValue: { current: string | null };
 }
 
 export function createComposerEditorViewStore(): ComposerEditorViewStore {
-    return { view: null, handlers: null };
+    return { view: null, handlers: null, reportedValue: { current: null } };
 }
