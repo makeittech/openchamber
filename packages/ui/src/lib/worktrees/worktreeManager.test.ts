@@ -11,6 +11,8 @@ type WorktreeListEntry = {
 
 const listCalls: string[] = [];
 const listResolvers: Array<(value: WorktreeListEntry[]) => void> = [];
+const createPayloads: unknown[] = [];
+const validatePayloads: unknown[] = [];
 const createdWorktree = {
   head: 'abc123',
   name: 'feature',
@@ -80,7 +82,14 @@ mock.module('@/lib/gitApi', () => ({
           listResolvers.push(resolve);
         });
       },
-      create: mock(() => Promise.resolve(createdWorktreeResult)),
+      create: mock((_directory: string, payload: unknown) => {
+        createPayloads.push(payload);
+        return Promise.resolve(createdWorktreeResult);
+      }),
+      validate: mock((_directory: string, payload: unknown) => {
+        validatePayloads.push(payload);
+        return Promise.resolve({ ok: true, errors: [] });
+      }),
       remove: mock(() => Promise.resolve({ success: true })),
     },
   },
@@ -91,8 +100,11 @@ const {
   getLatestWorktreeMetadata,
   listProjectWorktrees,
   partitionWorktreesByRegisteredProject,
+  validateWorktreeCreate,
   worktreeMapsEqual,
 } = await import('./worktreeManager');
+import { resolvePrWorktreeConfig } from './prWorktreeConfig';
+import type { GitHubPullRequestSummary } from '@/lib/api/types';
 
 const waitForListCallCount = async (count: number): Promise<void> => {
   for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -108,6 +120,8 @@ describe('worktreeManager list invalidation', () => {
   beforeEach(() => {
     listCalls.length = 0;
     listResolvers.length = 0;
+    createPayloads.length = 0;
+    validatePayloads.length = 0;
     bootstrapWatcherCalls.length = 0;
     bootstrapWatcherOptions.length = 0;
     createdWorktreeResult = createdWorktree;
@@ -370,5 +384,84 @@ describe('partitionWorktreesByRegisteredProject', () => {
 
     expect([...result.keys()]).toEqual(['/repo']);
     expect(result.get('/repo')?.map((entry) => entry.path)).toEqual(['/worktrees/loose']);
+  });
+});
+
+describe('worktreeManager PR payload wiring', () => {
+  beforeEach(() => {
+    listCalls.length = 0;
+    listResolvers.length = 0;
+    createPayloads.length = 0;
+    validatePayloads.length = 0;
+    bootstrapWatcherCalls.length = 0;
+    bootstrapWatcherOptions.length = 0;
+    createdWorktreeResult = createdWorktree;
+    sessionState.availableWorktreesByProject = new Map();
+    sessionState.availableWorktrees = [];
+    sessionState.worktreeMetadata = new Map();
+    attachmentState.attachments = new Map();
+  });
+
+  const deletedForkPr = (): GitHubPullRequestSummary => ({
+    number: 42,
+    title: 'Add login',
+    url: 'https://github.com/openchamber/openchamber/pull/42',
+    state: 'open',
+    draft: false,
+    base: 'main',
+    head: 'feature/login',
+    headSha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    headLabel: 'alice:feature/login',
+    headRepo: null,
+    baseRepo: {
+      owner: 'openchamber',
+      repo: 'openchamber',
+      url: 'https://github.com/openchamber/openchamber',
+      cloneUrl: 'https://github.com/openchamber/openchamber.git',
+      sshUrl: 'git@github.com:openchamber/openchamber.git',
+    },
+  });
+
+  test('validate and create both forward prRef + prBaseRepoUrl for deleted-fork configs', async () => {
+    const prConfig = resolvePrWorktreeConfig(deletedForkPr(), [], [], {});
+    expect(prConfig.prRef).toBe('refs/pull/42/head');
+    expect(prConfig.prBaseRepoUrl).toBe('https://github.com/openchamber/openchamber.git');
+
+    const project = { id: 'project-1', path: '/repo' };
+    const args = {
+      mode: 'existing' as const,
+      branchName: 'pr-42-local',
+      worktreeName: 'pr-42',
+      existingBranch: prConfig.existingBranch,
+      prRef: prConfig.prRef,
+      prBaseRepoUrl: prConfig.prBaseRepoUrl,
+      prBaseOwner: prConfig.prBaseOwner,
+      prBaseRepo: prConfig.prBaseRepo,
+      prHeadSha: prConfig.prHeadSha,
+    };
+
+    const validation = await validateWorktreeCreate(project, args);
+    expect(validation.ok).toBe(true);
+    expect(validatePayloads).toHaveLength(1);
+    const validated = validatePayloads[0] as Record<string, unknown>;
+    expect(validated.mode).toBe('existing');
+    expect(validated.prRef).toBe('refs/pull/42/head');
+    expect(validated.prBaseRepoUrl).toBe('https://github.com/openchamber/openchamber.git');
+    expect(validated.prBaseOwner).toBe('openchamber');
+    expect(validated.prBaseRepo).toBe('openchamber');
+    expect(validated.prHeadSha).toBe('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+
+    await createWorktree(project, {
+      ...args,
+      returnAfterDirectoryCreated: true,
+    });
+    expect(createPayloads).toHaveLength(1);
+    const created = createPayloads[0] as Record<string, unknown>;
+    expect(created.mode).toBe('existing');
+    expect(created.prRef).toBe('refs/pull/42/head');
+    expect(created.prBaseRepoUrl).toBe('https://github.com/openchamber/openchamber.git');
+    expect(created.prBaseOwner).toBe('openchamber');
+    expect(created.prBaseRepo).toBe('openchamber');
+    expect(created.prHeadSha).toBe('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
   });
 });
