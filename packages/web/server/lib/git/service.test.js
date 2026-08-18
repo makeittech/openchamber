@@ -780,7 +780,7 @@ describe('createWorktree from a forked GitHub PR', () => {
     });
   }, 30_000);
 
-  it('does not reuse a same-named local branch whose tip differs from headSha', async () => {
+  it('creates from the fork when a same-named local branch exists with a different tip', async () => {
     if (!canRunGit()) return;
 
     await withDataHome(async () => {
@@ -793,9 +793,10 @@ describe('createWorktree from a forked GitHub PR', () => {
       const prSha = publishForkHead(repository, fork, 'feature/login');
       expect(prSha).not.toBe(staleSha);
 
-      const created = await createWorktree(repository, {
+      // UI locks branchName to pr.head (feature/login), which already exists.
+      const input = {
         mode: 'existing',
-        branchName: 'pr-42-from-fork',
+        branchName: 'feature/login',
         worktreeName: 'pr-42-from-fork',
         pullRequest: {
           number: 42,
@@ -804,8 +805,14 @@ describe('createWorktree from a forked GitHub PR', () => {
           headRepoUrl: fork,
           headOwner: 'alice',
         },
-      });
+      };
 
+      const validation = await validateWorktreeCreate(repository, input);
+      expect(validation.ok).toBe(true);
+      expect(validation.resolved?.localBranch).toBe('pr-42');
+
+      const created = await createWorktree(repository, input);
+      expect(created.branch).toBe('pr-42');
       expect(runGit(created.path, ['rev-parse', 'HEAD']).trim()).toBe(prSha);
       expect(runGit(created.path, ['rev-parse', 'HEAD']).trim()).not.toBe(staleSha);
     });

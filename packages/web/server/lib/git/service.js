@@ -1804,6 +1804,18 @@ const sanitizeGitRefSegment = (value) => {
   return cleaned;
 };
 
+const localBranchExists = async (primaryWorktree, branchName) => {
+  const branch = cleanBranchName(branchName);
+  if (!branch) {
+    return false;
+  }
+  const result = await runGitCommand(
+    primaryWorktree,
+    ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]
+  );
+  return result.success;
+};
+
 const gitTipsMatch = (actual, expected) => {
   const tip = String(actual || '').trim().toLowerCase();
   const want = String(expected || '').trim().toLowerCase();
@@ -1853,7 +1865,7 @@ const resolvePullRequestWorktreeSource = async (
   intent = 'create'
 ) => {
   const headBranch = pullRequest.headBranch;
-  const localBranch = cleanBranchName(preferredBranchName || headBranch);
+  let localBranch = cleanBranchName(preferredBranchName || headBranch);
   if (!localBranch) {
     throw new Error('Failed to resolve local branch name for pull request worktree');
   }
@@ -1922,6 +1934,16 @@ const resolvePullRequestWorktreeSource = async (
         );
       }
     }
+  }
+
+  // UI locks branchName to pr.head. `git worktree add -b` cannot recreate an
+  // existing local name, so pick pr-<n> when the desired name already exists.
+  if (await localBranchExists(primaryWorktree, localBranch)) {
+    const fallback = cleanBranchName(`pr-${pullRequest.number}`);
+    if (!fallback || fallback === localBranch || await localBranchExists(primaryWorktree, fallback)) {
+      throw new Error(`Branch already exists: ${localBranch}`);
+    }
+    localBranch = fallback;
   }
 
   return {
@@ -2058,19 +2080,6 @@ const checkRemoteBranchExists = async (primaryWorktree, remoteName, branchName, 
   };
 };
 
-const setBranchTrackingFallback = async (worktreeDirectory, localBranch, upstream) => {
-  await runGitCommandOrThrow(
-    worktreeDirectory,
-    ['config', `branch.${localBranch}.remote`, upstream.remote],
-    `Failed to set branch.${localBranch}.remote`
-  );
-  await runGitCommandOrThrow(
-    worktreeDirectory,
-    ['config', `branch.${localBranch}.merge`, `refs/heads/${upstream.branch}`],
-    `Failed to set branch.${localBranch}.merge`
-  );
-};
-
 const applyUpstreamConfiguration = async (args) => {
   const {
     primaryWorktree,
@@ -2096,22 +2105,19 @@ const applyUpstreamConfiguration = async (args) => {
     return;
   }
 
-  let fetched = true;
   try {
     await fetchRemoteBranchRef(primaryWorktree, upstream.remote, upstream.branch);
   } catch {
-    fetched = false;
+    // Fetch failed: leave tracking unset. Do not write branch.*.remote/merge
+    // pointing at a ref that was never fetched.
+    return;
   }
 
-  if (fetched) {
-    await runGitCommandOrThrow(
-      worktreeDirectory,
-      ['branch', `--set-upstream-to=${upstream.full}`, localBranch],
-      `Failed to set upstream to ${upstream.full}`
-    );
-  }
-  // If the upstream ref could not be fetched, leave tracking unset rather than
-  // writing branch.*.remote/merge that point at a never-fetched ref.
+  await runGitCommandOrThrow(
+    worktreeDirectory,
+    ['branch', `--set-upstream-to=${upstream.full}`, localBranch],
+    `Failed to set upstream to ${upstream.full}`
+  );
 };
 
 export async function isGitRepository(directory) {
@@ -4832,7 +4838,7 @@ export async function renameBranch(directory, oldName, newName) {
             `Failed to set upstream to ${upstream.full}`
           );
         } catch {
-          await setBranchTrackingFallback(repoRoot, normalizedNewName, upstream);
+          // Leave tracking unset rather than writing config for a missing ref.
         }
       }
     }

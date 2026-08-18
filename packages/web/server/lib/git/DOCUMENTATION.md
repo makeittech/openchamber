@@ -56,12 +56,13 @@ The following functions are exported and used by the web server:
 Linked-PR worktree create/validate accepts
 `pullRequest: { number, headBranch, headSha?, headRepoUrl?, headOwner? }`.
 The server owns strategy: it may reuse a local branch only when its tip matches
-`headSha`, otherwise it provisions `pr-<owner>`, fetches `headBranch`, and
-checks it out with upstream tracking. Missing or unreachable forks fail with a
+`headSha`. Otherwise it provisions `pr-<owner>`, fetches `headBranch`, and
+checks it out with upstream tracking. If `pr.head` already exists locally with a
+different tip, the new branch is named `pr-<number>` because `git worktree add -b`
+cannot recreate an existing name. Missing or unreachable forks fail with a
 clear error before any worktree directory is kept. There is no `refs/pull`
 fallback. Validation and creation share `resolveExistingWorktreeSource` /
-`resolvePullRequestWorktreeSource`. Deferred bootstrap does not write upstream
-tracking when the upstream ref could not be fetched.
+`resolvePullRequestWorktreeSource`. If upstream fetch fails during bootstrap, tracking is left unset.
 
 ### Commit and Remote Operations
 - `commit(directory, message, options)`: Create a commit from the current index. `options.stageFiles` may be provided with `options.files` by older callers to stage only selected unstaged rows before committing, but the shared Git panel now stages/unstages explicitly before commit.
