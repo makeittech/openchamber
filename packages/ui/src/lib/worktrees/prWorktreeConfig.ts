@@ -1,28 +1,18 @@
-import type { GitHubPullRequestSummary } from '@/lib/api/types';
+import type { CreateGitWorktreePullRequest, GitHubPullRequestSummary } from '@/lib/api/types';
 
 export type PrWorktreeConfig = {
-  existingBranch?: string;
-  setUpstream?: boolean;
-  upstreamRemote?: string;
-  upstreamBranch?: string;
-  ensureRemoteName?: string;
-  ensureRemoteUrl?: string;
-  prRef?: string;
-  prBaseRepoUrl?: string;
-  prBaseOwner?: string;
-  prBaseRepo?: string;
-  prHeadSha?: string;
+  pullRequest: CreateGitWorktreePullRequest;
   sourceLabel: string;
 };
 
-const sanitizeRemoteName = (value: string): string => {
+const sanitizeRemoteSeed = (value: string): string => {
   const normalized = String(value || '')
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-+|-+$/g, '');
-  return normalized || 'pr-head';
+  return normalized || 'head';
 };
 
 const normalizeBranchName = (value: string): string => {
@@ -32,130 +22,38 @@ const normalizeBranchName = (value: string): string => {
     .replace(/^heads\//, '');
 };
 
-/** Prefer HTTPS for credential-light direct fetch fallbacks. */
-export const resolvePrBaseRepoUrl = (pr: GitHubPullRequestSummary): string | undefined => {
+/** Prefer HTTPS for credential-light direct fetches when no matching remote exists. */
+export const resolvePrBaseRepoUrl = (pr: GitHubPullRequestSummary): string => {
   const url = pr.baseRepo?.cloneUrl || pr.baseRepo?.sshUrl || '';
-  return url.trim() || undefined;
-};
-
-export const commitsMatchPrHead = (candidateCommit: string | undefined, headSha: string | undefined): boolean => {
-  const tip = String(candidateCommit || '').trim().toLowerCase();
-  const expected = String(headSha || '').trim().toLowerCase();
-  if (!tip || !expected) {
-    return false;
-  }
-  return tip === expected || tip.startsWith(expected) || expected.startsWith(tip);
-};
-
-const resolvePrHeadRefConfig = (pr: GitHubPullRequestSummary): PrWorktreeConfig => {
-  return {
-    existingBranch: undefined,
-    setUpstream: false,
-    upstreamRemote: undefined,
-    upstreamBranch: undefined,
-    ensureRemoteName: undefined,
-    ensureRemoteUrl: undefined,
-    prRef: `refs/pull/${pr.number}/head`,
-    prBaseRepoUrl: resolvePrBaseRepoUrl(pr),
-    prBaseOwner: pr.baseRepo?.owner,
-    prBaseRepo: pr.baseRepo?.repo,
-    prHeadSha: pr.headSha,
-    sourceLabel: `#${pr.number} head`,
-  };
+  return url.trim();
 };
 
 /**
- * Resolve worktree create inputs for a linked GitHub PR.
- *
- * `pr.headSha` is authoritative. A same-named local/remote branch is reused only
- * when its tip matches that SHA; otherwise we provision the fork remote and/or
- * fall back to `refs/pull/<n>/head` on the base repository.
+ * Linked-PR worktree inputs: the server always checks out `refs/pull/<n>/head`
+ * from the base repository. Fork URL is optional and used only for best-effort
+ * upstream tracking after create.
  */
-export const resolvePrWorktreeConfig = (
-  pr: GitHubPullRequestSummary,
-  localBranches: string[],
-  remoteBranches: string[],
-  branchCommits: Record<string, string | undefined> = {},
-): PrWorktreeConfig => {
-  const headBranch = normalizeBranchName(pr.head || '');
-  if (!headBranch) {
-    throw new Error('PR head branch is missing');
+export const resolvePrWorktreeConfig = (pr: GitHubPullRequestSummary): PrWorktreeConfig => {
+  const baseRepoUrl = resolvePrBaseRepoUrl(pr);
+  if (!baseRepoUrl) {
+    throw new Error('PR base repository URL is unavailable');
   }
 
-  const headSha = String(pr.headSha || '').trim();
-  const prFallback = {
-    prRef: `refs/pull/${pr.number}/head` as const,
-    prBaseRepoUrl: resolvePrBaseRepoUrl(pr),
-    prBaseOwner: pr.baseRepo?.owner,
-    prBaseRepo: pr.baseRepo?.repo,
-    prHeadSha: pr.headSha,
-  };
-
-  if (localBranches.includes(headBranch) && commitsMatchPrHead(branchCommits[headBranch], headSha)) {
-    return {
-      existingBranch: headBranch,
-      setUpstream: undefined,
-      upstreamRemote: undefined,
-      upstreamBranch: undefined,
-      ensureRemoteName: undefined,
-      ensureRemoteUrl: undefined,
-      prRef: undefined,
-      prBaseRepoUrl: undefined,
-      prBaseOwner: undefined,
-      prBaseRepo: undefined,
-      prHeadSha: undefined,
-      sourceLabel: headBranch,
-    };
-  }
-
-  const availableRemoteBranch = remoteBranches.find((remoteBranch) => {
-    const slashIndex = remoteBranch.indexOf('/');
-    if (slashIndex <= 0 || slashIndex >= remoteBranch.length - 1) {
-      return false;
-    }
-    if (remoteBranch.slice(slashIndex + 1) !== headBranch) {
-      return false;
-    }
-    return commitsMatchPrHead(branchCommits[`remotes/${remoteBranch}`], headSha);
-  });
-
-  if (availableRemoteBranch) {
-    const slashIndex = availableRemoteBranch.indexOf('/');
-    const remoteName = availableRemoteBranch.slice(0, slashIndex);
-    return {
-      existingBranch: `remotes/${availableRemoteBranch}`,
-      setUpstream: true as const,
-      upstreamRemote: remoteName,
-      upstreamBranch: headBranch,
-      ensureRemoteName: undefined,
-      ensureRemoteUrl: undefined,
-      prRef: undefined,
-      prBaseRepoUrl: undefined,
-      prBaseOwner: undefined,
-      prBaseRepo: undefined,
-      prHeadSha: undefined,
-      sourceLabel: `${remoteName}/${headBranch}`,
-    };
-  }
-
+  const headBranch = normalizeBranchName(pr.head || '') || undefined;
   const ownerFromLabel = String(pr.headLabel || '').split(':')[0]?.trim();
-  const remoteSeed = pr.headRepo?.owner || ownerFromLabel || 'pr-head';
-  const remoteName = `pr-${sanitizeRemoteName(remoteSeed)}`;
-  // Prefer HTTPS for anonymous/public fetches when no matching remote exists.
-  const remoteUrl = pr.headRepo?.cloneUrl || pr.headRepo?.sshUrl || '';
-
-  if (!remoteUrl) {
-    return resolvePrHeadRefConfig(pr);
-  }
+  const headOwner = pr.headRepo?.owner || ownerFromLabel || undefined;
+  const headRepoUrl = (pr.headRepo?.cloneUrl || pr.headRepo?.sshUrl || '').trim() || undefined;
 
   return {
-    existingBranch: `remotes/${remoteName}/${headBranch}`,
-    setUpstream: true as const,
-    upstreamRemote: remoteName,
-    upstreamBranch: headBranch,
-    ensureRemoteName: remoteName,
-    ensureRemoteUrl: remoteUrl,
-    ...prFallback,
-    sourceLabel: `${remoteName}/${headBranch}`,
+    pullRequest: {
+      number: pr.number,
+      baseRepoUrl,
+      ...(pr.baseRepo?.owner ? { baseOwner: pr.baseRepo.owner } : {}),
+      ...(pr.baseRepo?.repo ? { baseRepo: pr.baseRepo.repo } : {}),
+      ...(headBranch ? { headBranch } : {}),
+      ...(headRepoUrl ? { headRepoUrl } : {}),
+      ...(headOwner ? { headOwner: sanitizeRemoteSeed(headOwner) } : {}),
+    },
+    sourceLabel: `#${pr.number} head`,
   };
 };

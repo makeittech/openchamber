@@ -422,22 +422,24 @@ describe('worktreeManager PR payload wiring', () => {
     },
   });
 
-  test('validate and create both forward prRef + prBaseRepoUrl for deleted-fork configs', async () => {
-    const prConfig = resolvePrWorktreeConfig(deletedForkPr(), [], [], {});
-    expect(prConfig.prRef).toBe('refs/pull/42/head');
-    expect(prConfig.prBaseRepoUrl).toBe('https://github.com/openchamber/openchamber.git');
+  test('validate and create both forward pullRequest identity for deleted-fork configs', async () => {
+    const prConfig = resolvePrWorktreeConfig(deletedForkPr());
+    expect(prConfig.pullRequest).toEqual({
+      number: 42,
+      baseRepoUrl: 'https://github.com/openchamber/openchamber.git',
+      baseOwner: 'openchamber',
+      baseRepo: 'openchamber',
+      headBranch: 'feature/login',
+      headOwner: 'alice',
+    });
+    expect(prConfig.pullRequest.headRepoUrl).toBe(undefined);
 
     const project = { id: 'project-1', path: '/repo' };
     const args = {
       mode: 'existing' as const,
       branchName: 'pr-42-local',
       worktreeName: 'pr-42',
-      existingBranch: prConfig.existingBranch,
-      prRef: prConfig.prRef,
-      prBaseRepoUrl: prConfig.prBaseRepoUrl,
-      prBaseOwner: prConfig.prBaseOwner,
-      prBaseRepo: prConfig.prBaseRepo,
-      prHeadSha: prConfig.prHeadSha,
+      pullRequest: prConfig.pullRequest,
     };
 
     const validation = await validateWorktreeCreate(project, args);
@@ -445,11 +447,7 @@ describe('worktreeManager PR payload wiring', () => {
     expect(validatePayloads).toHaveLength(1);
     const validated = validatePayloads[0] as Record<string, unknown>;
     expect(validated.mode).toBe('existing');
-    expect(validated.prRef).toBe('refs/pull/42/head');
-    expect(validated.prBaseRepoUrl).toBe('https://github.com/openchamber/openchamber.git');
-    expect(validated.prBaseOwner).toBe('openchamber');
-    expect(validated.prBaseRepo).toBe('openchamber');
-    expect(validated.prHeadSha).toBe('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+    expect(validated.pullRequest).toEqual(prConfig.pullRequest);
 
     await createWorktree(project, {
       ...args,
@@ -458,10 +456,6 @@ describe('worktreeManager PR payload wiring', () => {
     expect(createPayloads).toHaveLength(1);
     const created = createPayloads[0] as Record<string, unknown>;
     expect(created.mode).toBe('existing');
-    expect(created.prRef).toBe('refs/pull/42/head');
-    expect(created.prBaseRepoUrl).toBe('https://github.com/openchamber/openchamber.git');
-    expect(created.prBaseOwner).toBe('openchamber');
-    expect(created.prBaseRepo).toBe('openchamber');
-    expect(created.prHeadSha).toBe('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+    expect(created.pullRequest).toEqual(prConfig.pullRequest);
   });
 });

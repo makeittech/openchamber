@@ -392,36 +392,31 @@ export interface CreateGitWorktreePayload {
   setUpstream?: boolean;
   upstreamRemote?: string;
   upstreamBranch?: string;
-  /** Optional remote provisioning (used for fork PR workflows). */
+  /** Optional remote provisioning (used for non-PR fork workflows). */
   ensureRemoteName?: string;
   ensureRemoteUrl?: string;
   /**
-   * GitHub PR head ref fallback (e.g. `refs/pull/123/head`): when the fork's
-   * head repository is missing or unreachable, the server fetches this ref
-   * from the PR base repository (matched via `prBaseRepoUrl` / `prRefRemote`)
-   * and creates the worktree from it.
+   * Create a worktree from a linked GitHub pull request. The server always
+   * checks out `refs/pull/<number>/head` from the base repository; optional
+   * head-repo fields are best-effort upstream configuration only.
    */
-  prRef?: string;
-  /**
-   * Optional explicit git remote name that points at the PR base repository.
-   * Prefer `prBaseRepoUrl` so the server can match the correct remote by URL
-   * instead of assuming a remote named `origin`.
-   */
-  prRefRemote?: string;
-  /** Clone/SSH URL of the PR base repository used to resolve the fetch target. */
-  prBaseRepoUrl?: string;
-  /** Owner of the PR base repository (for private ref namespacing). */
-  prBaseOwner?: string;
-  /** Name of the PR base repository (for private ref namespacing). */
-  prBaseRepo?: string;
-  /**
-   * Expected PR head commit SHA. When set, a resolved local/remote/fork tip
-   * must match before it is accepted; otherwise the server falls back to
-   * `prRef` / fails closed.
-   */
-  prHeadSha?: string;
+  pullRequest?: CreateGitWorktreePullRequest;
   /** Return once the target directory exists and finish Git worktree setup in the background. */
   returnAfterDirectoryCreated?: boolean;
+}
+
+/** Linked GitHub PR identity for worktree create/validate. */
+export interface CreateGitWorktreePullRequest {
+  number: number;
+  /** Base repository URL that serves `refs/pull/<n>/head` (prefer HTTPS). */
+  baseRepoUrl: string;
+  baseOwner?: string;
+  baseRepo?: string;
+  /** Optional head branch name (local branch naming / upstream). */
+  headBranch?: string;
+  /** Optional fork URL for best-effort upstream tracking after create. */
+  headRepoUrl?: string;
+  headOwner?: string;
 }
 
 export interface GitWorktreeCreateResult {

@@ -1,9 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import {
-  commitsMatchPrHead,
-  resolvePrBaseRepoUrl,
-  resolvePrWorktreeConfig,
-} from './prWorktreeConfig';
+import { resolvePrBaseRepoUrl, resolvePrWorktreeConfig } from './prWorktreeConfig';
 import type { GitHubPullRequestSummary } from '@/lib/api/types';
 
 const basePr = (overrides: Partial<GitHubPullRequestSummary> = {}): GitHubPullRequestSummary => ({
@@ -34,74 +30,33 @@ const basePr = (overrides: Partial<GitHubPullRequestSummary> = {}): GitHubPullRe
 });
 
 describe('resolvePrBaseRepoUrl', () => {
-  test('prefers HTTPS cloneUrl over sshUrl for credential-light fallback', () => {
+  test('prefers HTTPS cloneUrl over sshUrl', () => {
     expect(resolvePrBaseRepoUrl(basePr())).toBe('https://github.com/openchamber/openchamber.git');
   });
 });
 
-describe('commitsMatchPrHead', () => {
-  test('matches full and abbreviated SHAs', () => {
-    expect(commitsMatchPrHead('abcdef1234', 'abcdef1234')).toBe(true);
-    expect(commitsMatchPrHead('abcdef1234567890', 'abcdef1234')).toBe(true);
-    expect(commitsMatchPrHead('abcdef1234', 'abcdef1234567890')).toBe(true);
-    expect(commitsMatchPrHead('aaaaaaaa', 'bbbbbbbb')).toBe(false);
-    expect(commitsMatchPrHead('', 'abcdef')).toBe(false);
-  });
-});
-
 describe('resolvePrWorktreeConfig', () => {
-  test('reuses a local branch only when its tip matches headSha', () => {
-    const matched = resolvePrWorktreeConfig(
-      basePr(),
-      ['feature/login'],
-      [],
-      { 'feature/login': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
-    );
-    expect(matched.existingBranch).toBe('feature/login');
-    expect(matched.prRef).toBe(undefined);
+  test('always sends pullRequest identity; fork URL is optional upstream only', () => {
+    const withFork = resolvePrWorktreeConfig(basePr());
+    expect(withFork.sourceLabel).toBe('#42 head');
+    expect(withFork.pullRequest).toEqual({
+      number: 42,
+      baseRepoUrl: 'https://github.com/openchamber/openchamber.git',
+      baseOwner: 'openchamber',
+      baseRepo: 'openchamber',
+      headBranch: 'feature/login',
+      headRepoUrl: 'https://github.com/alice/openchamber.git',
+      headOwner: 'alice',
+    });
 
-    const stale = resolvePrWorktreeConfig(
-      basePr(),
-      ['feature/login'],
-      [],
-      { 'feature/login': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
-    );
-    expect(stale.existingBranch).toBe('remotes/pr-alice/feature/login');
-    expect(stale.prRef).toBe('refs/pull/42/head');
-    expect(stale.prHeadSha).toBe('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
-    expect(stale.prBaseRepoUrl).toBe('https://github.com/openchamber/openchamber.git');
+    const deletedFork = resolvePrWorktreeConfig(basePr({ headRepo: null }));
+    expect(deletedFork.pullRequest.number).toBe(42);
+    expect(deletedFork.pullRequest.baseRepoUrl).toBe('https://github.com/openchamber/openchamber.git');
+    expect(deletedFork.pullRequest.headRepoUrl).toBe(undefined);
+    expect(deletedFork.pullRequest.headBranch).toBe('feature/login');
   });
 
-  test('reuses a remote-tracking branch only when tip matches headSha', () => {
-    const matched = resolvePrWorktreeConfig(
-      basePr(),
-      [],
-      ['origin/feature/login'],
-      { 'remotes/origin/feature/login': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
-    );
-    expect(matched.existingBranch).toBe('remotes/origin/feature/login');
-    expect(matched.prRef).toBe(undefined);
-
-    const stale = resolvePrWorktreeConfig(
-      basePr(),
-      [],
-      ['origin/feature/login'],
-      { 'remotes/origin/feature/login': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
-    );
-    expect(stale.ensureRemoteName).toBe('pr-alice');
-    expect(stale.prRef).toBe('refs/pull/42/head');
-  });
-
-  test('falls back to PR head ref when fork URL is missing', () => {
-    const config = resolvePrWorktreeConfig(
-      basePr({ headRepo: null }),
-      [],
-      [],
-      {},
-    );
-    expect(config.prRef).toBe('refs/pull/42/head');
-    expect(config.prBaseOwner).toBe('openchamber');
-    expect(config.prBaseRepo).toBe('openchamber');
-    expect(config.existingBranch).toBe(undefined);
+  test('throws when base repository URL is missing', () => {
+    expect(() => resolvePrWorktreeConfig(basePr({ baseRepo: null }))).toThrow('PR base repository URL is unavailable');
   });
 });

@@ -194,15 +194,6 @@ export function NewWorktreeDialog({
       .map((branchName: string) => branchName.replace(/^remotes\//, ''))
       .sort();
   }, [branches]);
-
-  const branchCommits = React.useMemo(() => {
-    const details = branches?.branches ?? {};
-    const commits: Record<string, string | undefined> = {};
-    for (const [name, detail] of Object.entries(details)) {
-      commits[name] = typeof detail?.commit === 'string' ? detail.commit : undefined;
-    }
-    return commits;
-  }, [branches]);
   
   // Get existing worktrees for the current project to avoid conflicts
   const availableWorktreesByProject = useSessionUIStore((state) => state.availableWorktreesByProject);
@@ -654,23 +645,13 @@ export function NewWorktreeDialog({
       // Only run server validation if we have values
       if (normalizedBranch && normalizedWorktree) {
         const linkedPr = mode === 'new-branch' ? newBranchState.linkedPr : null;
-        const prConfig = linkedPr ? resolvePrWorktreeConfig(linkedPr, localBranches, remoteBranches, branchCommits) : null;
+        const prConfig = linkedPr ? resolvePrWorktreeConfig(linkedPr) : null;
         const result = await validateWorktreeCreate(projectRef, {
           mode: mode === 'existing-branch' || prConfig ? 'existing' : 'new',
           branchName: normalizedBranch,
           worktreeName: normalizedWorktree,
-          existingBranch: prConfig?.existingBranch ?? (mode === 'existing-branch' ? normalizedBranch : undefined),
-          ...(prConfig?.ensureRemoteName ? { ensureRemoteName: prConfig.ensureRemoteName } : {}),
-          ...(prConfig?.ensureRemoteUrl ? { ensureRemoteUrl: prConfig.ensureRemoteUrl } : {}),
-          ...(prConfig?.prRef
-            ? {
-                prRef: prConfig.prRef,
-                prBaseRepoUrl: prConfig.prBaseRepoUrl,
-                prBaseOwner: prConfig.prBaseOwner,
-                prBaseRepo: prConfig.prBaseRepo,
-                prHeadSha: prConfig.prHeadSha,
-              }
-            : {}),
+          existingBranch: mode === 'existing-branch' ? normalizedBranch : undefined,
+          ...(prConfig?.pullRequest ? { pullRequest: prConfig.pullRequest } : {}),
         });
         
         if (abortController.signal.aborted) return;
@@ -712,9 +693,6 @@ export function NewWorktreeDialog({
     newBranchState.linkedPr,
     existingBranchState.selectedBranch,
     currentState.worktreeName,
-    localBranches,
-    remoteBranches,
-    branchCommits,
     validation.touched,
     validationAbortController,
     isCreating,
@@ -787,30 +765,16 @@ export function NewWorktreeDialog({
       let sourceLabel = '';
       const args = (() => {
         if (linkedPr) {
-          const prConfig = resolvePrWorktreeConfig(linkedPr, localBranches, remoteBranches, branchCommits);
+          const prConfig = resolvePrWorktreeConfig(linkedPr);
           sourceLabel = prConfig.sourceLabel;
           return {
             preferredName: normalizedBranch || normalizedWorktree,
             mode: 'existing' as const,
             branchName: normalizedBranch,
             worktreeName: normalizedWorktree,
-            existingBranch: prConfig.existingBranch,
             setupCommands,
-            setUpstream: prConfig.setUpstream,
-            upstreamRemote: prConfig.upstreamRemote,
-            upstreamBranch: prConfig.upstreamBranch,
             returnAfterDirectoryCreated: true,
-            ...(prConfig.ensureRemoteName ? { ensureRemoteName: prConfig.ensureRemoteName } : {}),
-            ...(prConfig.ensureRemoteUrl ? { ensureRemoteUrl: prConfig.ensureRemoteUrl } : {}),
-            ...(prConfig.prRef
-              ? {
-                  prRef: prConfig.prRef,
-                  prBaseRepoUrl: prConfig.prBaseRepoUrl,
-                  prBaseOwner: prConfig.prBaseOwner,
-                  prBaseRepo: prConfig.prBaseRepo,
-                  prHeadSha: prConfig.prHeadSha,
-                }
-              : {}),
+            pullRequest: prConfig.pullRequest,
           };
         }
 

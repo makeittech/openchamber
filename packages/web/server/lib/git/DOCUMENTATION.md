@@ -52,29 +52,19 @@ The following functions are exported and used by the web server:
 - `removeWorktree(directory, input)`: Remove a worktree (optionally delete local branch).
 - `isLinkedWorktree(directory)`: Check if directory is a linked worktree (not primary).
 
-### Worktree creation from a GitHub PR head ref
-When creating a worktree from a linked GitHub PR whose head branch lives in a
-forked repository, the server first tries the fork path: it provisions a
-`pr-<owner>` remote from the PR's head-repository URL (`ensureRemoteName` /
-`ensureRemoteUrl`) and fetches the head branch into it. If that live fork
-fetch/query fails — and only then — and the input carries `prRef`
-(e.g. `refs/pull/123/head`) with a resolvable base repository
-(`prBaseRepoUrl` and/or `prRefRemote`), the server falls back to fetching the
-PR head ref from the base repository. GitHub serves `refs/pull/<n>/head` on
-the base repository even after a fork is deleted. The base repository is
-resolved by matching remotes to `prBaseRepoUrl` (never by assuming a remote
-named `origin`); when no remote matches, the URL itself is used as the fetch
-target (UI prefers HTTPS `cloneUrl` for credential-light fallbacks). Fetched
-PR heads are stored under
-`refs/openchamber/github/<owner>/<repo>/pull/<n>/head` so PRs with the same
-number from different base repositories cannot clobber each other during
-concurrent background creates. When `prHeadSha` is provided, a resolved
-local/remote/fork tip must match that SHA before it is accepted; otherwise
-the resolver falls through to the PR ref. If both fork and PR-ref paths fail,
-the error reports both causes. Validation and creation share one resolver
-(`resolveExistingWorktreeSource`) so a stale local fork tracking ref cannot
-silently beat the PR fallback, and a validated input cannot diverge at
-creation time.
+### Worktree creation from a GitHub pull request
+Linked-PR worktree create/validate accepts a `pullRequest` object
+(`number`, `baseRepoUrl`, optional `baseOwner`/`baseRepo`, optional
+`headBranch`/`headRepoUrl`/`headOwner`). The server always checks out
+GitHub's authoritative `refs/pull/<number>/head` from the base repository
+(matched by URL to a configured remote, otherwise fetched directly —
+UI prefers HTTPS). Fetched heads are stored under
+`refs/openchamber/github/<owner>/<repo>/pull/<n>/head`. Optional head-repo
+fields are best-effort only: after create, the server may provision a
+`pr-<owner>` remote and configure upstream tracking; failure there does not
+fail worktree creation. Validation and creation share
+`resolveExistingWorktreeSource` / `resolvePullRequestWorktreeSource`.
+Non-PR existing-branch creates are unchanged.
 
 ### Commit and Remote Operations
 - `commit(directory, message, options)`: Create a commit from the current index. `options.stageFiles` may be provided with `options.files` by older callers to stage only selected unstaged rows before committing, but the shared Git panel now stages/unstages explicitly before commit.
