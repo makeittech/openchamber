@@ -398,12 +398,18 @@ export interface CreateGitWorktreePayload {
   /**
    * GitHub PR head ref fallback (e.g. `refs/pull/123/head`): when the fork's
    * head repository is missing or unreachable, the server fetches this ref
-   * from `prRefRemote` (the base repository, which GitHub serves PR refs on)
+   * from the PR base repository (matched via `prBaseRepoUrl` / `prRefRemote`)
    * and creates the worktree from it.
    */
   prRef?: string;
-  /** Remote to fetch `prRef` from; defaults to `origin`. */
+  /**
+   * Optional explicit git remote name that points at the PR base repository.
+   * Prefer `prBaseRepoUrl` so the server can match the correct remote by URL
+   * instead of assuming a remote named `origin`.
+   */
   prRefRemote?: string;
+  /** Clone/SSH URL of the PR base repository used to resolve the fetch target. */
+  prBaseRepoUrl?: string;
   /** Return once the target directory exists and finish Git worktree setup in the background. */
   returnAfterDirectoryCreated?: boolean;
 }
@@ -903,13 +909,15 @@ export type GitHubPullRequest = {
   mergeableState?: string | null;
 };
 
-type GitHubPullRequestHeadRepo = {
+type GitHubPullRequestRepo = {
   owner: string;
   repo: string;
   url: string;
   cloneUrl?: string;
   sshUrl?: string;
 };
+
+type GitHubPullRequestHeadRepo = GitHubPullRequestRepo;
 
 export type GitHubPullRequestSummary = GitHubPullRequest & {
   author?: GitHubUserSummary | null;
@@ -918,6 +926,8 @@ export type GitHubPullRequestSummary = GitHubPullRequest & {
   updatedAt?: string;
   headLabel?: string;
   headRepo?: GitHubPullRequestHeadRepo | null;
+  /** Base repository that serves `refs/pull/<n>/head` for this PR. */
+  baseRepo?: GitHubPullRequestRepo | null;
   sourceRepo?: (GitHubRepoSelector & { source: string }) | null;
 };
 

@@ -121,9 +121,9 @@ const sanitizeRemoteName = (value: string): string => {
   return normalized || 'pr-head';
 };
 
-// Resolved server inputs for a linked-PR worktree. `prRef`/`prRefRemote`
+// Resolved server inputs for a linked-PR worktree. `prRef` + `prBaseRepoUrl`
 // carry a GitHub PR head ref (`refs/pull/<n>/head`) that the server fetches
-// from the base remote when the fork's head repository is missing or
+// from the base repository when the fork's head repository is missing or
 // unreachable — GitHub serves PR refs on the base repository even after a
 // fork is deleted.
 type PrWorktreeConfig = {
@@ -134,8 +134,13 @@ type PrWorktreeConfig = {
   ensureRemoteName?: string;
   ensureRemoteUrl?: string;
   prRef?: string;
-  prRefRemote?: string;
+  prBaseRepoUrl?: string;
   sourceLabel: string;
+};
+
+const resolvePrBaseRepoUrl = (pr: GitHubPullRequestSummary): string | undefined => {
+  const url = pr.baseRepo?.sshUrl || pr.baseRepo?.cloneUrl || '';
+  return url.trim() || undefined;
 };
 
 const resolvePrHeadRefConfig = (pr: GitHubPullRequestSummary): PrWorktreeConfig => {
@@ -147,7 +152,7 @@ const resolvePrHeadRefConfig = (pr: GitHubPullRequestSummary): PrWorktreeConfig 
     ensureRemoteName: undefined,
     ensureRemoteUrl: undefined,
     prRef: `refs/pull/${pr.number}/head`,
-    prRefRemote: 'origin',
+    prBaseRepoUrl: resolvePrBaseRepoUrl(pr),
     sourceLabel: `#${pr.number} head`,
   };
 };
@@ -167,7 +172,7 @@ const resolvePrWorktreeConfig = (pr: GitHubPullRequestSummary, localBranches: st
       ensureRemoteName: undefined,
       ensureRemoteUrl: undefined,
       prRef: undefined,
-      prRefRemote: undefined,
+      prBaseRepoUrl: undefined,
       sourceLabel: headBranch,
     };
   }
@@ -191,7 +196,7 @@ const resolvePrWorktreeConfig = (pr: GitHubPullRequestSummary, localBranches: st
       ensureRemoteName: undefined,
       ensureRemoteUrl: undefined,
       prRef: undefined,
-      prRefRemote: undefined,
+      prBaseRepoUrl: undefined,
       sourceLabel: `${remoteName}/${headBranch}`,
     };
   }
@@ -218,7 +223,7 @@ const resolvePrWorktreeConfig = (pr: GitHubPullRequestSummary, localBranches: st
     // Fallback when the fork URL is present but cannot be fetched (auth,
     // network, deleted fork race): the server falls back to the PR head ref.
     prRef: `refs/pull/${pr.number}/head`,
-    prRefRemote: 'origin',
+    prBaseRepoUrl: resolvePrBaseRepoUrl(pr),
     sourceLabel: `${remoteName}/${headBranch}`,
   };
 };
@@ -764,7 +769,7 @@ export function NewWorktreeDialog({
           existingBranch: prConfig?.existingBranch ?? (mode === 'existing-branch' ? normalizedBranch : undefined),
           ...(prConfig?.ensureRemoteName ? { ensureRemoteName: prConfig.ensureRemoteName } : {}),
           ...(prConfig?.ensureRemoteUrl ? { ensureRemoteUrl: prConfig.ensureRemoteUrl } : {}),
-          ...(prConfig?.prRef ? { prRef: prConfig.prRef, prRefRemote: prConfig.prRefRemote } : {}),
+          ...(prConfig?.prRef ? { prRef: prConfig.prRef, prBaseRepoUrl: prConfig.prBaseRepoUrl } : {}),
         });
         
         if (abortController.signal.aborted) return;
@@ -895,7 +900,7 @@ export function NewWorktreeDialog({
             returnAfterDirectoryCreated: true,
             ...(prConfig.ensureRemoteName ? { ensureRemoteName: prConfig.ensureRemoteName } : {}),
             ...(prConfig.ensureRemoteUrl ? { ensureRemoteUrl: prConfig.ensureRemoteUrl } : {}),
-            ...(prConfig.prRef ? { prRef: prConfig.prRef, prRefRemote: prConfig.prRefRemote } : {}),
+            ...(prConfig.prRef ? { prRef: prConfig.prRef, prBaseRepoUrl: prConfig.prBaseRepoUrl } : {}),
           };
         }
 
