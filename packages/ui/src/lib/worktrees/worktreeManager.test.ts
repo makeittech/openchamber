@@ -401,16 +401,19 @@ describe('worktreeManager PR payload wiring', () => {
     attachmentState.attachments = new Map();
   });
 
-  test('validate and create both forward pullRequest {number, baseRepoUrl} only', async () => {
+  test('validate and create forward fork pullRequest identity only', async () => {
     const pullRequest: CreateGitWorktreePullRequest = {
       number: 42,
-      baseRepoUrl: 'https://github.com/openchamber/openchamber.git',
+      headBranch: 'feature/login',
+      headSha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      headRepoUrl: 'https://github.com/alice/openchamber.git',
+      headOwner: 'alice',
     };
 
     const project = { id: 'project-1', path: '/repo' };
     const args = {
       mode: 'existing' as const,
-      branchName: 'pr-42-local',
+      branchName: 'feature/login',
       worktreeName: 'pr-42',
       pullRequest,
     };
@@ -421,10 +424,10 @@ describe('worktreeManager PR payload wiring', () => {
     const validated = validatePayloads[0] as Record<string, unknown>;
     expect(validated.mode).toBe('existing');
     expect(validated.pullRequest).toEqual(pullRequest);
-    expect('prRef' in validated).toBe(false);
+    expect('existingBranch' in validated).toBe(false);
     expect('ensureRemoteName' in validated).toBe(false);
-    expect('setUpstream' in validated).toBe(false);
-    expect('headRepoUrl' in (validated.pullRequest as object)).toBe(false);
+    expect('prRef' in validated).toBe(false);
+    expect('baseRepoUrl' in (validated.pullRequest as object)).toBe(false);
 
     await createWorktree(project, {
       ...args,
@@ -432,9 +435,8 @@ describe('worktreeManager PR payload wiring', () => {
     });
     expect(createPayloads).toHaveLength(1);
     const created = createPayloads[0] as Record<string, unknown>;
-    expect(created.mode).toBe('existing');
     expect(created.pullRequest).toEqual(pullRequest);
-    expect('prRef' in created).toBe(false);
     expect('ensureRemoteUrl' in created).toBe(false);
+    expect('setUpstream' in created).toBe(false);
   });
 });

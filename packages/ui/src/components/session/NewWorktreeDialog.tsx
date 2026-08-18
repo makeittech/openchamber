@@ -100,11 +100,24 @@ const normalizeBranchName = (value: string): string => {
 
 /** Map a linked GitHub PR to create/validate identity (server owns checkout). */
 const toWorktreePullRequest = (pr: GitHubPullRequestSummary): CreateGitWorktreePullRequest => {
-  const baseRepoUrl = (pr.baseRepo?.cloneUrl || pr.baseRepo?.sshUrl || '').trim();
-  if (!baseRepoUrl) {
-    throw new Error('PR base repository URL is unavailable');
+  const headBranch = normalizeBranchName(pr.head || '');
+  if (!headBranch) {
+    throw new Error('PR head branch is missing');
   }
-  return { number: pr.number, baseRepoUrl };
+
+  // Prefer HTTPS so anonymous public fetches do not require SSH agent setup.
+  const headRepoUrl = (pr.headRepo?.cloneUrl || pr.headRepo?.sshUrl || '').trim() || undefined;
+  const ownerFromLabel = String(pr.headLabel || '').split(':')[0]?.trim();
+  const headOwner = (pr.headRepo?.owner || ownerFromLabel || '').trim() || undefined;
+  const headSha = String(pr.headSha || '').trim() || undefined;
+
+  return {
+    number: pr.number,
+    headBranch,
+    ...(headSha ? { headSha } : {}),
+    ...(headRepoUrl ? { headRepoUrl } : {}),
+    ...(headOwner ? { headOwner } : {}),
+  };
 };
 
 const slugifyWorktreeName = (value: string): string => {

@@ -247,7 +247,8 @@ const toCreatePayload = (args: {
     mode,
     ...(worktreeName ? { worktreeName } : {}),
     ...(branchName ? { branchName } : {}),
-    ...(existingBranch ? { existingBranch } : {}),
+    // Linked PRs: server owns source resolution; do not invent existingBranch.
+    ...(!args.pullRequest && existingBranch ? { existingBranch } : {}),
     ...(startRef ? { startRef } : {}),
     ...(startCommand ? { startCommand } : {}),
     ...(args.setUpstream ? { setUpstream: true } : {}),
@@ -475,7 +476,7 @@ export type CreateWorktreeArgs = {
   upstreamBranch?: string;
   ensureRemoteName?: string;
   ensureRemoteUrl?: string;
-  /** Linked GitHub PR: server checks out refs/pull/<n>/head with --no-track. */
+  /** Linked GitHub PR: server fetches the fork head branch (identity only). */
   pullRequest?: CreateGitWorktreePullRequest;
   returnAfterDirectoryCreated?: boolean;
 };

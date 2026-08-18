@@ -396,20 +396,24 @@ export interface CreateGitWorktreePayload {
   ensureRemoteName?: string;
   ensureRemoteUrl?: string;
   /**
-   * Create a worktree from a linked GitHub pull request. Server fetches
-   * `refs/pull/<number>/head` from `baseRepoUrl` and creates a local branch
-   * with `--no-track` (no upstream configuration).
+   * Create a worktree from a linked GitHub pull request. The server provisions
+   * the fork remote and fetches `headBranch`. Missing/unreachable forks fail
+   * with a clear error (no partial worktree).
    */
   pullRequest?: CreateGitWorktreePullRequest;
   /** Return once the target directory exists and finish Git worktree setup in the background. */
   returnAfterDirectoryCreated?: boolean;
 }
 
-/** Linked GitHub PR identity for worktree create/validate. */
+/** Linked GitHub PR identity for worktree create/validate. Server owns git strategy. */
 export interface CreateGitWorktreePullRequest {
   number: number;
-  /** Base repository URL that serves `refs/pull/<n>/head` (prefer HTTPS). */
-  baseRepoUrl: string;
+  headBranch: string;
+  /** Authoritative PR head tip when known; required for safe local reuse. */
+  headSha?: string;
+  /** Prefer HTTPS clone URL. Omit when the fork was deleted. */
+  headRepoUrl?: string;
+  headOwner?: string;
 }
 
 export interface GitWorktreeCreateResult {

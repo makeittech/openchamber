@@ -1804,101 +1804,13 @@ const sanitizeGitRefSegment = (value) => {
   return cleaned;
 };
 
-// Normalize clone/SSH/HTTPS remote URLs to a comparable host/owner/repo key so
-// `origin` vs `upstream` naming does not matter when locating the PR base repo.
-const normalizeGitRemoteIdentity = (value) => {
-  const raw = String(value || '').trim();
-  if (!raw) {
-    return '';
+const gitTipsMatch = (actual, expected) => {
+  const tip = String(actual || '').trim().toLowerCase();
+  const want = String(expected || '').trim().toLowerCase();
+  if (!tip || !want) {
+    return false;
   }
-
-  let candidate = raw.replace(/\.git$/i, '');
-  const scpMatch = candidate.match(/^git@([^:]+):(.+)$/i);
-  if (scpMatch) {
-    const host = scpMatch[1].toLowerCase();
-    const repoPath = scpMatch[2].replace(/^\/+/, '').replace(/\/+$/, '').toLowerCase();
-    return repoPath ? `${host}/${repoPath}` : '';
-  }
-
-  try {
-    const withProtocol = /:\/\//.test(candidate)
-      ? candidate
-      : `https://${candidate.replace(/^\/+/, '')}`;
-    const url = new URL(withProtocol);
-    const host = url.hostname.toLowerCase();
-    const repoPath = url.pathname
-      .replace(/^\/+/, '')
-      .replace(/\/+$/, '')
-      .replace(/\.git$/i, '')
-      .toLowerCase();
-    return repoPath ? `${host}/${repoPath}` : '';
-  } catch {
-    return candidate.toLowerCase();
-  }
-};
-
-const resolvePrBaseRepoRefParts = (baseRepoUrl) => {
-  const identity = normalizeGitRemoteIdentity(baseRepoUrl);
-  const parts = identity.split('/').filter(Boolean);
-  if (parts.length >= 2) {
-    const derivedOwner = sanitizeGitRefSegment(parts[parts.length - 2]);
-    const derivedRepo = sanitizeGitRefSegment(parts[parts.length - 1]);
-    if (derivedOwner && derivedRepo) {
-      return { owner: derivedOwner, repo: derivedRepo };
-    }
-  }
-  return null;
-};
-
-// Namespace by base owner/repo derived from baseRepoUrl so distinct base
-// repositories with the same PR number do not clobber each other.
-const openChamberPullHeadRef = (prNumber, baseParts) => {
-  const number = Number(prNumber);
-  if (baseParts?.owner && baseParts?.repo) {
-    return `refs/openchamber/github/${baseParts.owner}/${baseParts.repo}/pull/${number}/head`;
-  }
-  return `refs/openchamber/pull/${number}/head`;
-};
-
-const listRemoteFetchTargets = async (primaryWorktree) => {
-  const result = await runGitCommand(primaryWorktree, ['remote', '-v']);
-  if (!result.success) {
-    return [];
-  }
-
-  const remotes = [];
-  for (const line of String(result.stdout || '').split('\n')) {
-    const match = line.trim().match(/^(\S+)\s+(\S+)\s+\(fetch\)$/);
-    if (!match) {
-      continue;
-    }
-    remotes.push({ name: match[1], url: match[2] });
-  }
-  return remotes;
-};
-
-// Prefer a configured remote whose URL matches the PR base repository (for
-// credentials), otherwise fetch/ls-remote the base URL directly.
-const resolvePrFetchTarget = async (primaryWorktree, baseRepoUrl) => {
-  const url = String(baseRepoUrl || '').trim();
-  if (!url) {
-    throw new Error('Unable to resolve the pull request base repository for refs/pull fetch');
-  }
-
-  const remotes = await listRemoteFetchTargets(primaryWorktree);
-  const exact = remotes.find((remote) => remote.url === url);
-  if (exact) {
-    return exact.name;
-  }
-
-  const wanted = normalizeGitRemoteIdentity(url);
-  if (wanted) {
-    const match = remotes.find((remote) => normalizeGitRemoteIdentity(remote.url) === wanted);
-    if (match) {
-      return match.name;
-    }
-  }
-  return url;
+  return tip === want || tip.startsWith(want) || want.startsWith(tip);
 };
 
 const normalizePullRequestInput = (value) => {
@@ -1906,61 +1818,31 @@ const normalizePullRequestInput = (value) => {
     return null;
   }
   const number = Number(value.number);
-  const baseRepoUrl = String(value.baseRepoUrl || '').trim();
-  if (!Number.isInteger(number) || number <= 0 || !baseRepoUrl) {
+  const headBranch = cleanBranchName(String(value.headBranch || '').trim());
+  if (!Number.isInteger(number) || number <= 0 || !headBranch) {
     return null;
   }
-  return { number, baseRepoUrl };
+  return {
+    number,
+    headBranch,
+    headSha: String(value.headSha || '').trim(),
+    headRepoUrl: String(value.headRepoUrl || '').trim(),
+    headOwner: sanitizeGitRefSegment(value.headOwner) || 'head',
+  };
 };
 
-// Query or fetch GitHub's refs/pull/<n>/head from the base repository into a
-// private OpenChamber ref namespace.
-const resolvePullRequestHeadRef = async (primaryWorktree, fetchTarget, prNumber, options = {}) => {
-  const target = String(fetchTarget || '').trim();
-  const number = Number(prNumber);
-  const shouldFetch = options.fetch === true;
-  const trackingRef = String(options.trackingRef || '').trim();
-
-  if (!target) {
-    throw new Error('Pull request fetch target is required');
+const resolveCommitTip = async (primaryWorktree, ref) => {
+  const result = await runGitCommand(primaryWorktree, ['rev-parse', '--verify', `${ref}^{commit}`]);
+  if (!result.success) {
+    return '';
   }
-  if (!Number.isInteger(number) || number <= 0) {
-    throw new Error(`Invalid pull request number: ${prNumber}`);
-  }
-
-  if (!shouldFetch) {
-    const lsRemote = await runGitCommand(
-      primaryWorktree,
-      ['ls-remote', target, `refs/pull/${number}/head`]
-    );
-    if (!lsRemote.success) {
-      throw new Error(`Unable to query ${target}`);
-    }
-    const line = String(lsRemote.stdout || '').trim();
-    if (!line) {
-      throw new Error(`Pull request head ref not found: refs/pull/${number}/head`);
-    }
-    return {
-      sha: line.split(/\s+/)[0] || '',
-      trackingRef: trackingRef || null,
-    };
-  }
-
-  if (!trackingRef) {
-    throw new Error('Pull request tracking ref is required when fetching');
-  }
-  const refspec = `+refs/pull/${number}/head:${trackingRef}`;
-  await runGitCommandOrThrow(
-    primaryWorktree,
-    ['fetch', target, refspec],
-    `Failed to fetch pull request ${number} head ref from ${target}`
-  );
-  return { sha: '', trackingRef };
+  return String(result.stdout || '').trim();
 };
 
 /**
- * Linked-PR path: fetch refs/pull/<n>/head, create local branch --no-track.
- * No upstream / fork-remote configuration.
+ * Linked-PR path: provision the fork remote and fetch the head branch.
+ * Local reuse is allowed only when the tip matches headSha (authoritative).
+ * Missing/unreachable fork → clear error (no refs/pull fallback).
  *
  * @param {'validate'|'create'} intent
  */
@@ -1970,36 +1852,94 @@ const resolvePullRequestWorktreeSource = async (
   preferredBranchName,
   intent = 'create'
 ) => {
-  const baseParts = resolvePrBaseRepoRefParts(pullRequest.baseRepoUrl);
-  const fetchTarget = await resolvePrFetchTarget(primaryWorktree, pullRequest.baseRepoUrl);
-  const trackingRef = openChamberPullHeadRef(pullRequest.number, baseParts);
-
-  await resolvePullRequestHeadRef(primaryWorktree, fetchTarget, pullRequest.number, {
-    fetch: intent === 'create',
-    trackingRef,
-  });
-
-  const localBranch = cleanBranchName(preferredBranchName || `pr-${pullRequest.number}`);
+  const headBranch = pullRequest.headBranch;
+  const localBranch = cleanBranchName(preferredBranchName || headBranch);
   if (!localBranch) {
     throw new Error('Failed to resolve local branch name for pull request worktree');
   }
 
+  // Authoritative local reuse only — never trust same-name heuristics alone.
+  if (pullRequest.headSha) {
+    const localTip = await resolveCommitTip(primaryWorktree, `refs/heads/${headBranch}`);
+    if (localTip && gitTipsMatch(localTip, pullRequest.headSha)) {
+      return {
+        localBranch: headBranch,
+        checkoutRef: headBranch,
+        createLocalBranch: false,
+        setUpstream: false,
+        upstream: null,
+        ensureRemoteName: '',
+        ensureRemoteUrl: '',
+        sourceType: 'pr-local',
+      };
+    }
+  }
+
+  if (!pullRequest.headRepoUrl) {
+    throw new Error(
+      `PR #${pullRequest.number} head repository URL is unavailable. `
+      + 'The fork may have been deleted; push the branch to a reachable repository and try again.'
+    );
+  }
+
+  const remoteName = `pr-${pullRequest.headOwner}`;
+  const remoteRef = `${remoteName}/${headBranch}`;
+
+  if (intent === 'validate') {
+    const lsRemote = await runGitCommand(
+      primaryWorktree,
+      ['ls-remote', '--heads', pullRequest.headRepoUrl, `refs/heads/${headBranch}`]
+    );
+    if (!lsRemote.success) {
+      throw new Error(
+        `Unable to reach PR #${pullRequest.number} head repository (${pullRequest.headRepoUrl}). `
+        + 'Check network access and credentials for that fork.'
+      );
+    }
+    if (!String(lsRemote.stdout || '').trim()) {
+      throw new Error(
+        `PR #${pullRequest.number} head branch "${headBranch}" was not found on ${pullRequest.headRepoUrl}.`
+      );
+    }
+  } else {
+    await ensureRemoteWithUrl(primaryWorktree, remoteName, pullRequest.headRepoUrl);
+    try {
+      await fetchRemoteBranchRef(primaryWorktree, remoteName, headBranch);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Unable to fetch PR #${pullRequest.number} head branch "${headBranch}" `
+        + `from ${pullRequest.headRepoUrl}. ${detail}`
+      );
+    }
+
+    if (pullRequest.headSha) {
+      const fetchedTip = await resolveCommitTip(primaryWorktree, `refs/remotes/${remoteName}/${headBranch}`);
+      if (fetchedTip && !gitTipsMatch(fetchedTip, pullRequest.headSha)) {
+        throw new Error(
+          `PR #${pullRequest.number} head SHA mismatch after fetch `
+          + `(expected ${pullRequest.headSha}, got ${fetchedTip}).`
+        );
+      }
+    }
+  }
+
   return {
     localBranch,
-    checkoutRef: trackingRef,
+    checkoutRef: remoteRef,
     createLocalBranch: true,
-    setUpstream: false,
-    upstream: null,
-    ensureRemoteName: '',
-    ensureRemoteUrl: '',
-    sourceType: 'pr-ref',
+    setUpstream: true,
+    upstream: { remote: remoteName, branch: headBranch },
+    ensureRemoteName: remoteName,
+    ensureRemoteUrl: pullRequest.headRepoUrl,
+    sourceType: 'pr-fork',
   };
 };
 
 /**
  * Shared existing-mode resolver for validate + create.
- * Linked PRs (`input.pullRequest`) always check out the PR head ref.
- * Non-PR existing branches keep the local / remote / provisioned-fork path.
+ * Linked PRs (`input.pullRequest`) resolve via the fork head remote.
+ * Non-PR existing branches keep the local / remote / provisioned-remote path.
  *
  * @param {'validate'|'create'} intent
  */
@@ -2169,10 +2109,9 @@ const applyUpstreamConfiguration = async (args) => {
       ['branch', `--set-upstream-to=${upstream.full}`, localBranch],
       `Failed to set upstream to ${upstream.full}`
     );
-    return;
   }
-
-  await setBranchTrackingFallback(worktreeDirectory, localBranch, upstream);
+  // If the upstream ref could not be fetched, leave tracking unset rather than
+  // writing branch.*.remote/merge that point at a never-fetched ref.
 };
 
 export async function isGitRepository(directory) {
@@ -3961,6 +3900,7 @@ export async function validateWorktreeCreate(directory, input = {}) {
     let localBranch = '';
     let inferredUpstream = null;
     let allowSetUpstream = Boolean(input?.setUpstream);
+    let pendingEnsureRemoteName = ensureRemoteName;
 
     if (mode === 'existing') {
       try {
@@ -3972,9 +3912,14 @@ export async function validateWorktreeCreate(directory, input = {}) {
             branch: resolved.upstream.branch,
           };
         }
-        // Linked PRs never configure upstream; ignore caller setUpstream.
-        if (resolved.sourceType === 'pr-ref') {
+        if (resolved.ensureRemoteName) {
+          pendingEnsureRemoteName = resolved.ensureRemoteName;
+        }
+        // Linked-PR local reuse has no upstream; fork path sets it on the resolver.
+        if (resolved.sourceType === 'pr-local') {
           allowSetUpstream = false;
+        } else if (resolved.sourceType === 'pr-fork' && resolved.setUpstream) {
+          allowSetUpstream = true;
         }
       } catch (error) {
         errors.push({
@@ -4079,7 +4024,7 @@ export async function validateWorktreeCreate(directory, input = {}) {
         });
       } else {
         const remoteExists = await runGitCommand(context.primaryWorktree, ['remote', 'get-url', upstreamRemote]);
-        if (!remoteExists.success && (!ensureRemoteName || ensureRemoteName !== upstreamRemote)) {
+        if (!remoteExists.success && (!pendingEnsureRemoteName || pendingEnsureRemoteName !== upstreamRemote)) {
           errors.push({
             code: 'remote_not_found',
             message: `Remote not found: ${upstreamRemote}`,
@@ -4143,7 +4088,6 @@ export async function previewWorktreeCreate(directory, input = {}) {
 
 async function attachGitWorktreeToCandidate(context, candidate, input = {}) {
   const mode = input?.mode === 'existing' ? 'existing' : 'new';
-  const preferredBranchName = cleanBranchName(String(input?.branchName || '').trim());
   const startRef = normalizeStartRef(input?.startRef);
   let ensureRemoteName = String(input?.ensureRemoteName || '').trim();
   let ensureRemoteUrl = String(input?.ensureRemoteUrl || '').trim();
@@ -4156,10 +4100,8 @@ async function attachGitWorktreeToCandidate(context, candidate, input = {}) {
   if (mode === 'existing') {
     const resolved = await resolveExistingWorktreeSource(context.primaryWorktree, input, 'create');
     localBranch = resolved.localBranch;
-    const isPrCheckout = resolved.sourceType === 'pr-ref';
-    // Linked PRs never configure upstream (PR head is not a pushable remote).
-    shouldSetUpstream = isPrCheckout ? false : resolved.setUpstream;
-    if (!isPrCheckout && resolved.ensureRemoteName && resolved.ensureRemoteUrl) {
+    shouldSetUpstream = resolved.setUpstream;
+    if (resolved.ensureRemoteName && resolved.ensureRemoteUrl) {
       ensureRemoteName = resolved.ensureRemoteName;
       ensureRemoteUrl = resolved.ensureRemoteUrl;
     }
@@ -4171,13 +4113,10 @@ async function attachGitWorktreeToCandidate(context, candidate, input = {}) {
 
     if (resolved.createLocalBranch) {
       worktreeAddArgs.push('-b', localBranch);
-      if (isPrCheckout) {
-        worktreeAddArgs.push('--no-track');
-      }
     }
     worktreeAddArgs.push(candidate.directory, resolved.checkoutRef);
 
-    if (!isPrCheckout && resolved.upstream) {
+    if (resolved.upstream) {
       inferredUpstream = {
         remote: resolved.upstream.remote,
         branch: resolved.upstream.branch,
@@ -4227,10 +4166,10 @@ async function attachGitWorktreeToCandidate(context, candidate, input = {}) {
   await runGitCommandOrThrow(context.primaryWorktree, worktreeAddArgs, 'Failed to create git worktree');
 
   const upstreamRemote = shouldSetUpstream
-    ? String(input?.upstreamRemote || inferredUpstream?.remote || '').trim()
+    ? String(inferredUpstream?.remote || input?.upstreamRemote || '').trim()
     : '';
   const upstreamBranch = shouldSetUpstream
-    ? String(input?.upstreamBranch || inferredUpstream?.branch || '').trim()
+    ? String(inferredUpstream?.branch || input?.upstreamBranch || '').trim()
     : '';
 
   const bootstrapStatus = setWorktreeBootstrapState(
