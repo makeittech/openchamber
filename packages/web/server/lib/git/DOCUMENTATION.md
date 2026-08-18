@@ -64,12 +64,16 @@ PR head ref from the base repository. GitHub serves `refs/pull/<n>/head` on
 the base repository even after a fork is deleted. The base repository is
 resolved by matching remotes to `prBaseRepoUrl` (never by assuming a remote
 named `origin`); when no remote matches, the URL itself is used as the fetch
-target. Fetched PR heads are stored under the private namespace
-`refs/openchamber/pull/<n>/head` so they cannot overwrite a legitimate
-remote-tracking branch. Fallback worktrees are created without upstream
-tracking (a PR ref has no real upstream). Validation and creation share one
-resolver (`resolveExistingWorktreeSource`) so a stale local fork tracking ref
-cannot silently beat the PR fallback, and a validated input cannot diverge at
+target (UI prefers HTTPS `cloneUrl` for credential-light fallbacks). Fetched
+PR heads are stored under
+`refs/openchamber/github/<owner>/<repo>/pull/<n>/head` so PRs with the same
+number from different base repositories cannot clobber each other during
+concurrent background creates. When `prHeadSha` is provided, a resolved
+local/remote/fork tip must match that SHA before it is accepted; otherwise
+the resolver falls through to the PR ref. If both fork and PR-ref paths fail,
+the error reports both causes. Validation and creation share one resolver
+(`resolveExistingWorktreeSource`) so a stale local fork tracking ref cannot
+silently beat the PR fallback, and a validated input cannot diverge at
 creation time.
 
 ### Commit and Remote Operations

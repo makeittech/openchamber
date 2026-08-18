@@ -37,6 +37,7 @@ import { withWorktreeUpstreamDefaults } from '@/lib/worktrees/worktreeCreate';
 import { waitForWorktreeBootstrap } from '@/lib/worktrees/worktreeBootstrap';
 import { getWorktreeSetupCommands, getWorktreeSetupWaitEnabled } from '@/lib/openchamberConfig';
 import { getRootBranch } from '@/lib/worktrees/worktreeStatus';
+import { resolvePrWorktreeConfig } from '@/lib/worktrees/prWorktreeConfig';
 import { generateBranchSlug } from '@/lib/git/branchNameGenerator';
 import { renderMagicPrompt } from '@/lib/magicPrompts';
 import { parseModelIdentifier } from '@/lib/modelIdentifier';
@@ -109,123 +110,6 @@ const slugifyWorktreeName = (value: string): string => {
     .replace(/-+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 80);
-};
-
-const sanitizeRemoteName = (value: string): string => {
-  const normalized = String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return normalized || 'pr-head';
-};
-
-// Resolved server inputs for a linked-PR worktree. `prRef` + `prBaseRepoUrl`
-// carry a GitHub PR head ref (`refs/pull/<n>/head`) that the server fetches
-// from the base repository when the fork's head repository is missing or
-// unreachable — GitHub serves PR refs on the base repository even after a
-// fork is deleted.
-type PrWorktreeConfig = {
-  existingBranch?: string;
-  setUpstream?: boolean;
-  upstreamRemote?: string;
-  upstreamBranch?: string;
-  ensureRemoteName?: string;
-  ensureRemoteUrl?: string;
-  prRef?: string;
-  prBaseRepoUrl?: string;
-  sourceLabel: string;
-};
-
-const resolvePrBaseRepoUrl = (pr: GitHubPullRequestSummary): string | undefined => {
-  const url = pr.baseRepo?.sshUrl || pr.baseRepo?.cloneUrl || '';
-  return url.trim() || undefined;
-};
-
-const resolvePrHeadRefConfig = (pr: GitHubPullRequestSummary): PrWorktreeConfig => {
-  return {
-    existingBranch: undefined,
-    setUpstream: false,
-    upstreamRemote: undefined,
-    upstreamBranch: undefined,
-    ensureRemoteName: undefined,
-    ensureRemoteUrl: undefined,
-    prRef: `refs/pull/${pr.number}/head`,
-    prBaseRepoUrl: resolvePrBaseRepoUrl(pr),
-    sourceLabel: `#${pr.number} head`,
-  };
-};
-
-const resolvePrWorktreeConfig = (pr: GitHubPullRequestSummary, localBranches: string[], remoteBranches: string[]): PrWorktreeConfig => {
-  const headBranch = normalizeBranchName(pr.head || '');
-  if (!headBranch) {
-    throw new Error('PR head branch is missing');
-  }
-
-  if (localBranches.includes(headBranch)) {
-    return {
-      existingBranch: headBranch,
-      setUpstream: undefined,
-      upstreamRemote: undefined,
-      upstreamBranch: undefined,
-      ensureRemoteName: undefined,
-      ensureRemoteUrl: undefined,
-      prRef: undefined,
-      prBaseRepoUrl: undefined,
-      sourceLabel: headBranch,
-    };
-  }
-
-  const availableRemoteBranch = remoteBranches.find((remoteBranch) => {
-    const slashIndex = remoteBranch.indexOf('/');
-    if (slashIndex <= 0 || slashIndex >= remoteBranch.length - 1) {
-      return false;
-    }
-    return remoteBranch.slice(slashIndex + 1) === headBranch;
-  });
-
-  if (availableRemoteBranch) {
-    const slashIndex = availableRemoteBranch.indexOf('/');
-    const remoteName = availableRemoteBranch.slice(0, slashIndex);
-    return {
-      existingBranch: `remotes/${availableRemoteBranch}`,
-      setUpstream: true as const,
-      upstreamRemote: remoteName,
-      upstreamBranch: headBranch,
-      ensureRemoteName: undefined,
-      ensureRemoteUrl: undefined,
-      prRef: undefined,
-      prBaseRepoUrl: undefined,
-      sourceLabel: `${remoteName}/${headBranch}`,
-    };
-  }
-
-  const ownerFromLabel = String(pr.headLabel || '').split(':')[0]?.trim();
-  const remoteSeed = pr.headRepo?.owner || ownerFromLabel || 'pr-head';
-  const remoteName = `pr-${sanitizeRemoteName(remoteSeed)}`;
-  const remoteUrl = pr.headRepo?.sshUrl || pr.headRepo?.cloneUrl || '';
-
-  if (!remoteUrl) {
-    // The fork's head repository is gone (e.g. the fork was deleted) and the
-    // GitHub API returns no URL for it. Fall back to the PR head ref, which
-    // GitHub still serves on the base repository, instead of failing.
-    return resolvePrHeadRefConfig(pr);
-  }
-
-  return {
-    existingBranch: `remotes/${remoteName}/${headBranch}`,
-    setUpstream: true as const,
-    upstreamRemote: remoteName,
-    upstreamBranch: headBranch,
-    ensureRemoteName: remoteName,
-    ensureRemoteUrl: remoteUrl,
-    // Fallback when the fork URL is present but cannot be fetched (auth,
-    // network, deleted fork race): the server falls back to the PR head ref.
-    prRef: `refs/pull/${pr.number}/head`,
-    prBaseRepoUrl: resolvePrBaseRepoUrl(pr),
-    sourceLabel: `${remoteName}/${headBranch}`,
-  };
 };
 
 interface NewWorktreeDialogProps {
@@ -309,6 +193,15 @@ export function NewWorktreeDialog({
       .filter((branchName: string) => branchName.startsWith('remotes/'))
       .map((branchName: string) => branchName.replace(/^remotes\//, ''))
       .sort();
+  }, [branches]);
+
+  const branchCommits = React.useMemo(() => {
+    const details = branches?.branches ?? {};
+    const commits: Record<string, string | undefined> = {};
+    for (const [name, detail] of Object.entries(details)) {
+      commits[name] = typeof detail?.commit === 'string' ? detail.commit : undefined;
+    }
+    return commits;
   }, [branches]);
   
   // Get existing worktrees for the current project to avoid conflicts
@@ -761,7 +654,7 @@ export function NewWorktreeDialog({
       // Only run server validation if we have values
       if (normalizedBranch && normalizedWorktree) {
         const linkedPr = mode === 'new-branch' ? newBranchState.linkedPr : null;
-        const prConfig = linkedPr ? resolvePrWorktreeConfig(linkedPr, localBranches, remoteBranches) : null;
+        const prConfig = linkedPr ? resolvePrWorktreeConfig(linkedPr, localBranches, remoteBranches, branchCommits) : null;
         const result = await validateWorktreeCreate(projectRef, {
           mode: mode === 'existing-branch' || prConfig ? 'existing' : 'new',
           branchName: normalizedBranch,
@@ -769,7 +662,15 @@ export function NewWorktreeDialog({
           existingBranch: prConfig?.existingBranch ?? (mode === 'existing-branch' ? normalizedBranch : undefined),
           ...(prConfig?.ensureRemoteName ? { ensureRemoteName: prConfig.ensureRemoteName } : {}),
           ...(prConfig?.ensureRemoteUrl ? { ensureRemoteUrl: prConfig.ensureRemoteUrl } : {}),
-          ...(prConfig?.prRef ? { prRef: prConfig.prRef, prBaseRepoUrl: prConfig.prBaseRepoUrl } : {}),
+          ...(prConfig?.prRef
+            ? {
+                prRef: prConfig.prRef,
+                prBaseRepoUrl: prConfig.prBaseRepoUrl,
+                prBaseOwner: prConfig.prBaseOwner,
+                prBaseRepo: prConfig.prBaseRepo,
+                prHeadSha: prConfig.prHeadSha,
+              }
+            : {}),
         });
         
         if (abortController.signal.aborted) return;
@@ -813,6 +714,7 @@ export function NewWorktreeDialog({
     currentState.worktreeName,
     localBranches,
     remoteBranches,
+    branchCommits,
     validation.touched,
     validationAbortController,
     isCreating,
@@ -885,7 +787,7 @@ export function NewWorktreeDialog({
       let sourceLabel = '';
       const args = (() => {
         if (linkedPr) {
-          const prConfig = resolvePrWorktreeConfig(linkedPr, localBranches, remoteBranches);
+          const prConfig = resolvePrWorktreeConfig(linkedPr, localBranches, remoteBranches, branchCommits);
           sourceLabel = prConfig.sourceLabel;
           return {
             preferredName: normalizedBranch || normalizedWorktree,
@@ -900,7 +802,15 @@ export function NewWorktreeDialog({
             returnAfterDirectoryCreated: true,
             ...(prConfig.ensureRemoteName ? { ensureRemoteName: prConfig.ensureRemoteName } : {}),
             ...(prConfig.ensureRemoteUrl ? { ensureRemoteUrl: prConfig.ensureRemoteUrl } : {}),
-            ...(prConfig.prRef ? { prRef: prConfig.prRef, prBaseRepoUrl: prConfig.prBaseRepoUrl } : {}),
+            ...(prConfig.prRef
+              ? {
+                  prRef: prConfig.prRef,
+                  prBaseRepoUrl: prConfig.prBaseRepoUrl,
+                  prBaseOwner: prConfig.prBaseOwner,
+                  prBaseRepo: prConfig.prBaseRepo,
+                  prHeadSha: prConfig.prHeadSha,
+                }
+              : {}),
           };
         }
 

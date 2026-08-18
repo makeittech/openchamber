@@ -693,6 +693,14 @@ describe('createWorktree from a GitHub PR head ref', () => {
     return sha;
   };
 
+  const prBaseMeta = {
+    prBaseOwner: 'openchamber',
+    prBaseRepo: 'openchamber',
+  };
+
+  const openChamberPrRef = (owner, repo, number) =>
+    `refs/openchamber/github/${owner}/${repo}/pull/${number}/head`;
+
   // `git config --get` exits non-zero (and execFileSync throws) when the key
   // is absent, which is exactly the state we assert on.
   const getBranchTrackingRemote = (directory, branch) => {
@@ -716,15 +724,18 @@ describe('createWorktree from a GitHub PR head ref', () => {
         worktreeName: 'pr-42',
         prRef: 'refs/pull/42/head',
         prBaseRepoUrl: remote,
+        ...prBaseMeta,
+        prHeadSha: sha,
       });
 
       expect(created.branch).toBe('pr-42-local');
       // The worktree checks out the PR head commit, not the base branch.
       expect(runGit(created.path, ['rev-parse', 'HEAD']).trim()).toBe(sha);
       await expect.poll(() => fs.existsSync(path.join(created.path, 'PR.md')), { timeout: 5_000 }).toBe(true);
-      // PR heads are stored under the private OpenChamber namespace.
-      const trackingRef = runGit(repository, ['show-ref', '--verify', 'refs/openchamber/pull/42/head']).trim();
-      expect(trackingRef).toContain('refs/openchamber/pull/42/head');
+      // PR heads are stored under the private per-repo OpenChamber namespace.
+      const trackingRefName = openChamberPrRef('openchamber', 'openchamber', 42);
+      const trackingRef = runGit(repository, ['show-ref', '--verify', trackingRefName]).trim();
+      expect(trackingRef).toContain(trackingRefName);
       expect(trackingRef.startsWith(sha)).toBe(true);
       // A PR ref has no real upstream: no tracking configuration is written.
       expect(getBranchTrackingRemote(created.path, 'pr-42-local')).toBe('');
@@ -755,6 +766,8 @@ describe('createWorktree from a GitHub PR head ref', () => {
         upstreamBranch: 'some-head',
         prRef: 'refs/pull/42/head',
         prBaseRepoUrl: remote,
+        ...prBaseMeta,
+        prHeadSha: sha,
       });
 
       expect(created.branch).toBe('pr-42-fallback');
@@ -794,6 +807,8 @@ describe('createWorktree from a GitHub PR head ref', () => {
         upstreamBranch: 'some-head',
         prRef: 'refs/pull/42/head',
         prBaseRepoUrl: remote,
+        ...prBaseMeta,
+        prHeadSha: prSha,
       };
 
       const validation = await validateWorktreeCreate(repository, input);
@@ -804,6 +819,99 @@ describe('createWorktree from a GitHub PR head ref', () => {
       expect(runGit(created.path, ['rev-parse', 'HEAD']).trim()).toBe(prSha);
       expect(runGit(created.path, ['rev-parse', 'HEAD']).trim()).not.toBe(staleSha);
       expect(getBranchTrackingRemote(created.path, 'pr-42-stale')).toBe('');
+    });
+  }, 30_000);
+
+  it('does not reuse a same-named local branch whose tip differs from prHeadSha', async () => {
+    if (!canRunGit()) return;
+
+    await withDataHome(async () => {
+      const { remote, repository } = createRepositoryWithRemote();
+      const staleSha = runGit(repository, ['rev-parse', 'HEAD']).trim();
+      runGit(repository, ['branch', 'feature/login']);
+
+      const prSha = publishPrHeadRef(repository, remote, 42);
+      expect(prSha).not.toBe(staleSha);
+
+      const created = await createWorktree(repository, {
+        mode: 'existing',
+        branchName: 'pr-42-local-stale',
+        worktreeName: 'pr-42-local-stale',
+        existingBranch: 'feature/login',
+        prRef: 'refs/pull/42/head',
+        prBaseRepoUrl: remote,
+        ...prBaseMeta,
+        prHeadSha: prSha,
+      });
+
+      expect(runGit(created.path, ['rev-parse', 'HEAD']).trim()).toBe(prSha);
+      expect(runGit(created.path, ['rev-parse', 'HEAD']).trim()).not.toBe(staleSha);
+    });
+  }, 30_000);
+
+  it('keeps PR head refs namespaced per base repository', async () => {
+    if (!canRunGit()) return;
+
+    await withDataHome(async () => {
+      const { remote, repository } = createRepositoryWithRemote();
+      const shaA = publishPrHeadRef(repository, remote, 42);
+
+      await createWorktree(repository, {
+        mode: 'existing',
+        branchName: 'pr-42-a',
+        worktreeName: 'pr-42-a',
+        prRef: 'refs/pull/42/head',
+        prBaseRepoUrl: remote,
+        prBaseOwner: 'openchamber',
+        prBaseRepo: 'openchamber',
+        prHeadSha: shaA,
+      });
+
+      fs.writeFileSync(path.join(repository, 'OTHER.md'), '# other\n');
+      runGit(repository, ['add', 'OTHER.md']);
+      runGit(repository, ['commit', '-m', 'other base pr head']);
+      const shaB = runGit(repository, ['rev-parse', 'HEAD']).trim();
+      runGit(repository, ['push', remote, `HEAD:refs/pull/42/head`]);
+
+      await createWorktree(repository, {
+        mode: 'existing',
+        branchName: 'pr-42-b',
+        worktreeName: 'pr-42-b',
+        prRef: 'refs/pull/42/head',
+        prBaseRepoUrl: remote,
+        prBaseOwner: 'makeittech',
+        prBaseRepo: 'openchamber',
+        prHeadSha: shaB,
+      });
+
+      const refA = openChamberPrRef('openchamber', 'openchamber', 42);
+      const refB = openChamberPrRef('makeittech', 'openchamber', 42);
+      expect(runGit(repository, ['rev-parse', refA]).trim()).toBe(shaA);
+      expect(runGit(repository, ['rev-parse', refB]).trim()).toBe(shaB);
+      expect(shaA).not.toBe(shaB);
+    });
+  }, 30_000);
+
+  it('surfaces both fork and PR-ref failures in a composite error', async () => {
+    if (!canRunGit()) return;
+
+    await withDataHome(async () => {
+      const { repository } = createRepositoryWithRemote();
+      const fork = createTempDir();
+      runGit(fork, ['init', '--bare']);
+      const missingBase = createTempDir();
+
+      await expect(createWorktree(repository, {
+        mode: 'existing',
+        branchName: 'pr-42-both-fail',
+        worktreeName: 'pr-42-both-fail',
+        existingBranch: 'remotes/pr-fork/some-head',
+        ensureRemoteName: 'pr-fork',
+        ensureRemoteUrl: fork,
+        prRef: 'refs/pull/42/head',
+        prBaseRepoUrl: path.join(missingBase, 'does-not-exist.git'),
+        ...prBaseMeta,
+      })).rejects.toThrow(/Failed to resolve PR head/);
     });
   }, 30_000);
 
@@ -827,10 +935,13 @@ describe('createWorktree from a GitHub PR head ref', () => {
         worktreeName: 'pr-99-upstream',
         prRef: 'refs/pull/99/head',
         prBaseRepoUrl: upstreamRemote,
+        ...prBaseMeta,
+        prHeadSha: sha,
       });
 
       expect(runGit(created.path, ['rev-parse', 'HEAD']).trim()).toBe(sha);
-      const trackingRef = runGit(repository, ['show-ref', '--verify', 'refs/openchamber/pull/99/head']).trim();
+      const trackingRefName = openChamberPrRef('openchamber', 'openchamber', 99);
+      const trackingRef = runGit(repository, ['show-ref', '--verify', trackingRefName]).trim();
       expect(trackingRef.startsWith(sha)).toBe(true);
       // Must not invent a colliding remote-tracking branch under origin/.
       expect(() => runGit(repository, ['show-ref', '--verify', 'refs/remotes/origin/pr-99-head'])).toThrow();

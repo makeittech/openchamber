@@ -410,6 +410,16 @@ export interface CreateGitWorktreePayload {
   prRefRemote?: string;
   /** Clone/SSH URL of the PR base repository used to resolve the fetch target. */
   prBaseRepoUrl?: string;
+  /** Owner of the PR base repository (for private ref namespacing). */
+  prBaseOwner?: string;
+  /** Name of the PR base repository (for private ref namespacing). */
+  prBaseRepo?: string;
+  /**
+   * Expected PR head commit SHA. When set, a resolved local/remote/fork tip
+   * must match before it is accepted; otherwise the server falls back to
+   * `prRef` / fails closed.
+   */
+  prHeadSha?: string;
   /** Return once the target directory exists and finish Git worktree setup in the background. */
   returnAfterDirectoryCreated?: boolean;
 }

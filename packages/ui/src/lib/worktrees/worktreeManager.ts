@@ -225,6 +225,9 @@ const toCreatePayload = (args: {
   prRef?: string;
   prRefRemote?: string;
   prBaseRepoUrl?: string;
+  prBaseOwner?: string;
+  prBaseRepo?: string;
+  prHeadSha?: string;
   returnAfterDirectoryCreated?: boolean;
 }, projectDirectory: string): CreateGitWorktreePayload => {
   const mode = args.mode === 'existing' ? 'existing' : 'new';
@@ -259,6 +262,9 @@ const toCreatePayload = (args: {
     ...(args.prRef ? { prRef: args.prRef } : {}),
     ...(args.prRefRemote ? { prRefRemote: args.prRefRemote } : {}),
     ...(args.prBaseRepoUrl ? { prBaseRepoUrl: args.prBaseRepoUrl } : {}),
+    ...(args.prBaseOwner ? { prBaseOwner: args.prBaseOwner } : {}),
+    ...(args.prBaseRepo ? { prBaseRepo: args.prBaseRepo } : {}),
+    ...(args.prHeadSha ? { prHeadSha: args.prHeadSha } : {}),
     ...(args.returnAfterDirectoryCreated ? { returnAfterDirectoryCreated: true } : {}),
   };
 };
@@ -482,6 +488,9 @@ export type CreateWorktreeArgs = {
   prRef?: string;
   prRefRemote?: string;
   prBaseRepoUrl?: string;
+  prBaseOwner?: string;
+  prBaseRepo?: string;
+  prHeadSha?: string;
   returnAfterDirectoryCreated?: boolean;
 };
 
