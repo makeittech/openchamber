@@ -475,7 +475,7 @@ export type CreateWorktreeArgs = {
   upstreamBranch?: string;
   ensureRemoteName?: string;
   ensureRemoteUrl?: string;
-  /** Linked GitHub PR: server checks out refs/pull/<n>/head; fork URL is best-effort upstream only. */
+  /** Linked GitHub PR: server checks out refs/pull/<n>/head with --no-track. */
   pullRequest?: CreateGitWorktreePullRequest;
   returnAfterDirectoryCreated?: boolean;
 };

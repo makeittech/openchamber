@@ -98,26 +98,13 @@ const normalizeBranchName = (value: string): string => {
     .replace(/^\/+|\/+$/g, '');
 };
 
-/** Map a linked GitHub PR to the create/validate identity payload (server owns checkout). */
+/** Map a linked GitHub PR to create/validate identity (server owns checkout). */
 const toWorktreePullRequest = (pr: GitHubPullRequestSummary): CreateGitWorktreePullRequest => {
   const baseRepoUrl = (pr.baseRepo?.cloneUrl || pr.baseRepo?.sshUrl || '').trim();
   if (!baseRepoUrl) {
     throw new Error('PR base repository URL is unavailable');
   }
-
-  const headBranch = normalizeBranchName(pr.head || '') || undefined;
-  const headRepoUrl = (pr.headRepo?.cloneUrl || pr.headRepo?.sshUrl || '').trim() || undefined;
-  const headOwner = (pr.headRepo?.owner || String(pr.headLabel || '').split(':')[0] || '').trim() || undefined;
-
-  return {
-    number: pr.number,
-    baseRepoUrl,
-    ...(pr.baseRepo?.owner ? { baseOwner: pr.baseRepo.owner } : {}),
-    ...(pr.baseRepo?.repo ? { baseRepo: pr.baseRepo.repo } : {}),
-    ...(headBranch ? { headBranch } : {}),
-    ...(headRepoUrl ? { headRepoUrl } : {}),
-    ...(headOwner ? { headOwner } : {}),
-  };
+  return { number: pr.number, baseRepoUrl };
 };
 
 const slugifyWorktreeName = (value: string): string => {

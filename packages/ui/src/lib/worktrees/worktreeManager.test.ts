@@ -401,14 +401,10 @@ describe('worktreeManager PR payload wiring', () => {
     attachmentState.attachments = new Map();
   });
 
-  test('validate and create both forward pullRequest identity for deleted-fork configs', async () => {
+  test('validate and create both forward pullRequest {number, baseRepoUrl} only', async () => {
     const pullRequest: CreateGitWorktreePullRequest = {
       number: 42,
       baseRepoUrl: 'https://github.com/openchamber/openchamber.git',
-      baseOwner: 'openchamber',
-      baseRepo: 'openchamber',
-      headBranch: 'feature/login',
-      headOwner: 'alice',
     };
 
     const project = { id: 'project-1', path: '/repo' };
@@ -428,6 +424,7 @@ describe('worktreeManager PR payload wiring', () => {
     expect('prRef' in validated).toBe(false);
     expect('ensureRemoteName' in validated).toBe(false);
     expect('setUpstream' in validated).toBe(false);
+    expect('headRepoUrl' in (validated.pullRequest as object)).toBe(false);
 
     await createWorktree(project, {
       ...args,

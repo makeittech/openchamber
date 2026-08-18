@@ -53,18 +53,13 @@ The following functions are exported and used by the web server:
 - `isLinkedWorktree(directory)`: Check if directory is a linked worktree (not primary).
 
 ### Worktree creation from a GitHub pull request
-Linked-PR worktree create/validate accepts a `pullRequest` object
-(`number`, `baseRepoUrl`, optional `baseOwner`/`baseRepo`, optional
-`headBranch`/`headRepoUrl`/`headOwner`). The server always checks out
-GitHub's authoritative `refs/pull/<number>/head` from the base repository
-(matched by URL to a configured remote, otherwise fetched directly —
-UI prefers HTTPS). Fetched heads are stored under
-`refs/openchamber/github/<owner>/<repo>/pull/<n>/head`. Optional head-repo
-fields are best-effort only: after create, the server may provision a
-`pr-<owner>` remote and configure upstream tracking; failure there does not
-fail worktree creation. Validation and creation share
-`resolveExistingWorktreeSource` / `resolvePullRequestWorktreeSource`.
-Non-PR existing-branch creates are unchanged.
+Linked-PR worktree create/validate accepts `pullRequest: { number, baseRepoUrl }`.
+The server fetches GitHub's `refs/pull/<number>/head` from the base repository
+(matched by URL to a configured remote, otherwise fetched directly — UI prefers
+HTTPS), stores it under `refs/openchamber/...`, and creates a local branch with
+`--no-track`. No fork remote or upstream tracking is configured for linked PRs.
+Validation and creation share `resolveExistingWorktreeSource` /
+`resolvePullRequestWorktreeSource`. Non-PR existing-branch creates are unchanged.
 
 ### Commit and Remote Operations
 - `commit(directory, message, options)`: Create a commit from the current index. `options.stageFiles` may be provided with `options.files` by older callers to stage only selected unstaged rows before committing, but the shared Git panel now stages/unstages explicitly before commit.

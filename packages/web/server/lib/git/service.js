@@ -1837,14 +1837,8 @@ const normalizeGitRemoteIdentity = (value) => {
   }
 };
 
-const resolvePrBaseRepoRefParts = (pullRequest = {}) => {
-  const owner = sanitizeGitRefSegment(pullRequest.baseOwner);
-  const repo = sanitizeGitRefSegment(pullRequest.baseRepo);
-  if (owner && repo) {
-    return { owner, repo };
-  }
-
-  const identity = normalizeGitRemoteIdentity(pullRequest.baseRepoUrl);
+const resolvePrBaseRepoRefParts = (baseRepoUrl) => {
+  const identity = normalizeGitRemoteIdentity(baseRepoUrl);
   const parts = identity.split('/').filter(Boolean);
   if (parts.length >= 2) {
     const derivedOwner = sanitizeGitRefSegment(parts[parts.length - 2]);
@@ -1856,9 +1850,8 @@ const resolvePrBaseRepoRefParts = (pullRequest = {}) => {
   return null;
 };
 
-// Namespace by base owner/repo so openchamber/openchamber#42 and
-// makeittech/openchamber#42 cannot overwrite each other under concurrent
-// returnAfterDirectoryCreated background creates.
+// Namespace by base owner/repo derived from baseRepoUrl so distinct base
+// repositories with the same PR number do not clobber each other.
 const openChamberPullHeadRef = (prNumber, baseParts) => {
   const number = Number(prNumber);
   if (baseParts?.owner && baseParts?.repo) {
@@ -1917,15 +1910,7 @@ const normalizePullRequestInput = (value) => {
   if (!Number.isInteger(number) || number <= 0 || !baseRepoUrl) {
     return null;
   }
-  return {
-    number,
-    baseRepoUrl,
-    baseOwner: String(value.baseOwner || '').trim(),
-    baseRepo: String(value.baseRepo || '').trim(),
-    headBranch: cleanBranchName(String(value.headBranch || '').trim()),
-    headRepoUrl: String(value.headRepoUrl || '').trim(),
-    headOwner: sanitizeGitRefSegment(value.headOwner) || 'head',
-  };
+  return { number, baseRepoUrl };
 };
 
 // Query or fetch GitHub's refs/pull/<n>/head from the base repository into a
@@ -1974,8 +1959,8 @@ const resolvePullRequestHeadRef = async (primaryWorktree, fetchTarget, prNumber,
 };
 
 /**
- * Authoritative linked-PR path: always checkout refs/pull/<n>/head from the
- * base repository. Optional headRepoUrl is best-effort upstream only.
+ * Linked-PR path: fetch refs/pull/<n>/head, create local branch --no-track.
+ * No upstream / fork-remote configuration.
  *
  * @param {'validate'|'create'} intent
  */
@@ -1985,7 +1970,7 @@ const resolvePullRequestWorktreeSource = async (
   preferredBranchName,
   intent = 'create'
 ) => {
-  const baseParts = resolvePrBaseRepoRefParts(pullRequest);
+  const baseParts = resolvePrBaseRepoRefParts(pullRequest.baseRepoUrl);
   const fetchTarget = await resolvePrFetchTarget(primaryWorktree, pullRequest.baseRepoUrl);
   const trackingRef = openChamberPullHeadRef(pullRequest.number, baseParts);
 
@@ -1994,44 +1979,19 @@ const resolvePullRequestWorktreeSource = async (
     trackingRef,
   });
 
-  const localBranch = cleanBranchName(
-    preferredBranchName || pullRequest.headBranch || `pr-${pullRequest.number}`
-  );
+  const localBranch = cleanBranchName(preferredBranchName || `pr-${pullRequest.number}`);
   if (!localBranch) {
     throw new Error('Failed to resolve local branch name for pull request worktree');
-  }
-
-  let upstream = null;
-  let ensureRemoteName = '';
-  let ensureRemoteUrl = '';
-  if (pullRequest.headRepoUrl && pullRequest.headBranch) {
-    let headOwner = pullRequest.headOwner;
-    if (!headOwner || headOwner === 'head') {
-      const identity = normalizeGitRemoteIdentity(pullRequest.headRepoUrl);
-      const parts = identity.split('/').filter(Boolean);
-      if (parts.length >= 2) {
-        headOwner = sanitizeGitRefSegment(parts[parts.length - 2]) || 'head';
-      } else {
-        headOwner = 'head';
-      }
-    }
-    ensureRemoteName = `pr-${headOwner}`;
-    ensureRemoteUrl = pullRequest.headRepoUrl;
-    upstream = {
-      remote: ensureRemoteName,
-      branch: pullRequest.headBranch,
-    };
   }
 
   return {
     localBranch,
     checkoutRef: trackingRef,
     createLocalBranch: true,
-    // Worktree add uses --no-track; upstream is configured best-effort after.
-    setUpstream: Boolean(upstream),
-    upstream,
-    ensureRemoteName,
-    ensureRemoteUrl,
+    setUpstream: false,
+    upstream: null,
+    ensureRemoteName: '',
+    ensureRemoteUrl: '',
     sourceType: 'pr-ref',
   };
 };
@@ -4012,8 +3972,7 @@ export async function validateWorktreeCreate(directory, input = {}) {
             branch: resolved.upstream.branch,
           };
         }
-        // Fork upstream for linked PRs is best-effort after create; do not
-        // fail validate when caller defaults inject setUpstream.
+        // Linked PRs never configure upstream; ignore caller setUpstream.
         if (resolved.sourceType === 'pr-ref') {
           allowSetUpstream = false;
         }
@@ -4192,18 +4151,15 @@ async function attachGitWorktreeToCandidate(context, candidate, input = {}) {
   let localBranch = '';
   let inferredUpstream = null;
   let shouldSetUpstream = Boolean(input?.setUpstream);
-  // Linked-PR creates must prefer the resolver's fork upstream over UI
-  // `withWorktreeUpstreamDefaults` (which may inject origin tracking).
-  let preferResolvedUpstream = false;
   const worktreeAddArgs = ['worktree', 'add', '--no-checkout'];
 
   if (mode === 'existing') {
     const resolved = await resolveExistingWorktreeSource(context.primaryWorktree, input, 'create');
     localBranch = resolved.localBranch;
-    shouldSetUpstream = resolved.setUpstream;
     const isPrCheckout = resolved.sourceType === 'pr-ref';
-    preferResolvedUpstream = isPrCheckout;
-    if (resolved.ensureRemoteName && resolved.ensureRemoteUrl) {
+    // Linked PRs never configure upstream (PR head is not a pushable remote).
+    shouldSetUpstream = isPrCheckout ? false : resolved.setUpstream;
+    if (!isPrCheckout && resolved.ensureRemoteName && resolved.ensureRemoteUrl) {
       ensureRemoteName = resolved.ensureRemoteName;
       ensureRemoteUrl = resolved.ensureRemoteUrl;
     }
@@ -4216,14 +4172,12 @@ async function attachGitWorktreeToCandidate(context, candidate, input = {}) {
     if (resolved.createLocalBranch) {
       worktreeAddArgs.push('-b', localBranch);
       if (isPrCheckout) {
-        // PR checkout source is refs/pull/<n>/head (not pushable). Upstream to
-        // the fork head, when configured, is applied best-effort after create.
         worktreeAddArgs.push('--no-track');
       }
     }
     worktreeAddArgs.push(candidate.directory, resolved.checkoutRef);
 
-    if (resolved.upstream) {
+    if (!isPrCheckout && resolved.upstream) {
       inferredUpstream = {
         remote: resolved.upstream.remote,
         branch: resolved.upstream.branch,
@@ -4273,20 +4227,10 @@ async function attachGitWorktreeToCandidate(context, candidate, input = {}) {
   await runGitCommandOrThrow(context.primaryWorktree, worktreeAddArgs, 'Failed to create git worktree');
 
   const upstreamRemote = shouldSetUpstream
-    ? String(
-      (preferResolvedUpstream ? inferredUpstream?.remote : '')
-        || input?.upstreamRemote
-        || inferredUpstream?.remote
-        || ''
-    ).trim()
+    ? String(input?.upstreamRemote || inferredUpstream?.remote || '').trim()
     : '';
   const upstreamBranch = shouldSetUpstream
-    ? String(
-      (preferResolvedUpstream ? inferredUpstream?.branch : '')
-        || input?.upstreamBranch
-        || inferredUpstream?.branch
-        || ''
-    ).trim()
+    ? String(input?.upstreamBranch || inferredUpstream?.branch || '').trim()
     : '';
 
   const bootstrapStatus = setWorktreeBootstrapState(

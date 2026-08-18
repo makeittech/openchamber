@@ -396,27 +396,20 @@ export interface CreateGitWorktreePayload {
   ensureRemoteName?: string;
   ensureRemoteUrl?: string;
   /**
-   * Create a worktree from a linked GitHub pull request. The server always
-   * checks out `refs/pull/<number>/head` from the base repository; optional
-   * head-repo fields are best-effort upstream configuration only.
+   * Create a worktree from a linked GitHub pull request. Server fetches
+   * `refs/pull/<number>/head` from `baseRepoUrl` and creates a local branch
+   * with `--no-track` (no upstream configuration).
    */
   pullRequest?: CreateGitWorktreePullRequest;
   /** Return once the target directory exists and finish Git worktree setup in the background. */
   returnAfterDirectoryCreated?: boolean;
 }
 
-/** Linked GitHub PR identity for worktree create/validate. Server owns checkout. */
+/** Linked GitHub PR identity for worktree create/validate. */
 export interface CreateGitWorktreePullRequest {
   number: number;
   /** Base repository URL that serves `refs/pull/<n>/head` (prefer HTTPS). */
   baseRepoUrl: string;
-  baseOwner?: string;
-  baseRepo?: string;
-  /** Optional head branch for local naming / best-effort upstream. */
-  headBranch?: string;
-  /** Optional fork URL for best-effort upstream after create. */
-  headRepoUrl?: string;
-  headOwner?: string;
 }
 
 export interface GitWorktreeCreateResult {

@@ -689,16 +689,10 @@ describe('createWorktree from a GitHub pull request', () => {
     return sha;
   };
 
-  const pullRequestPayload = (number, baseRepoUrl, extras = {}) => ({
-    number,
-    baseRepoUrl,
-    baseOwner: 'openchamber',
-    baseRepo: 'openchamber',
-    ...extras,
-  });
+  const pullRequestPayload = (number, baseRepoUrl) => ({ number, baseRepoUrl });
 
-  const openChamberPrRef = (owner, repo, number) =>
-    `refs/openchamber/github/${owner}/${repo}/pull/${number}/head`;
+  const openChamberRefs = (repository) =>
+    runGit(repository, ['for-each-ref', '--format=%(objectname) %(refname)', 'refs/openchamber/']).trim();
 
   const getBranchTrackingRemote = (directory, branch) => {
     try {
@@ -708,7 +702,7 @@ describe('createWorktree from a GitHub pull request', () => {
     }
   };
 
-  it('creates a worktree from refs/pull/<n>/head when the fork head repo URL is missing', async () => {
+  it('creates a worktree from refs/pull/<n>/head with --no-track', async () => {
     if (!canRunGit()) return;
 
     await withDataHome(async () => {
@@ -725,10 +719,9 @@ describe('createWorktree from a GitHub pull request', () => {
       expect(created.branch).toBe('pr-42-local');
       expect(runGit(created.path, ['rev-parse', 'HEAD']).trim()).toBe(sha);
       await expect.poll(() => fs.existsSync(path.join(created.path, 'PR.md')), { timeout: 5_000 }).toBe(true);
-      const trackingRefName = openChamberPrRef('openchamber', 'openchamber', 42);
-      const trackingRef = runGit(repository, ['show-ref', '--verify', trackingRefName]).trim();
-      expect(trackingRef).toContain(trackingRefName);
-      expect(trackingRef.startsWith(sha)).toBe(true);
+      const refs = openChamberRefs(repository);
+      expect(refs).toContain(sha);
+      expect(refs).toMatch(/refs\/openchamber\//);
       expect(getBranchTrackingRemote(created.path, 'pr-42-local')).toBe('');
     });
   }, 30_000);
@@ -744,13 +737,11 @@ describe('createWorktree from a GitHub pull request', () => {
       const prSha = publishPrHeadRef(repository, remote, 42);
       expect(prSha).not.toBe(staleSha);
 
-      // Preferred local name differs from the stale branch so create can
-      // always attach a fresh branch at the authoritative PR head.
       const created = await createWorktree(repository, {
         mode: 'existing',
         branchName: 'pr-42-from-head',
         worktreeName: 'pr-42-from-head',
-        pullRequest: pullRequestPayload(42, remote, { headBranch: 'feature/login' }),
+        pullRequest: pullRequestPayload(42, remote),
       });
 
       expect(runGit(created.path, ['rev-parse', 'HEAD']).trim()).toBe(prSha);
@@ -758,7 +749,7 @@ describe('createWorktree from a GitHub pull request', () => {
     });
   }, 30_000);
 
-  it('ignores stale remotes/pr-fork refs and still checks out the PR head', async () => {
+  it('ignores stale fork tracking refs and caller upstream defaults', async () => {
     if (!canRunGit()) return;
 
     await withDataHome(async () => {
@@ -773,8 +764,6 @@ describe('createWorktree from a GitHub pull request', () => {
         mode: 'existing',
         branchName: 'pr-42-stale',
         worktreeName: 'pr-42-stale',
-        // Caller defaults that previously drove fork-first strategy must not
-        // change the checkout source when pullRequest is present.
         existingBranch: 'remotes/pr-alice/feature-login',
         setUpstream: true,
         upstreamRemote: 'origin',
@@ -790,106 +779,6 @@ describe('createWorktree from a GitHub pull request', () => {
       expect(runGit(created.path, ['rev-parse', 'HEAD']).trim()).toBe(prSha);
       expect(runGit(created.path, ['rev-parse', 'HEAD']).trim()).not.toBe(staleSha);
       expect(getBranchTrackingRemote(created.path, 'pr-42-stale')).toBe('');
-    });
-  }, 30_000);
-
-  it('best-effort configures fork upstream after PR-head checkout', async () => {
-    if (!canRunGit()) return;
-
-    await withDataHome(async () => {
-      const { remote, repository } = createRepositoryWithRemote();
-      const sha = publishPrHeadRef(repository, remote, 42);
-
-      const fork = createTempDir();
-      runGit(fork, ['init', '--bare']);
-      runGit(repository, ['push', fork, `${sha}:refs/heads/feature/login`]);
-
-      const created = await createWorktree(repository, {
-        mode: 'existing',
-        branchName: 'pr-42-tracked',
-        worktreeName: 'pr-42-tracked',
-        // Injected UI defaults must not override the fork upstream.
-        setUpstream: true,
-        upstreamRemote: 'origin',
-        upstreamBranch: 'pr-42-tracked',
-        pullRequest: pullRequestPayload(42, remote, {
-          headBranch: 'feature/login',
-          headRepoUrl: fork,
-          headOwner: 'alice',
-        }),
-      });
-
-      expect(runGit(created.path, ['rev-parse', 'HEAD']).trim()).toBe(sha);
-      await expect.poll(
-        () => getBranchTrackingRemote(created.path, 'pr-42-tracked') === 'pr-alice',
-        { timeout: 5_000 }
-      ).toBe(true);
-      expect(runGit(repository, ['remote', 'get-url', 'pr-alice']).trim()).toBe(fork);
-    });
-  }, 30_000);
-
-  it('still creates from PR head when fork upstream remote is unreachable', async () => {
-    if (!canRunGit()) return;
-
-    await withDataHome(async () => {
-      const { remote, repository } = createRepositoryWithRemote();
-      const sha = publishPrHeadRef(repository, remote, 42);
-      const missingFork = path.join(createTempDir(), 'missing-fork.git');
-
-      const created = await createWorktree(repository, {
-        mode: 'existing',
-        branchName: 'pr-42-no-fork',
-        worktreeName: 'pr-42-no-fork',
-        pullRequest: pullRequestPayload(42, remote, {
-          headBranch: 'feature/login',
-          headRepoUrl: missingFork,
-          headOwner: 'alice',
-        }),
-      });
-
-      expect(runGit(created.path, ['rev-parse', 'HEAD']).trim()).toBe(sha);
-      await expect.poll(() => fs.existsSync(path.join(created.path, 'PR.md')), { timeout: 5_000 }).toBe(true);
-    });
-  }, 30_000);
-
-  it('keeps PR head refs namespaced per base repository', async () => {
-    if (!canRunGit()) return;
-
-    await withDataHome(async () => {
-      const { remote, repository } = createRepositoryWithRemote();
-      const shaA = publishPrHeadRef(repository, remote, 42);
-
-      await createWorktree(repository, {
-        mode: 'existing',
-        branchName: 'pr-42-a',
-        worktreeName: 'pr-42-a',
-        pullRequest: pullRequestPayload(42, remote, {
-          baseOwner: 'openchamber',
-          baseRepo: 'openchamber',
-        }),
-      });
-
-      fs.writeFileSync(path.join(repository, 'OTHER.md'), '# other\n');
-      runGit(repository, ['add', 'OTHER.md']);
-      runGit(repository, ['commit', '-m', 'other base pr head']);
-      const shaB = runGit(repository, ['rev-parse', 'HEAD']).trim();
-      runGit(repository, ['push', remote, `HEAD:refs/pull/42/head`]);
-
-      await createWorktree(repository, {
-        mode: 'existing',
-        branchName: 'pr-42-b',
-        worktreeName: 'pr-42-b',
-        pullRequest: pullRequestPayload(42, remote, {
-          baseOwner: 'makeittech',
-          baseRepo: 'openchamber',
-        }),
-      });
-
-      const refA = openChamberPrRef('openchamber', 'openchamber', 42);
-      const refB = openChamberPrRef('makeittech', 'openchamber', 42);
-      expect(runGit(repository, ['rev-parse', refA]).trim()).toBe(shaA);
-      expect(runGit(repository, ['rev-parse', refB]).trim()).toBe(shaB);
-      expect(shaA).not.toBe(shaB);
     });
   }, 30_000);
 
@@ -930,10 +819,9 @@ describe('createWorktree from a GitHub pull request', () => {
       });
 
       expect(runGit(created.path, ['rev-parse', 'HEAD']).trim()).toBe(sha);
-      const trackingRefName = openChamberPrRef('openchamber', 'openchamber', 99);
-      const trackingRef = runGit(repository, ['show-ref', '--verify', trackingRefName]).trim();
-      expect(trackingRef.startsWith(sha)).toBe(true);
+      expect(openChamberRefs(repository)).toContain(sha);
       expect(() => runGit(repository, ['show-ref', '--verify', 'refs/remotes/origin/pr-99-head'])).toThrow();
+      expect(getBranchTrackingRemote(created.path, 'pr-99-upstream')).toBe('');
     });
   }, 30_000);
 });
