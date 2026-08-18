@@ -224,6 +224,7 @@ const toCreatePayload = (args: {
   ensureRemoteUrl?: string;
   prRef?: string;
   prRefRemote?: string;
+  prBaseRepoUrl?: string;
   returnAfterDirectoryCreated?: boolean;
 }, projectDirectory: string): CreateGitWorktreePayload => {
   const mode = args.mode === 'existing' ? 'existing' : 'new';
@@ -257,6 +258,7 @@ const toCreatePayload = (args: {
     ...(args.ensureRemoteUrl ? { ensureRemoteUrl: args.ensureRemoteUrl } : {}),
     ...(args.prRef ? { prRef: args.prRef } : {}),
     ...(args.prRefRemote ? { prRefRemote: args.prRefRemote } : {}),
+    ...(args.prBaseRepoUrl ? { prBaseRepoUrl: args.prBaseRepoUrl } : {}),
     ...(args.returnAfterDirectoryCreated ? { returnAfterDirectoryCreated: true } : {}),
   };
 };
@@ -476,9 +478,10 @@ export type CreateWorktreeArgs = {
   upstreamBranch?: string;
   ensureRemoteName?: string;
   ensureRemoteUrl?: string;
-  /** GitHub PR head ref fallback (`refs/pull/<n>/head`) fetched from `prRefRemote` when the fork head repo is missing/unreachable. */
+  /** GitHub PR head ref fallback (`refs/pull/<n>/head`) fetched from the PR base repository when the fork head repo is missing/unreachable. */
   prRef?: string;
   prRefRemote?: string;
+  prBaseRepoUrl?: string;
   returnAfterDirectoryCreated?: boolean;
 };
 

@@ -56,16 +56,21 @@ The following functions are exported and used by the web server:
 When creating a worktree from a linked GitHub PR whose head branch lives in a
 forked repository, the server first tries the fork path: it provisions a
 `pr-<owner>` remote from the PR's head-repository URL (`ensureRemoteName` /
-`ensureRemoteUrl`) and fetches the head branch into it. If the fork's head
-repository is missing (deleted fork) or unreachable (auth, network), and the
-input carries `prRef` (e.g. `refs/pull/123/head`) with `prRefRemote`
-(default `origin`), the server falls back to fetching the PR head ref from the
-base remote — GitHub serves `refs/pull/<n>/head` on the base repository even
-after a fork is deleted. The fallback creates the worktree on the requested
-local branch without upstream tracking (a PR ref has no real upstream), and
-only the base remote is queried, so no fork credentials are needed. Both
-`validateWorktreeCreate` and `createWorktree` apply the same fallback so a
-validated input cannot fail later at creation time.
+`ensureRemoteUrl`) and fetches the head branch into it. If that live fork
+fetch/query fails — and only then — and the input carries `prRef`
+(e.g. `refs/pull/123/head`) with a resolvable base repository
+(`prBaseRepoUrl` and/or `prRefRemote`), the server falls back to fetching the
+PR head ref from the base repository. GitHub serves `refs/pull/<n>/head` on
+the base repository even after a fork is deleted. The base repository is
+resolved by matching remotes to `prBaseRepoUrl` (never by assuming a remote
+named `origin`); when no remote matches, the URL itself is used as the fetch
+target. Fetched PR heads are stored under the private namespace
+`refs/openchamber/pull/<n>/head` so they cannot overwrite a legitimate
+remote-tracking branch. Fallback worktrees are created without upstream
+tracking (a PR ref has no real upstream). Validation and creation share one
+resolver (`resolveExistingWorktreeSource`) so a stale local fork tracking ref
+cannot silently beat the PR fallback, and a validated input cannot diverge at
+creation time.
 
 ### Commit and Remote Operations
 - `commit(directory, message, options)`: Create a commit from the current index. `options.stageFiles` may be provided with `options.files` by older callers to stage only selected unstaged rows before committing, but the shared Git panel now stages/unstages explicitly before commit.
