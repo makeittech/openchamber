@@ -405,16 +405,16 @@ export interface CreateGitWorktreePayload {
   returnAfterDirectoryCreated?: boolean;
 }
 
-/** Linked GitHub PR identity for worktree create/validate. */
+/** Linked GitHub PR identity for worktree create/validate. Server owns checkout. */
 export interface CreateGitWorktreePullRequest {
   number: number;
   /** Base repository URL that serves `refs/pull/<n>/head` (prefer HTTPS). */
   baseRepoUrl: string;
   baseOwner?: string;
   baseRepo?: string;
-  /** Optional head branch name (local branch naming / upstream). */
+  /** Optional head branch for local naming / best-effort upstream. */
   headBranch?: string;
-  /** Optional fork URL for best-effort upstream tracking after create. */
+  /** Optional fork URL for best-effort upstream after create. */
   headRepoUrl?: string;
   headOwner?: string;
 }

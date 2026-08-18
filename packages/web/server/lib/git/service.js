@@ -2005,7 +2005,17 @@ const resolvePullRequestWorktreeSource = async (
   let ensureRemoteName = '';
   let ensureRemoteUrl = '';
   if (pullRequest.headRepoUrl && pullRequest.headBranch) {
-    ensureRemoteName = `pr-${pullRequest.headOwner || 'head'}`;
+    let headOwner = pullRequest.headOwner;
+    if (!headOwner || headOwner === 'head') {
+      const identity = normalizeGitRemoteIdentity(pullRequest.headRepoUrl);
+      const parts = identity.split('/').filter(Boolean);
+      if (parts.length >= 2) {
+        headOwner = sanitizeGitRefSegment(parts[parts.length - 2]) || 'head';
+      } else {
+        headOwner = 'head';
+      }
+    }
+    ensureRemoteName = `pr-${headOwner}`;
     ensureRemoteUrl = pullRequest.headRepoUrl;
     upstream = {
       remote: ensureRemoteName,

@@ -103,8 +103,7 @@ const {
   validateWorktreeCreate,
   worktreeMapsEqual,
 } = await import('./worktreeManager');
-import { resolvePrWorktreeConfig } from './prWorktreeConfig';
-import type { GitHubPullRequestSummary } from '@/lib/api/types';
+import type { CreateGitWorktreePullRequest } from '@/lib/api/types';
 
 const waitForListCallCount = async (count: number): Promise<void> => {
   for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -402,44 +401,22 @@ describe('worktreeManager PR payload wiring', () => {
     attachmentState.attachments = new Map();
   });
 
-  const deletedForkPr = (): GitHubPullRequestSummary => ({
-    number: 42,
-    title: 'Add login',
-    url: 'https://github.com/openchamber/openchamber/pull/42',
-    state: 'open',
-    draft: false,
-    base: 'main',
-    head: 'feature/login',
-    headSha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-    headLabel: 'alice:feature/login',
-    headRepo: null,
-    baseRepo: {
-      owner: 'openchamber',
-      repo: 'openchamber',
-      url: 'https://github.com/openchamber/openchamber',
-      cloneUrl: 'https://github.com/openchamber/openchamber.git',
-      sshUrl: 'git@github.com:openchamber/openchamber.git',
-    },
-  });
-
   test('validate and create both forward pullRequest identity for deleted-fork configs', async () => {
-    const prConfig = resolvePrWorktreeConfig(deletedForkPr());
-    expect(prConfig.pullRequest).toEqual({
+    const pullRequest: CreateGitWorktreePullRequest = {
       number: 42,
       baseRepoUrl: 'https://github.com/openchamber/openchamber.git',
       baseOwner: 'openchamber',
       baseRepo: 'openchamber',
       headBranch: 'feature/login',
       headOwner: 'alice',
-    });
-    expect(prConfig.pullRequest.headRepoUrl).toBe(undefined);
+    };
 
     const project = { id: 'project-1', path: '/repo' };
     const args = {
       mode: 'existing' as const,
       branchName: 'pr-42-local',
       worktreeName: 'pr-42',
-      pullRequest: prConfig.pullRequest,
+      pullRequest,
     };
 
     const validation = await validateWorktreeCreate(project, args);
@@ -447,7 +424,10 @@ describe('worktreeManager PR payload wiring', () => {
     expect(validatePayloads).toHaveLength(1);
     const validated = validatePayloads[0] as Record<string, unknown>;
     expect(validated.mode).toBe('existing');
-    expect(validated.pullRequest).toEqual(prConfig.pullRequest);
+    expect(validated.pullRequest).toEqual(pullRequest);
+    expect('prRef' in validated).toBe(false);
+    expect('ensureRemoteName' in validated).toBe(false);
+    expect('setUpstream' in validated).toBe(false);
 
     await createWorktree(project, {
       ...args,
@@ -456,6 +436,8 @@ describe('worktreeManager PR payload wiring', () => {
     expect(createPayloads).toHaveLength(1);
     const created = createPayloads[0] as Record<string, unknown>;
     expect(created.mode).toBe('existing');
-    expect(created.pullRequest).toEqual(prConfig.pullRequest);
+    expect(created.pullRequest).toEqual(pullRequest);
+    expect('prRef' in created).toBe(false);
+    expect('ensureRemoteUrl' in created).toBe(false);
   });
 });

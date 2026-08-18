@@ -37,7 +37,6 @@ import { withWorktreeUpstreamDefaults } from '@/lib/worktrees/worktreeCreate';
 import { waitForWorktreeBootstrap } from '@/lib/worktrees/worktreeBootstrap';
 import { getWorktreeSetupCommands, getWorktreeSetupWaitEnabled } from '@/lib/openchamberConfig';
 import { getRootBranch } from '@/lib/worktrees/worktreeStatus';
-import { resolvePrWorktreeConfig } from '@/lib/worktrees/prWorktreeConfig';
 import { generateBranchSlug } from '@/lib/git/branchNameGenerator';
 import { renderMagicPrompt } from '@/lib/magicPrompts';
 import { parseModelIdentifier } from '@/lib/modelIdentifier';
@@ -59,6 +58,7 @@ import type {
   GitHubIssuesListResult,
   GitHubPullRequestContextResult,
   GitHubPullRequestSummary,
+  CreateGitWorktreePullRequest,
 } from '@/lib/api/types';
 import type { ProjectRef } from '@/lib/worktrees/worktreeManager';
 import { useI18n } from '@/lib/i18n';
@@ -96,6 +96,28 @@ const normalizeBranchName = (value: string): string => {
     .replace(/^heads\//, '')
     .replace(/\s+/g, '-')
     .replace(/^\/+|\/+$/g, '');
+};
+
+/** Map a linked GitHub PR to the create/validate identity payload (server owns checkout). */
+const toWorktreePullRequest = (pr: GitHubPullRequestSummary): CreateGitWorktreePullRequest => {
+  const baseRepoUrl = (pr.baseRepo?.cloneUrl || pr.baseRepo?.sshUrl || '').trim();
+  if (!baseRepoUrl) {
+    throw new Error('PR base repository URL is unavailable');
+  }
+
+  const headBranch = normalizeBranchName(pr.head || '') || undefined;
+  const headRepoUrl = (pr.headRepo?.cloneUrl || pr.headRepo?.sshUrl || '').trim() || undefined;
+  const headOwner = (pr.headRepo?.owner || String(pr.headLabel || '').split(':')[0] || '').trim() || undefined;
+
+  return {
+    number: pr.number,
+    baseRepoUrl,
+    ...(pr.baseRepo?.owner ? { baseOwner: pr.baseRepo.owner } : {}),
+    ...(pr.baseRepo?.repo ? { baseRepo: pr.baseRepo.repo } : {}),
+    ...(headBranch ? { headBranch } : {}),
+    ...(headRepoUrl ? { headRepoUrl } : {}),
+    ...(headOwner ? { headOwner } : {}),
+  };
 };
 
 const slugifyWorktreeName = (value: string): string => {
@@ -645,13 +667,13 @@ export function NewWorktreeDialog({
       // Only run server validation if we have values
       if (normalizedBranch && normalizedWorktree) {
         const linkedPr = mode === 'new-branch' ? newBranchState.linkedPr : null;
-        const prConfig = linkedPr ? resolvePrWorktreeConfig(linkedPr) : null;
+        const pullRequest = linkedPr ? toWorktreePullRequest(linkedPr) : undefined;
         const result = await validateWorktreeCreate(projectRef, {
-          mode: mode === 'existing-branch' || prConfig ? 'existing' : 'new',
+          mode: mode === 'existing-branch' || pullRequest ? 'existing' : 'new',
           branchName: normalizedBranch,
           worktreeName: normalizedWorktree,
           existingBranch: mode === 'existing-branch' ? normalizedBranch : undefined,
-          ...(prConfig?.pullRequest ? { pullRequest: prConfig.pullRequest } : {}),
+          ...(pullRequest ? { pullRequest } : {}),
         });
         
         if (abortController.signal.aborted) return;
@@ -765,8 +787,7 @@ export function NewWorktreeDialog({
       let sourceLabel = '';
       const args = (() => {
         if (linkedPr) {
-          const prConfig = resolvePrWorktreeConfig(linkedPr);
-          sourceLabel = prConfig.sourceLabel;
+          sourceLabel = `#${linkedPr.number} head`;
           return {
             preferredName: normalizedBranch || normalizedWorktree,
             mode: 'existing' as const,
@@ -774,7 +795,7 @@ export function NewWorktreeDialog({
             worktreeName: normalizedWorktree,
             setupCommands,
             returnAfterDirectoryCreated: true,
-            pullRequest: prConfig.pullRequest,
+            pullRequest: toWorktreePullRequest(linkedPr),
           };
         }
 
@@ -790,8 +811,12 @@ export function NewWorktreeDialog({
           ...(sourceBranch && mode === 'new-branch' ? { startRef: sourceBranch } : {}),
         };
       })();
-      
-      const resolvedArgs = await withWorktreeUpstreamDefaults(projectDirectory, args);
+
+      // Linked PRs: server owns checkout + optional fork upstream. Do not inject
+      // root-branch tracking defaults that would fight that model.
+      const resolvedArgs = linkedPr
+        ? args
+        : await withWorktreeUpstreamDefaults(projectDirectory, args);
 
       const metadata = await createWorktree(projectRef, resolvedArgs);
 
